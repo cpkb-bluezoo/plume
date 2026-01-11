@@ -1,0 +1,21 @@
+# Rust / Cargo
+/target/
+Cargo.lock
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+
+# Build outputs
+*.app
+*.dmg
+*.deb
+*.rpm
+*.AppImage
+
