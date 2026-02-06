@@ -1,0 +1,135 @@
+{
+  "app": {
+    "title": "Plume",
+    "logoAlt": "Inicio de Plume",
+    "close": "Cerrar"
+  },
+  "nav": {
+    "home": "Inicio",
+    "messages": "Mensajes",
+    "bookmarks": "Marcadores",
+    "notifications": "Notificaciones",
+    "settings": "Ajustes",
+    "profile": "Perfil",
+    "newNote": "Nueva nota",
+    "yourProfilePhoto": "Tu foto de perfil"
+  },
+  "feed": {
+    "title": "Inicio",
+    "welcomeTitle": "¡Bienvenido a Plume!",
+    "welcomeHint": "Configura tus claves en Ajustes para explorar Nostr.",
+    "noNotes": "No hay notas que mostrar",
+    "notesHint": "Las notas aparecerán aquí cuando estén disponibles.",
+    "noTextNotes": "No se encontraron notas de texto",
+    "tryRelays": "Prueba a conectar con otros relays",
+    "noRelays": "No hay relays configurados. Añade relays en Ajustes.",
+    "feedFailed": "Error al cargar el feed. Comprueba los relays e inténtalo de nuevo."
+  },
+  "messages": {
+    "title": "Mensajes",
+    "noConversations": "Aún no hay conversaciones",
+    "selectOrStart": "Selecciona una conversación o inicia un nuevo mensaje",
+    "messagePlaceholder": "Mensaje…",
+    "sendMessage": "Enviar mensaje"
+  },
+  "bookmarks": {
+    "title": "Marcadores",
+    "noBookmarks": "No hay marcadores"
+  },
+  "notifications": {
+    "title": "Notificaciones",
+    "noNotifications": "Sin notificaciones",
+    "all": "Todo",
+    "zaps": "Zaps",
+    "replies": "Respuestas",
+    "mentions": "Menciones",
+    "reposts": "Republicaciones"
+  },
+  "settings": {
+    "title": "Ajustes",
+    "selectOption": "Selecciona una opción arriba",
+    "account": "Cuenta",
+    "homeFeed": "Feed de inicio",
+    "mediaUploads": "Subida de medios",
+    "mutedContent": "Contenido silenciado",
+    "wallets": "Monederos",
+    "relays": "Relays",
+    "zaps": "Zaps",
+    "logout": "Cerrar sesión"
+  },
+  "profile": {
+    "editProfile": "Editar perfil",
+    "follow": "Seguir",
+    "message": "Mensaje",
+    "mute": "Silenciar",
+    "following": "siguiendo",
+    "followers": "seguidores",
+    "joined": "Se unió el",
+    "website": "Sitio web",
+    "notConfigured": "Sin configurar",
+    "noIdentityYet": "Aún no tienes una identidad Nostr.",
+    "generateKeyPair": "Generar par de claves",
+    "notes": "Notas",
+    "replies": "Respuestas",
+    "zaps": "Zaps",
+    "relays": "Relays",
+    "notesAppearHere": "Las notas aparecen aquí",
+    "profilePhoto": "Foto de perfil",
+    "anonymous": "Anónimo",
+    "generating": "Generando…",
+    "newIdentityCreated": "¡Nueva identidad creada!",
+    "saveNsecWarning": "IMPORTANTE: Guarda tu nsec en un lugar seguro. Lo necesitarás para recuperar tu identidad."
+  },
+  "accountModal": {
+    "title": "Cuenta",
+    "displayName": "Nombre para mostrar",
+    "displayNamePlaceholder": "Tu nombre para mostrar",
+    "publicKey": "Clave pública (npub o hex)",
+    "publicKeyPlaceholder": "npub1... o hex de 64 caracteres",
+    "publicKeyHint": "Tu identidad Nostr",
+    "privateKey": "Clave privada (nsec o hex) – Opcional",
+    "privateKeyPlaceholder": "nsec1... o hex (opcional)",
+    "privateKeyHint": "Solo hace falta para publicar notas",
+    "save": "Guardar"
+  },
+  "composeModal": {
+    "title": "Nueva nota",
+    "replyingTo": "Respondiendo a",
+    "placeholder": "¿Qué estás pensando?",
+    "cancel": "Cancelar",
+    "post": "Publicar",
+    "posting": "Publicando…",
+    "charCount": "{count} / 10000",
+    "contentRequired": "Escribe algo para tu nota",
+    "tooLong": "La nota es demasiado larga (máx. 10000 caracteres)",
+    "noPrivateKey": "No hay clave privada configurada. Añade tu nsec en Ajustes para publicar.",
+    "signingPublishing": "Firmando y publicando nota…",
+    "publishedSuccess": "Publicado en {success} de {total} relay(s)",
+    "publishFailed": "No se pudo publicar en ningún relay",
+    "postFailed": "Error al publicar la nota"
+  },
+  "note": {
+    "viewProfile": "Ver perfil",
+    "verifying": "Verificando…",
+    "signatureVerified": "Firma verificada ✓",
+    "invalidSignature": "Firma no válida",
+    "reply": "Responder",
+    "zap": "Zap",
+    "like": "Me gusta",
+    "repost": "Republicar",
+    "bookmark": "Marcador",
+    "replyLabel": "(respuesta)"
+  },
+  "relays": {
+    "test": "Probar",
+    "notTested": "No probado"
+  },
+  "content": {
+    "image": "Imagen"
+  },
+  "errors": {
+    "failedToSaveSettings": "Error al guardar la configuración",
+    "failedToGenerateKeys": "Error al generar el par de claves",
+    "initError": "Error de inicialización"
+  }
+}

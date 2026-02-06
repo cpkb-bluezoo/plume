@@ -29,10 +29,14 @@ pub struct Event {
 // Common event kinds in Nostr
 pub const KIND_METADATA: u32 = 0;       // User profile metadata
 pub const KIND_TEXT_NOTE: u32 = 1;      // Short text note (like a tweet)
+#[allow(dead_code)]
 pub const KIND_RECOMMEND_RELAY: u32 = 2; // Relay recommendation
 pub const KIND_CONTACTS: u32 = 3;       // Contact list / follows
+#[allow(dead_code)]
 pub const KIND_REPOST: u32 = 6;         // Repost/boost of another note
+#[allow(dead_code)]
 pub const KIND_REACTION: u32 = 7;       // Reaction (like, emoji)
+#[allow(dead_code)]
 pub const KIND_LONG_FORM: u32 = 30023;  // Long-form content (articles)
 
 // A filter for requesting events from relays
@@ -62,6 +66,7 @@ pub struct Filter {
 
 // Create a new empty filter
 impl Filter {
+    #[allow(dead_code)]
     pub fn new() -> Filter {
         Filter {
             ids: None,
@@ -394,26 +399,35 @@ fn escape_json_string(input: &str) -> String {
 // Helper Functions
 // ============================================================
 
-// Create a filter for text notes from specific authors
+/// Create a filter for text notes from specific authors (optionally only since timestamp).
+#[allow(dead_code)]
 pub fn filter_notes_by_authors(authors: Vec<String>, limit: u32) -> Filter {
+    filter_notes_by_authors_since(authors, limit, None)
+}
+
+pub fn filter_notes_by_authors_since(authors: Vec<String>, limit: u32, since: Option<u64>) -> Filter {
     Filter {
         ids: None,
         authors: Some(authors),
         kinds: Some(vec![KIND_TEXT_NOTE]),
-        since: None,
+        since,
         until: None,
         limit: Some(limit),
         p_tags: None,
     }
 }
 
-// Create a filter for recent global notes
+// Create a filter for recent global notes (optionally only since timestamp)
 pub fn filter_recent_notes(limit: u32) -> Filter {
+    filter_recent_notes_since(limit, None)
+}
+
+pub fn filter_recent_notes_since(limit: u32, since: Option<u64>) -> Filter {
     Filter {
         ids: None,
         authors: None,
         kinds: Some(vec![KIND_TEXT_NOTE]),
-        since: None,
+        since,
         until: None,
         limit: Some(limit),
         p_tags: None,
@@ -433,7 +447,8 @@ pub fn filter_profile_by_author(author_pubkey: &str) -> Filter {
     }
 }
 
-// Create a filter for multiple profiles at once
+/// Create a filter for multiple profiles at once.
+#[allow(dead_code)]
 pub fn filter_profiles_by_authors(author_pubkeys: Vec<String>) -> Filter {
     Filter {
         ids: None,
@@ -594,7 +609,8 @@ pub fn parse_contact_list(event: &Event) -> Result<ContactList, String> {
     });
 }
 
-// Get just the pubkeys from a contact list
+/// Get just the pubkeys from a contact list.
+#[allow(dead_code)]
 pub fn get_following_pubkeys(contact_list: &ContactList) -> Vec<String> {
     let mut pubkeys: Vec<String> = Vec::new();
     

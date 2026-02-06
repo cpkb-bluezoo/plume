@@ -166,17 +166,33 @@ fn fetch_notes(relay_url: String, limit: u32) -> Result<String, String> {
     return Ok(json);
 }
 
-// Tauri command: Fetch notes from multiple relays
+// Tauri command: Fetch notes from multiple relays.
+// authors: if Some and non-empty, only notes from these pubkeys (hex); else firehose.
+// since: if Some, only notes with created_at >= since (for incremental poll).
 #[tauri::command]
-fn fetch_notes_from_relays(relay_urls: Vec<String>, limit: u32) -> Result<String, String> {
-    println!("Fetching notes from {} relays", relay_urls.len());
-    
+fn fetch_notes_from_relays(
+    relay_urls: Vec<String>,
+    limit: u32,
+    authors: Option<Vec<String>>,
+    since: Option<u64>,
+) -> Result<String, String> {
+    let use_follows = authors.as_ref().map(|a| !a.is_empty()).unwrap_or(false);
+    println!(
+        "Fetching notes from {} relays (follows={}, since={:?})",
+        relay_urls.len(),
+        use_follows,
+        since
+    );
+
+    let filter = if use_follows {
+        nostr::filter_notes_by_authors_since(authors.unwrap(), limit, since)
+    } else {
+        nostr::filter_recent_notes_since(limit, since)
+    };
+
     let mut all_events: Vec<nostr::Event> = Vec::new();
-    
-    // Fetch from each relay
+
     for relay_url in relay_urls {
-        let filter = nostr::filter_recent_notes(limit);
-        
         match relay::fetch_notes_from_relay(&relay_url, &filter, 10) {
             Ok(events) => {
                 for event in events {
@@ -185,35 +201,30 @@ fn fetch_notes_from_relays(relay_urls: Vec<String>, limit: u32) -> Result<String
             }
             Err(e) => {
                 println!("Error fetching from {}: {}", relay_url, e);
-                // Continue with other relays
             }
         }
     }
-    
+
     // Sort by created_at (newest first)
     all_events.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-    
-    // Remove duplicates (same event ID)
+
+    // Remove duplicates by event ID
     let mut seen_ids: Vec<String> = Vec::new();
     let mut unique_events: Vec<nostr::Event> = Vec::new();
-    
     for event in all_events {
         if !seen_ids.contains(&event.id) {
             seen_ids.push(event.id.clone());
             unique_events.push(event);
         }
     }
-    
-    // Limit total results
+
     if unique_events.len() > limit as usize {
         unique_events.truncate(limit as usize);
     }
-    
-    // Convert to JSON
+
     let json = events_to_json_array(&unique_events);
-    
     println!("Returning {} unique events", unique_events.len());
-    return Ok(json);
+    Ok(json)
 }
 
 // Tauri command: Test connection to a relay
@@ -469,30 +480,41 @@ fn fetch_own_followers(state: tauri::State<AppState>) -> Result<String, String> 
 // Posting / Signing Commands
 // ============================================================
 
-// Tauri command: Post a new text note
+// Tauri command: Post a new text note (optionally a reply: reply_to_event_id + reply_to_pubkey).
 #[tauri::command]
-fn post_note(state: tauri::State<AppState>, content: String) -> Result<String, String> {
+fn post_note(
+    state: tauri::State<AppState>,
+    content: String,
+    reply_to_event_id: Option<String>,
+    reply_to_pubkey: Option<String>,
+) -> Result<String, String> {
     println!("Posting note: {}", &content[..std::cmp::min(50, content.len())]);
-    
-    // Load config
+
     let config_dir = &state.config_dir;
     let cfg = match config::load_config(config_dir) {
         Ok(c) => c,
         Err(e) => return Err(format!("Failed to load config: {}", e)),
     };
-    
-    // Check for private key
+
     let secret_key = match cfg.private_key {
         Some(key) => key,
         None => return Err(String::from("No private key configured. Add your nsec in Settings to post notes.")),
     };
-    
+
     if cfg.relays.is_empty() {
         return Err(String::from("No relays configured"));
     }
-    
-    // Create and sign the note
-    let event = match crypto::create_signed_note(&content, &secret_key, vec![]) {
+
+    // Build tags for reply (NIP-10: e and p tags)
+    let mut tags: Vec<Vec<String>> = Vec::new();
+    if let (Some(eid), Some(pk)) = (reply_to_event_id, reply_to_pubkey) {
+        if !eid.is_empty() && !pk.is_empty() {
+            tags.push(vec![String::from("e"), eid, String::new(), String::from("reply")]);
+            tags.push(vec![String::from("p"), pk]);
+        }
+    }
+
+    let event = match crypto::create_signed_note(&content, &secret_key, tags) {
         Ok(e) => e,
         Err(e) => return Err(format!("Failed to create note: {}", e)),
     };
@@ -604,6 +626,7 @@ fn generate_keypair(state: tauri::State<AppState>) -> Result<String, String> {
                 String::from("wss://nos.lol"),
                 String::from("wss://relay.nostr.band"),
             ],
+            home_feed_mode: String::from("firehose"),
         },
     };
     
@@ -713,12 +736,10 @@ fn main() {
         ])
         .setup(|app| {
             // This runs once when the app starts
-            let window = app.get_webview_window("main").unwrap();
-            
-            // In debug mode, open the developer tools
+            let _window = app.get_webview_window("main").unwrap();
             #[cfg(debug_assertions)]
             {
-                window.open_devtools();
+                _window.open_devtools();
             }
             
             println!("Plume is starting...");

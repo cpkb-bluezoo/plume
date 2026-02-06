@@ -50,7 +50,8 @@ pub fn is_nsec(key: &str) -> bool {
     return key.starts_with("nsec1");
 }
 
-// Check if a string is a valid npub
+/// Check if a string is a valid npub (decodes successfully).
+#[allow(dead_code)]
 pub fn is_valid_npub(key: &str) -> bool {
     if !is_npub(key) {
         return false;
@@ -63,7 +64,8 @@ pub fn is_valid_npub(key: &str) -> bool {
     }
 }
 
-// Check if a string is a valid nsec
+/// Check if a string is a valid nsec (decodes successfully).
+#[allow(dead_code)]
 pub fn is_valid_nsec(key: &str) -> bool {
     if !is_nsec(key) {
         return false;
@@ -310,7 +312,8 @@ fn bytes_to_hex(bytes: &[u8]) -> String {
 // Display Helpers
 // ============================================================
 
-// Shorten a key for display (first 8 + last 4 characters)
+/// Shorten a key for display (first 8 + last 4 characters).
+#[allow(dead_code)]
 pub fn shorten_key(key: &str) -> String {
     if key.len() <= 16 {
         return key.to_string();
@@ -322,7 +325,8 @@ pub fn shorten_key(key: &str) -> String {
     return format!("{}...{}", start, end);
 }
 
-// Shorten an npub for display
+/// Shorten an npub for display.
+#[allow(dead_code)]
 pub fn shorten_npub(npub: &str) -> String {
     if npub.len() <= 20 {
         return npub.to_string();

@@ -4,203 +4,233 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta http-equiv="Content-Security-Policy" content="default-src 'self' ipc: tauri:; img-src 'self' https: data:; media-src 'self' https:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self' ipc: tauri: https:">
-    <title>Plume - Nostr Client</title>
+    <title>Plume</title>
     <link rel="stylesheet" href="style.css">
     <link rel="icon" type="image/svg+xml" href="plume.svg">
 </head>
 <body>
     <div id="app">
-        <!-- Header -->
-        <header id="header">
-            <div class="header-left">
-                <img src="plume.svg" alt="Plume" class="logo-icon">
-                <h1>Plume</h1>
-            </div>
-            <div class="header-right">
-                <span id="connection-status" class="status disconnected">Disconnected</span>
-                <button id="settings-btn" class="icon-btn" title="Settings">⚙️</button>
-            </div>
-        </header>
-
-        <!-- Main content area -->
         <main id="main">
-            <!-- Sidebar with navigation -->
             <nav id="sidebar">
+                <a href="#" class="sidebar-logo" data-i18n-title="app.title" data-i18n-aria-label="app.title">
+                    <img src="plume.svg" class="logo-icon" data-i18n-alt="app.logoAlt">
+                </a>
                 <ul class="nav-list">
-                    <li><a href="#" class="nav-item active" data-view="feed">📰 Feed</a></li>
-                    <li><a href="#" class="nav-item" data-view="profile">👤 Profile</a></li>
-                    <li><a href="#" class="nav-item" data-view="following">👥 Following</a></li>
-                    <li><a href="#" class="nav-item" data-view="relays">🔌 Relays</a></li>
+                    <li><a href="#" class="nav-item active" data-view="feed" data-i18n-title="nav.home" data-i18n-aria-label="nav.home"><img src="icons/home.svg" alt="" class="nav-icon" data-i18n-alt="nav.home"></a></li>
+                    <li><a href="#" class="nav-item" data-view="messages" data-i18n-title="nav.messages" data-i18n-aria-label="nav.messages"><img src="icons/envelope.svg" alt="" class="nav-icon" data-i18n-alt="nav.messages"></a></li>
+                    <li><a href="#" class="nav-item" data-view="bookmarks" data-i18n-title="nav.bookmarks" data-i18n-aria-label="nav.bookmarks"><img src="icons/bookmark.svg" alt="" class="nav-icon" data-i18n-alt="nav.bookmarks"></a></li>
+                    <li><a href="#" class="nav-item" data-view="notifications" data-i18n-title="nav.notifications" data-i18n-aria-label="nav.notifications"><img src="icons/bell.svg" alt="" class="nav-icon" data-i18n-alt="nav.notifications"></a></li>
+                    <li><a href="#" class="nav-item" data-view="settings" data-i18n-title="nav.settings" data-i18n-aria-label="nav.settings"><img src="icons/cog.svg" alt="" class="nav-icon" data-i18n-alt="nav.settings"></a></li>
                 </ul>
+                <button type="button" id="compose-btn" class="compose-btn" data-i18n-title="nav.newNote" data-i18n-aria-label="nav.newNote">
+                    <img src="icons/quill.svg" class="compose-btn-icon" data-i18n-alt="nav.newNote">
+                </button>
+                <div class="sidebar-footer">
+                    <a href="#" class="nav-item nav-profile" data-view="profile" data-i18n-title="nav.profile" data-i18n-aria-label="nav.profile">
+                        <span class="profile-avatar-wrap">
+                            <img id="sidebar-avatar" src="" class="sidebar-avatar" style="display: none;" data-i18n-alt="nav.yourProfilePhoto">
+                            <span id="sidebar-avatar-placeholder" class="sidebar-avatar-placeholder"><img src="icons/user.svg" alt="" class="nav-icon" data-i18n-alt="nav.profile"></span>
+                        </span>
+                    </a>
+                </div>
             </nav>
 
-            <!-- Content area where notes are displayed -->
             <section id="content">
-                <!-- Feed view -->
                 <div id="view-feed" class="view active">
-                    <div class="view-header">
-                        <h2>Your Feed</h2>
-                        <div class="view-actions">
-                            <button id="compose-btn" class="btn btn-primary">✏️ Compose</button>
-                            <button id="refresh-btn" class="btn">🔄 Refresh</button>
-                        </div>
+                    <div class="view-header view-header-border">
+                        <h2 class="view-title" data-i18n="feed.title"></h2>
                     </div>
                     <div id="notes-container">
-                        <!-- Notes will be inserted here by JavaScript -->
-                        <div class="placeholder-message">
-                            <p>Welcome to Plume!</p>
-                            <p>Configure your keys in Settings to start browsing Nostr.</p>
+                        <div class="placeholder-message" id="feed-welcome">
+                            <p data-i18n="feed.welcomeTitle"></p>
+                            <p data-i18n="feed.welcomeHint"></p>
                         </div>
                     </div>
                 </div>
 
-                <!-- Profile view -->
-                <div id="view-profile" class="view">
-                    <div class="view-header">
-                        <h2>Your Profile</h2>
-                        <button id="refresh-profile-btn" class="btn">🔄 Fetch from Relays</button>
+                <div id="view-messages" class="view">
+                    <div class="view-header view-header-border">
+                        <h2 class="view-title" data-i18n="messages.title"></h2>
                     </div>
-                    <div id="profile-container">
-                        <div class="profile-card">
-                            <div id="profile-banner" class="profile-banner"></div>
-                            <div class="profile-avatar">
-                                <img id="profile-picture" src="" alt="Profile" style="display: none;">
+                    <div class="messages-split">
+                        <div class="messages-list">
+                            <div class="placeholder-message">
+                                <p data-i18n="messages.noConversations"></p>
+                            </div>
+                        </div>
+                        <div class="messages-chat">
+                            <div class="messages-chat-empty">
+                                <p data-i18n="messages.selectOrStart"></p>
+                            </div>
+                            <div class="messages-chat-pane" style="display: none;">
+                                <div id="messages-chat-messages"></div>
+                                <div class="messages-input-row">
+                                    <input type="text" id="message-input" class="message-input" data-i18n-placeholder="messages.messagePlaceholder" />
+                                    <button type="button" id="message-send-btn" class="send-btn" data-i18n-title="messages.sendMessage" data-i18n-aria-label="messages.sendMessage"><img src="icons/send.svg" alt="" class="icon-sm" data-i18n-alt="messages.sendMessage"></button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="view-bookmarks" class="view">
+                    <div class="view-header view-header-border">
+                        <h2 class="view-title" data-i18n="bookmarks.title"></h2>
+                    </div>
+                    <div id="bookmarks-container">
+                        <div class="placeholder-message">
+                            <p data-i18n="bookmarks.noBookmarks"></p>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="view-notifications" class="view">
+                    <div class="view-header view-header-border">
+                        <h2 class="view-title" data-i18n="notifications.title"></h2>
+                    </div>
+                    <div class="notif-tabs">
+                        <button type="button" class="notif-tab active" data-filter="all" data-i18n="notifications.all"></button>
+                        <button type="button" class="notif-tab" data-filter="zaps" data-i18n="notifications.zaps"></button>
+                        <button type="button" class="notif-tab" data-filter="replies" data-i18n="notifications.replies"></button>
+                        <button type="button" class="notif-tab" data-filter="mentions" data-i18n="notifications.mentions"></button>
+                        <button type="button" class="notif-tab" data-filter="reposts" data-i18n="notifications.reposts"></button>
+                    </div>
+                    <div id="notifications-container">
+                        <div class="placeholder-message">
+                            <p data-i18n="notifications.noNotifications"></p>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="view-settings" class="view">
+                    <div class="view-header view-header-border">
+                        <h2 class="view-title" data-i18n="settings.title"></h2>
+                    </div>
+                    <ul class="settings-menu">
+                        <li><button type="button" class="settings-menu-item" data-settings="account" data-i18n="settings.account"></button></li>
+                        <li><button type="button" class="settings-menu-item" data-settings="home-feed" data-i18n="settings.homeFeed"></button></li>
+                        <li><button type="button" class="settings-menu-item" data-settings="media" data-i18n="settings.mediaUploads"></button></li>
+                        <li><button type="button" class="settings-menu-item" data-settings="muted" data-i18n="settings.mutedContent"></button></li>
+                        <li><button type="button" class="settings-menu-item" data-settings="wallets" data-i18n="settings.wallets"></button></li>
+                        <li><button type="button" class="settings-menu-item" data-settings="relays" data-i18n="settings.relays"></button></li>
+                        <li><button type="button" class="settings-menu-item" data-settings="zaps" data-i18n="settings.zaps"></button></li>
+                    </ul>
+                    <div class="settings-detail" id="settings-detail">
+                        <p class="text-muted" id="settings-detail-default" data-i18n="settings.selectOption"></p>
+                        <div id="relays-container" class="settings-panel" style="display: none;">
+                            <ul id="relay-list"></ul>
+                        </div>
+                    </div>
+                    <div class="settings-footer">
+                        <button type="button" id="logout-btn" class="btn btn-ghost" data-i18n="settings.logout"></button>
+                    </div>
+                </div>
+
+                <div id="view-profile" class="view">
+                    <div class="profile-page">
+                        <div id="profile-banner" class="profile-banner"></div>
+                        <div class="profile-header-row">
+                            <div class="profile-avatar-wrap profile-page-avatar">
+                                <img id="profile-picture" src="" style="display: none;" data-i18n-alt="profile.profilePhoto">
                                 <div id="profile-placeholder" class="avatar-placeholder">?</div>
                             </div>
-                            <div class="profile-info">
-                                <h3 id="profile-name">Not configured</h3>
+                            <div class="profile-actions">
+                                <button id="edit-profile-btn" class="btn btn-primary" style="display: none;" data-i18n="profile.editProfile"></button>
+                                <button id="follow-btn" class="btn btn-primary" style="display: none;" data-i18n="profile.follow"></button>
+                                <button id="message-user-btn" class="btn" style="display: none;"><img src="icons/envelope.svg" alt="" class="icon-sm" data-i18n-alt="profile.message"> <span data-i18n="profile.message"></span></button>
+                                <button id="mute-btn" class="btn" style="display: none;" data-i18n="profile.mute"></button>
+                            </div>
+                        </div>
+                        <div class="profile-meta">
+                            <div class="profile-meta-left">
+                                <h3 id="profile-name" data-i18n="profile.notConfigured"></h3>
                                 <p id="profile-nip05" class="nip05"></p>
-                                <p id="profile-pubkey" class="pubkey">No public key set</p>
                                 <p id="profile-about" class="profile-about"></p>
-                                <div id="profile-links" class="profile-links">
-                                    <a id="profile-website" href="#" target="_blank" rel="noopener" style="display: none;">🌐 Website</a>
-                                    <span id="profile-lightning" style="display: none;">⚡ <span id="profile-lud16"></span></span>
-                                </div>
-                                <div id="no-key-notice" class="no-key-notice">
-                                    <p>You don't have a Nostr identity yet.</p>
-                                    <button id="generate-keys-btn" class="btn btn-primary" type="button">🔑 Generate New Key Pair</button>
-                                </div>
+                            </div>
+                            <div class="profile-meta-right">
+                                <p><span id="following-count">0</span> <span data-i18n="profile.following"></span></p>
+                                <p><span id="followers-count">0</span> <span data-i18n="profile.followers"></span></p>
+                                <p><span data-i18n="profile.joined"></span> <span id="profile-joined">—</span></p>
+                            </div>
+                        </div>
+                        <div id="profile-links" class="profile-links">
+                            <a id="profile-website" href="#" target="_blank" rel="noopener" style="display: none;" data-i18n="profile.website"></a>
+                            <span id="profile-lightning" style="display: none;">⚡ <span id="profile-lud16"></span></span>
+                        </div>
+                        <p id="profile-pubkey" class="pubkey" style="display: none;"></p>
+                        <div id="no-key-notice" class="no-key-notice">
+                            <p data-i18n="profile.noIdentityYet"></p>
+                            <button id="generate-keys-btn" class="btn btn-primary" type="button" data-i18n="profile.generateKeyPair"></button>
+                        </div>
+                        <div class="profile-tabs">
+                            <button type="button" class="profile-tab active" data-tab="notes" data-i18n="profile.notes"></button>
+                            <button type="button" class="profile-tab" data-tab="replies" data-i18n="profile.replies"></button>
+                            <button type="button" class="profile-tab" data-tab="zaps" data-i18n="profile.zaps"></button>
+                            <button type="button" class="profile-tab" data-tab="relays" data-i18n="profile.relays"></button>
+                        </div>
+                        <div id="profile-feed" class="profile-feed">
+                            <div class="placeholder-message">
+                                <p data-i18n="profile.notesAppearHere"></p>
                             </div>
                         </div>
                     </div>
                 </div>
 
-                <!-- Following view -->
-                <div id="view-following" class="view">
-                    <div class="view-header">
-                        <h2>Following & Followers</h2>
-                        <button id="refresh-following-btn" class="btn">🔄 Fetch</button>
-                    </div>
-                    <div id="following-container">
-                        <!-- Stats summary -->
-                        <div class="follow-stats">
-                            <div class="stat-box">
-                                <span class="stat-number" id="following-count">-</span>
-                                <span class="stat-label">Following</span>
-                            </div>
-                            <div class="stat-box">
-                                <span class="stat-number" id="followers-count">-</span>
-                                <span class="stat-label">Followers</span>
-                            </div>
-                        </div>
-                        
-                        <!-- Tabs -->
-                        <div class="follow-tabs">
-                            <button class="follow-tab active" data-tab="following">Following</button>
-                            <button class="follow-tab" data-tab="followers">Followers</button>
-                        </div>
-                        
-                        <!-- Following list -->
-                        <div id="following-list" class="follow-list active">
-                            <div class="placeholder-message">
-                                <p>Click Fetch to load your following list</p>
-                            </div>
-                        </div>
-                        
-                        <!-- Followers list -->
-                        <div id="followers-list" class="follow-list">
-                            <div class="placeholder-message">
-                                <p>Click Fetch to load your followers</p>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Relays view -->
-                <div id="view-relays" class="view">
-                    <div class="view-header">
-                        <h2>Relays</h2>
-                        <button id="add-relay-btn" class="btn">+ Add Relay</button>
-                    </div>
-                    <div id="relays-container">
-                        <ul id="relay-list">
-                            <!-- Relay items will be inserted here -->
-                        </ul>
-                    </div>
-                </div>
+                <div id="view-following" class="view" aria-hidden="true" style="display: none;"></div>
+                <div id="view-relays" class="view" aria-hidden="true" style="display: none;"></div>
             </section>
         </main>
 
-        <!-- Settings Modal -->
         <div id="settings-modal" class="modal">
             <div class="modal-content">
                 <div class="modal-header">
-                    <h2>Settings</h2>
-                    <button id="close-settings" class="close-btn">&times;</button>
+                    <h2 data-i18n="accountModal.title"></h2>
+                    <button id="close-settings" class="close-btn" type="button" data-i18n-aria-label="app.close">&times;</button>
                 </div>
                 <div class="modal-body">
                     <form id="settings-form">
                         <div class="form-group">
-                            <label for="input-display-name">Display Name</label>
-                            <input type="text" id="input-display-name" placeholder="Your display name">
+                            <label for="input-display-name" data-i18n="accountModal.displayName"></label>
+                            <input type="text" id="input-display-name" data-i18n-placeholder="accountModal.displayNamePlaceholder">
                         </div>
                         <div class="form-group">
-                            <label for="input-public-key">Public Key (npub or hex)</label>
-                            <input type="text" id="input-public-key" placeholder="npub1... or 64-char hex">
-                            <small class="form-hint">Your Nostr identity - accepts npub1... or hex format</small>
+                            <label for="input-public-key" data-i18n="accountModal.publicKey"></label>
+                            <input type="text" id="input-public-key" data-i18n-placeholder="accountModal.publicKeyPlaceholder">
+                            <small class="form-hint" data-i18n="accountModal.publicKeyHint"></small>
                             <span id="input-public-key-error" class="validation-error"></span>
                         </div>
                         <div class="form-group">
-                            <label for="input-private-key">Private Key (nsec or hex) - Optional</label>
-                            <input type="password" id="input-private-key" placeholder="nsec1... or hex (optional)">
-                            <small class="form-hint">Only needed if you want to post notes</small>
+                            <label for="input-private-key" data-i18n="accountModal.privateKey"></label>
+                            <input type="password" id="input-private-key" data-i18n-placeholder="accountModal.privateKeyPlaceholder">
+                            <small class="form-hint" data-i18n="accountModal.privateKeyHint"></small>
                             <span id="input-private-key-error" class="validation-error"></span>
                         </div>
                         <div class="form-actions">
-                            <button type="submit" class="btn btn-primary">Save Settings</button>
+                            <button type="submit" class="btn btn-primary" data-i18n="accountModal.save"></button>
                         </div>
                     </form>
                 </div>
             </div>
         </div>
 
-        <!-- Compose Modal -->
         <div id="compose-modal" class="modal">
             <div class="modal-content modal-compose">
                 <div class="modal-header">
-                    <h2>Compose Note</h2>
-                    <button id="close-compose" class="close-btn">&times;</button>
+                    <h2 data-i18n="composeModal.title"></h2>
+                    <button id="close-compose" class="close-btn" type="button" data-i18n-aria-label="app.close">&times;</button>
                 </div>
                 <div class="modal-body">
+                    <p id="compose-reply-context" class="compose-reply-context" style="display: none;"><span data-i18n="composeModal.replyingTo"></span> <span id="compose-reply-name"></span></p>
                     <form id="compose-form">
                         <div class="form-group">
-                            <textarea 
-                                id="compose-content" 
-                                placeholder="What's on your mind?"
-                                rows="6"
-                                maxlength="10000"
-                            ></textarea>
-                            <div class="char-count">
-                                <span id="char-count">0</span> / 10000
-                            </div>
+                            <textarea id="compose-content" data-i18n-placeholder="composeModal.placeholder" rows="5" maxlength="10000"></textarea>
+                            <div class="char-count"><span id="compose-char-count"></span></div>
                         </div>
                         <div id="compose-error" class="compose-error"></div>
                         <div id="compose-status" class="compose-status"></div>
                         <div class="form-actions">
-                            <button type="button" id="cancel-compose" class="btn">Cancel</button>
-                            <button type="submit" id="submit-compose" class="btn btn-primary">
-                                <span id="compose-btn-text">Post Note</span>
-                            </button>
+                            <button type="button" id="cancel-compose" class="btn" data-i18n="composeModal.cancel"></button>
+                            <button type="submit" id="submit-compose" class="btn btn-primary"><span id="compose-btn-text" data-i18n="composeModal.post"></span></button>
                         </div>
                     </form>
                 </div>
@@ -208,7 +238,7 @@
         </div>
     </div>
 
+    <script src="i18n.js"></script>
     <script src="app.js"></script>
 </body>
 </html>
-

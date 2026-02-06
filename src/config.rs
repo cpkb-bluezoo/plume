@@ -10,15 +10,18 @@ use std::path::Path;
 pub struct Config {
     // User's Nostr public key (npub or hex)
     pub public_key: String,
-    
+
     // User's Nostr private key (nsec or hex) - optional, for signing
     pub private_key: Option<String>,
-    
+
     // List of relay URLs to connect to
     pub relays: Vec<String>,
-    
+
     // Display name for the user
     pub display_name: String,
+
+    // Home feed mode: "follows" (notes from people you follow) or "firehose" (global)
+    pub home_feed_mode: String,
 }
 
 // Create a default configuration for new users
@@ -33,6 +36,7 @@ impl Config {
                 String::from("wss://relay.nostr.band"),
             ],
             display_name: String::from("Anonymous"),
+            home_feed_mode: String::from("firehose"),
         }
     }
 }
@@ -76,12 +80,17 @@ pub fn config_to_json(config: &Config) -> String {
         json.push_str("\n");
     }
     json.push_str("  ],\n");
-    
+
     // Add display_name field
     json.push_str("  \"display_name\": \"");
     json.push_str(&escape_json_string(&config.display_name));
+    json.push_str("\",\n");
+
+    // Add home_feed_mode field
+    json.push_str("  \"home_feed_mode\": \"");
+    json.push_str(&escape_json_string(&config.home_feed_mode));
     json.push_str("\"\n");
-    
+
     json.push_str("}");
     
     return json;
@@ -119,7 +128,20 @@ pub fn json_to_config(json_str: &str) -> Result<Config, String> {
     } else {
         display_name = String::from("Anonymous");
     }
-    
+
+    // Extract home_feed_mode (string: "follows" or "firehose")
+    let home_feed_mode: String;
+    if parsed["home_feed_mode"].is_string() {
+        let mode = parsed["home_feed_mode"].as_str().unwrap();
+        if mode == "follows" {
+            home_feed_mode = String::from("follows");
+        } else {
+            home_feed_mode = String::from("firehose");
+        }
+    } else {
+        home_feed_mode = String::from("firehose");
+    }
+
     // Extract relays (array of strings)
     let mut relays: Vec<String> = Vec::new();
     if parsed["relays"].is_array() {
@@ -142,6 +164,7 @@ pub fn json_to_config(json_str: &str) -> Result<Config, String> {
         private_key: private_key,
         relays: relays,
         display_name: display_name,
+        home_feed_mode: home_feed_mode,
     };
     
     return Ok(config);

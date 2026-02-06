@@ -1,0 +1,135 @@
+{
+  "app": {
+    "title": "Plume",
+    "logoAlt": "Accueil Plume",
+    "close": "Fermer"
+  },
+  "nav": {
+    "home": "Accueil",
+    "messages": "Messages",
+    "bookmarks": "Favoris",
+    "notifications": "Notifications",
+    "settings": "Paramètres",
+    "profile": "Profil",
+    "newNote": "Nouvelle note",
+    "yourProfilePhoto": "Votre photo de profil"
+  },
+  "feed": {
+    "title": "Accueil",
+    "welcomeTitle": "Bienvenue sur Plume !",
+    "welcomeHint": "Configurez vos clés dans Paramètres pour parcourir Nostr.",
+    "noNotes": "Aucune note à afficher",
+    "notesHint": "Les notes apparaîtront ici lorsqu'elles sont disponibles.",
+    "noTextNotes": "Aucune note texte trouvée",
+    "tryRelays": "Essayez de vous connecter à d'autres relais",
+    "noRelays": "Aucun relais configuré. Ajoutez des relais dans Paramètres.",
+    "feedFailed": "Échec du chargement du fil. Vérifiez les relais et réessayez."
+  },
+  "messages": {
+    "title": "Messages",
+    "noConversations": "Aucune conversation",
+    "selectOrStart": "Sélectionnez une conversation ou démarrez un nouveau message",
+    "messagePlaceholder": "Message…",
+    "sendMessage": "Envoyer le message"
+  },
+  "bookmarks": {
+    "title": "Favoris",
+    "noBookmarks": "Aucun favori"
+  },
+  "notifications": {
+    "title": "Notifications",
+    "noNotifications": "Aucune notification",
+    "all": "Tout",
+    "zaps": "Zaps",
+    "replies": "Réponses",
+    "mentions": "Mentions",
+    "reposts": "Reprises"
+  },
+  "settings": {
+    "title": "Paramètres",
+    "selectOption": "Choisissez une option ci-dessus",
+    "account": "Compte",
+    "homeFeed": "Fil d'accueil",
+    "mediaUploads": "Téléversements média",
+    "mutedContent": "Contenu masqué",
+    "wallets": "Portefeuilles",
+    "relays": "Relais",
+    "zaps": "Zaps",
+    "logout": "Se déconnecter"
+  },
+  "profile": {
+    "editProfile": "Modifier le profil",
+    "follow": "Suivre",
+    "message": "Message",
+    "mute": "Masquer",
+    "following": "abonnements",
+    "followers": "abonnés",
+    "joined": "Inscrit le",
+    "website": "Site web",
+    "notConfigured": "Non configuré",
+    "noIdentityYet": "Vous n'avez pas encore d'identité Nostr.",
+    "generateKeyPair": "Générer une paire de clés",
+    "notes": "Notes",
+    "replies": "Réponses",
+    "zaps": "Zaps",
+    "relays": "Relais",
+    "notesAppearHere": "Les notes apparaissent ici",
+    "profilePhoto": "Photo de profil",
+    "anonymous": "Anonyme",
+    "generating": "Génération…",
+    "newIdentityCreated": "Nouvelle identité créée !",
+    "saveNsecWarning": "IMPORTANT : Conservez votre nsec en lieu sûr. Vous en aurez besoin pour récupérer votre identité !"
+  },
+  "accountModal": {
+    "title": "Compte",
+    "displayName": "Nom d'affichage",
+    "displayNamePlaceholder": "Votre nom d'affichage",
+    "publicKey": "Clé publique (npub ou hex)",
+    "publicKeyPlaceholder": "npub1... ou hex 64 caractères",
+    "publicKeyHint": "Votre identité Nostr",
+    "privateKey": "Clé privée (nsec ou hex) – Optionnel",
+    "privateKeyPlaceholder": "nsec1... ou hex (optionnel)",
+    "privateKeyHint": "Requis uniquement pour publier des notes",
+    "save": "Enregistrer"
+  },
+  "composeModal": {
+    "title": "Nouvelle note",
+    "replyingTo": "Réponse à",
+    "placeholder": "À quoi pensez-vous ?",
+    "cancel": "Annuler",
+    "post": "Publier",
+    "posting": "Publication…",
+    "charCount": "{count} / 10000",
+    "contentRequired": "Veuillez saisir du texte pour votre note",
+    "tooLong": "La note est trop longue (max 10000 caractères)",
+    "noPrivateKey": "Aucune clé privée configurée. Ajoutez votre nsec dans Paramètres pour publier.",
+    "signingPublishing": "Signature et publication en cours…",
+    "publishedSuccess": "Publié sur {success} relais sur {total}",
+    "publishFailed": "Échec de publication sur tous les relais",
+    "postFailed": "Échec de publication de la note"
+  },
+  "note": {
+    "viewProfile": "Voir le profil",
+    "verifying": "Vérification…",
+    "signatureVerified": "Signature vérifiée ✓",
+    "invalidSignature": "Signature invalide",
+    "reply": "Répondre",
+    "zap": "Zap",
+    "like": "J'aime",
+    "repost": "Republier",
+    "bookmark": "Favori",
+    "replyLabel": "(réponse)"
+  },
+  "relays": {
+    "test": "Tester",
+    "notTested": "Non testé"
+  },
+  "content": {
+    "image": "Image"
+  },
+  "errors": {
+    "failedToSaveSettings": "Échec de l'enregistrement des paramètres",
+    "failedToGenerateKeys": "Échec de la génération de la paire de clés",
+    "initError": "Erreur d'initialisation"
+  }
+}

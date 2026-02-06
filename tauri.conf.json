@@ -10,7 +10,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "Plume - Nostr Client",
+        "title": "Plume",
         "width": 1200,
         "height": 800,
         "minWidth": 800,

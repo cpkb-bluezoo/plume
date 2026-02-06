@@ -26,12 +26,21 @@ const state = {
     currentView: 'feed',
     notes: [],
     loading: false,
-    // Parsed key info
     publicKeyHex: null,
     publicKeyNpub: null,
-    // Profile data fetched from relays
     profile: null,
-    profileLoading: false
+    profileLoading: false,
+    homeFeedMode: 'firehose',
+    initialFeedLoadDone: false,
+    feedPollIntervalId: null,
+    // pubkey (hex) -> { name, nip05, picture } for note authors
+    profileCache: {},
+    // When set, compose is a reply to this note
+    replyingTo: null,
+    // Profile page: null = current user, or hex pubkey of the user being viewed
+    viewedProfilePubkey: null,
+    // Profile data for the profile page (own or other); state.profile is always current user for sidebar
+    viewedProfile: null
 };
 
 // ============================================================
@@ -181,23 +190,24 @@ async function saveConfig() {
         console.log('Config saved');
     } catch (error) {
         console.error('Failed to save config:', error);
-        alert('Failed to save settings: ' + error);
+        alert((window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t('errors.failedToSaveSettings') : 'Failed to save settings') + ': ' + error);
     }
 }
 
 // Update UI elements from the current config
 function updateUIFromConfig() {
     if (!state.config) return;
-    
-    // Update settings form - show the original value (could be npub or hex)
-    document.getElementById('input-display-name').value = state.config.display_name || '';
-    document.getElementById('input-public-key').value = state.config.public_key || '';
-    document.getElementById('input-private-key').value = state.config.private_key || '';
-    
-    // Update profile view with config data (will be overwritten if profile is fetched)
+
+    state.homeFeedMode = (state.config.home_feed_mode === 'follows') ? 'follows' : 'firehose';
+
+    const nameEl = document.getElementById('input-display-name');
+    const pubEl = document.getElementById('input-public-key');
+    const privEl = document.getElementById('input-private-key');
+    if (nameEl) nameEl.value = state.config.display_name || '';
+    if (pubEl) pubEl.value = state.config.public_key || '';
+    if (privEl) privEl.value = state.config.private_key || '';
+
     updateProfileDisplay();
-    
-    // Update relay list
     updateRelayList();
 }
 
@@ -205,38 +215,53 @@ function updateUIFromConfig() {
 // Profile Management
 // ============================================================
 
-// Fetch profile from relays
+// Fetch profile for the profile page (own or viewed user)
 async function fetchProfile() {
-    if (state.profileLoading) {
-        console.log('Already loading profile...');
+    if (state.profileLoading) return;
+    const viewingOwn = state.viewedProfilePubkey === null || state.viewedProfilePubkey === state.publicKeyHex;
+    if (viewingOwn && (!state.config || !state.config.public_key)) {
+        state.viewedProfile = null;
+        updateProfileDisplay();
         return;
     }
-    
-    if (!state.config || !state.config.public_key) {
-        console.log('No public key configured');
-        return;
-    }
-    
+
     state.profileLoading = true;
-    console.log('Fetching profile from relays...');
-    
     try {
-        const profileJson = await invoke('fetch_own_profile');
-        
-        if (profileJson && profileJson !== '{}') {
-            state.profile = JSON.parse(profileJson);
-            console.log('Profile fetched:', state.profile);
+        if (viewingOwn) {
+            const profileJson = await invoke('fetch_own_profile');
+            if (profileJson && profileJson !== '{}') {
+                state.profile = JSON.parse(profileJson);
+                state.viewedProfile = state.profile;
+            } else {
+                state.profile = null;
+                state.viewedProfile = null;
+            }
         } else {
-            console.log('No profile found on relays');
-            state.profile = null;
+            const profileJson = await invoke('fetch_profile', {
+                pubkey: state.viewedProfilePubkey,
+                relayUrls: state.config.relays
+            });
+            if (profileJson && profileJson !== '{}') {
+                state.viewedProfile = JSON.parse(profileJson);
+            } else {
+                state.viewedProfile = null;
+            }
         }
-        
         updateProfileDisplay();
     } catch (error) {
         console.error('Failed to fetch profile:', error);
+        state.viewedProfile = null;
+        updateProfileDisplay();
     } finally {
         state.profileLoading = false;
     }
+}
+
+// Open profile page for a user (from note card avatar/name click)
+function openProfileForUser(pubkey) {
+    if (!pubkey) return;
+    state.viewedProfilePubkey = pubkey;
+    switchView('profile');
 }
 
 // Generate a new key pair
@@ -254,7 +279,7 @@ async function generateNewKeyPair() {
     
     try {
         btn.disabled = true;
-        btn.textContent = 'Generating...';
+        btn.textContent = (window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t('profile.generating') : 'Generating...');
         debugLog('Calling invoke generate_keypair...');
         
         const result = await invoke('generate_keypair');
@@ -272,20 +297,20 @@ async function generateNewKeyPair() {
         updateUIFromConfig();
         
         // Show the keys to the user
-        alert(`New identity created!\n\nPublic Key (npub):\n${keys.npub}\n\nSecret Key (nsec):\n${keys.nsec}\n\nIMPORTANT: Save your nsec in a safe place. You will need it to recover your identity!`);
+        const t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
+        alert(t('profile.newIdentityCreated') + '\n\nPublic Key (npub):\n' + keys.npub + '\n\nSecret Key (nsec):\n' + keys.nsec + '\n\n' + t('profile.saveNsecWarning'));
         
     } catch (error) {
         debugLog('ERROR generating key pair: ' + error);
-        alert('Failed to generate key pair: ' + error);
+        alert((window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t('errors.failedToGenerateKeys') : 'Failed to generate key pair') + ': ' + error);
     } finally {
         btn.disabled = false;
-        btn.textContent = originalText;
+        btn.textContent = (window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t('profile.generateKeyPair') : originalText);
     }
 }
 
-// Update the profile display
+// Update the profile display (profile page from state.viewedProfile; sidebar from state.profile)
 function updateProfileDisplay() {
-    // Get elements
     const nameEl = document.getElementById('profile-name');
     const pubkeyEl = document.getElementById('profile-pubkey');
     const aboutEl = document.getElementById('profile-about');
@@ -296,89 +321,97 @@ function updateProfileDisplay() {
     const websiteEl = document.getElementById('profile-website');
     const lightningEl = document.getElementById('profile-lightning');
     const lud16El = document.getElementById('profile-lud16');
-    
-    // If we have profile data from relays, use it
-    if (state.profile) {
-        // Name (prefer profile name, fall back to config display_name)
-        nameEl.textContent = state.profile.name || state.config?.display_name || 'Anonymous';
-        
-        // About
-        aboutEl.textContent = state.profile.about || '';
-        
-        // Picture
-        if (state.profile.picture) {
-            pictureEl.src = state.profile.picture;
-            pictureEl.style.display = 'block';
-            placeholderEl.style.display = 'none';
-            
-            // Handle image load errors
-            pictureEl.onerror = () => {
+    const sidebarAvatar = document.getElementById('sidebar-avatar');
+    const sidebarPlaceholder = document.getElementById('sidebar-avatar-placeholder');
+    const editProfileBtn = document.getElementById('edit-profile-btn');
+    const followBtn = document.getElementById('follow-btn');
+    const messageUserBtn = document.getElementById('message-user-btn');
+    const muteBtn = document.getElementById('mute-btn');
+
+    const viewingOwn = state.viewedProfilePubkey === null || state.viewedProfilePubkey === state.publicKeyHex;
+    const profile = state.viewedProfile;
+
+    const t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
+    if (profile) {
+        if (nameEl) nameEl.textContent = profile.name || (viewingOwn ? state.config?.display_name : null) || t('profile.anonymous');
+        if (aboutEl) aboutEl.textContent = profile.about || '';
+        if (pictureEl && placeholderEl) {
+            if (profile.picture) {
+                pictureEl.src = profile.picture;
+                pictureEl.style.display = 'block';
+                placeholderEl.style.display = 'none';
+                pictureEl.onerror = () => {
+                    pictureEl.style.display = 'none';
+                    placeholderEl.style.display = 'flex';
+                };
+            } else {
                 pictureEl.style.display = 'none';
                 placeholderEl.style.display = 'flex';
-            };
-        } else {
+            }
+        }
+        if (bannerEl) {
+            bannerEl.style.backgroundImage = profile.banner ? `url('${profile.banner}')` : '';
+        }
+        if (nip05El) {
+            nip05El.textContent = profile.nip05 || '';
+            nip05El.style.display = profile.nip05 ? 'block' : 'none';
+        }
+        if (websiteEl) {
+            websiteEl.href = profile.website || '#';
+            websiteEl.style.display = profile.website ? 'inline' : 'none';
+        }
+        if (lightningEl && lud16El) {
+            lud16El.textContent = profile.lud16 || '';
+            lightningEl.style.display = profile.lud16 ? 'inline' : 'none';
+        }
+    } else {
+        if (nameEl) nameEl.textContent = viewingOwn ? (state.config?.display_name || t('profile.notConfigured')) : '…';
+        if (aboutEl) aboutEl.textContent = '';
+        if (pictureEl && placeholderEl) {
             pictureEl.style.display = 'none';
             placeholderEl.style.display = 'flex';
         }
-        
-        // Banner
-        if (state.profile.banner) {
-            bannerEl.style.backgroundImage = `url('${state.profile.banner}')`;
-        } else {
-            bannerEl.style.backgroundImage = '';
-        }
-        
-        // NIP-05
-        if (state.profile.nip05) {
-            nip05El.textContent = state.profile.nip05;
-            nip05El.style.display = 'block';
-        } else {
-            nip05El.style.display = 'none';
-        }
-        
-        // Website
-        if (state.profile.website) {
-            websiteEl.href = state.profile.website;
-            websiteEl.style.display = 'inline';
-        } else {
-            websiteEl.style.display = 'none';
-        }
-        
-        // Lightning address
-        if (state.profile.lud16) {
-            lud16El.textContent = state.profile.lud16;
-            lightningEl.style.display = 'inline';
-        } else {
-            lightningEl.style.display = 'none';
-        }
-    } else {
-        // No profile data - use config values
-        nameEl.textContent = state.config?.display_name || 'Not configured';
-        aboutEl.textContent = '';
-        pictureEl.style.display = 'none';
-        placeholderEl.style.display = 'flex';
-        bannerEl.style.backgroundImage = '';
-        nip05El.style.display = 'none';
-        websiteEl.style.display = 'none';
-        lightningEl.style.display = 'none';
+        if (bannerEl) bannerEl.style.backgroundImage = '';
+        if (nip05El) nip05El.style.display = 'none';
+        if (websiteEl) websiteEl.style.display = 'none';
+        if (lightningEl) lightningEl.style.display = 'none';
     }
-    
-    // Public key (always show from config/state)
-    if (state.publicKeyNpub) {
-        pubkeyEl.textContent = state.publicKeyNpub;
-    } else if (state.config?.public_key) {
-        pubkeyEl.textContent = state.config.public_key;
-    } else {
-        pubkeyEl.textContent = 'No public key set';
+
+    if (pubkeyEl) {
+        if (viewingOwn && (state.publicKeyNpub || state.config?.public_key)) {
+            pubkeyEl.textContent = state.publicKeyNpub || state.config.public_key;
+            pubkeyEl.style.display = 'block';
+        } else if (!viewingOwn && state.viewedProfilePubkey) {
+            pubkeyEl.textContent = state.viewedProfilePubkey;
+            pubkeyEl.style.display = 'block';
+        } else {
+            pubkeyEl.style.display = 'none';
+        }
     }
-    
-    // Show/hide the "generate key pair" notice
+
     const noKeyNotice = document.getElementById('no-key-notice');
     if (noKeyNotice) {
-        if (state.config?.public_key) {
-            noKeyNotice.classList.add('hidden');
+        noKeyNotice.classList.toggle('hidden', !viewingOwn || !!state.config?.public_key);
+    }
+
+    if (editProfileBtn) editProfileBtn.style.display = viewingOwn ? 'block' : 'none';
+    if (followBtn) followBtn.style.display = viewingOwn ? 'none' : 'block';
+    if (messageUserBtn) messageUserBtn.style.display = viewingOwn ? 'none' : 'block';
+    if (muteBtn) muteBtn.style.display = viewingOwn ? 'none' : 'block';
+
+    if (sidebarAvatar && sidebarPlaceholder) {
+        const pic = state.profile?.picture;
+        if (pic) {
+            sidebarAvatar.src = pic;
+            sidebarAvatar.style.display = 'block';
+            sidebarPlaceholder.style.display = 'none';
+            sidebarAvatar.onerror = () => {
+                sidebarAvatar.style.display = 'none';
+                sidebarPlaceholder.style.display = 'flex';
+            };
         } else {
-            noKeyNotice.classList.remove('hidden');
+            sidebarAvatar.style.display = 'none';
+            sidebarPlaceholder.style.display = 'flex';
         }
     }
 }
@@ -389,17 +422,12 @@ function updateProfileDisplay() {
 
 // Fetch following and followers
 async function fetchFollowingAndFollowers() {
-    if (!state.config || !state.config.public_key) {
-        showFollowingMessage('No public key configured. Set your key in Settings.');
-        return;
-    }
-    
-    // Show loading state
-    document.getElementById('following-count').textContent = '...';
-    document.getElementById('followers-count').textContent = '...';
-    showFollowingMessage('Fetching following list...');
-    showFollowersMessage('Fetching followers...');
-    
+    if (!state.config || !state.config.public_key) return;
+    const fc = document.getElementById('following-count');
+    const fl = document.getElementById('followers-count');
+    if (fc) fc.textContent = '…';
+    if (fl) fl.textContent = '…';
+
     // Fetch both in parallel
     const [followingResult, followersResult] = await Promise.allSettled([
         fetchFollowing(),
@@ -447,55 +475,20 @@ async function fetchFollowers() {
     return null;
 }
 
-// Display following list
+// Display following list (updates count on profile page)
 function displayFollowing(data) {
     const countEl = document.getElementById('following-count');
-    const listEl = document.getElementById('following-list');
-    
+    if (!countEl) return;
     const count = data.contacts ? data.contacts.length : 0;
     countEl.textContent = count.toString();
-    
-    if (count === 0) {
-        listEl.innerHTML = `
-            <div class="placeholder-message">
-                <p>Not following anyone yet</p>
-            </div>
-        `;
-        return;
-    }
-    
-    listEl.innerHTML = '';
-    
-    for (const contact of data.contacts) {
-        const item = createFollowItem(contact.pubkey, contact.petname);
-        listEl.appendChild(item);
-    }
 }
 
-// Display followers list
+// Display followers list (updates count on profile page)
 function displayFollowers(data) {
     const countEl = document.getElementById('followers-count');
-    const listEl = document.getElementById('followers-list');
-    
+    if (!countEl) return;
     const count = data.followers ? data.followers.length : 0;
     countEl.textContent = count.toString();
-    
-    if (count === 0) {
-        listEl.innerHTML = `
-            <div class="placeholder-message">
-                <p>No followers found</p>
-                <p class="text-muted">Note: Finding followers requires scanning relays</p>
-            </div>
-        `;
-        return;
-    }
-    
-    listEl.innerHTML = '';
-    
-    for (const follower of data.followers) {
-        const item = createFollowItem(follower.pubkey, null);
-        listEl.appendChild(item);
-    }
 }
 
 // Create a follow item element
@@ -562,21 +555,31 @@ function switchFollowTab(tabName) {
 
 // Switch to a different view
 function switchView(viewName) {
-    // Update navigation
+    const viewEl = document.getElementById('view-' + viewName);
+    if (!viewEl) return;
+
     document.querySelectorAll('.nav-item').forEach(item => {
         item.classList.remove('active');
         if (item.dataset.view === viewName) {
             item.classList.add('active');
         }
     });
-    
-    // Update views
+
     document.querySelectorAll('.view').forEach(view => {
         view.classList.remove('active');
     });
-    document.getElementById('view-' + viewName).classList.add('active');
-    
+    viewEl.classList.add('active');
     state.currentView = viewName;
+
+    if (viewName === 'profile') {
+        fetchProfile();
+        if (state.viewedProfilePubkey === null || state.viewedProfilePubkey === state.publicKeyHex) {
+            fetchFollowingAndFollowers();
+        }
+    }
+    if (viewName === 'feed' && state.initialFeedLoadDone && state.homeFeedMode === 'firehose') {
+        fetchNotesFirehoseOnHomeClick();
+    }
 }
 
 // ============================================================
@@ -626,18 +629,21 @@ function showValidationError(inputId, message) {
 
 // Update the relay list in the UI
 function updateRelayList() {
+    const t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
     const relayList = document.getElementById('relay-list');
     relayList.innerHTML = '';
     
     if (!state.config || !state.config.relays) return;
     
+    const testLabel = t('relays.test');
+    const notTestedTitle = t('relays.notTested');
     state.config.relays.forEach((relay, index) => {
         const li = document.createElement('li');
         li.className = 'relay-item';
         li.innerHTML = `
             <span class="relay-url">${escapeHtml(relay)}</span>
-            <button class="btn btn-small" onclick="testRelay('${escapeHtml(relay)}')">Test</button>
-            <div class="relay-status" id="relay-status-${index}" title="Not tested"></div>
+            <button class="btn btn-small" onclick="testRelay('${escapeHtml(relay)}')">${escapeHtml(testLabel)}</button>
+            <div class="relay-status" id="relay-status-${index}" title="${escapeHtml(notTestedTitle)}"></div>
         `;
         relayList.appendChild(li);
     });
@@ -656,70 +662,125 @@ async function testRelay(relayUrl) {
 }
 
 // ============================================================
-// Note Fetching
+// Note Fetching (async, non-blocking; merge/sort; incremental poll)
 // ============================================================
 
-// Fetch notes from configured relays
-async function fetchNotes() {
-    if (state.loading) {
-        console.log('Already loading notes...');
-        return;
-    }
-    
-    if (!state.config || !state.config.relays || state.config.relays.length === 0) {
-        showMessage('No relays configured. Add relays in Settings.');
-        return;
-    }
-    
-    state.loading = true;
-    updateConnectionStatus('connecting');
-    showMessage('Fetching notes from relays...');
-    
+const FEED_LIMIT = 50;
+const POLL_INTERVAL_MS = 45000;
+
+// Returns list of hex pubkeys for "follows" mode, or null for firehose.
+async function getHomeFeedAuthors() {
+    if (state.homeFeedMode !== 'follows') return null;
+    if (!state.config || !state.config.public_key) return null;
     try {
-        // Fetch from all configured relays
-        const notesJson = await invoke('fetch_notes_from_relays', {
-            relayUrls: state.config.relays,
-            limit: 50
-        });
-        
-        if (notesJson) {
-            const notes = JSON.parse(notesJson);
-            console.log('Received notes:', notes.length);
-            
-            state.notes = notes;
-            displayNotes(notes);
-            updateConnectionStatus('connected');
-        } else {
-            showMessage('No notes received from relays.');
-            updateConnectionStatus('disconnected');
+        const json = await invoke('fetch_own_following');
+        if (!json) return null;
+        const data = JSON.parse(json);
+        const contacts = data.contacts || [];
+        if (contacts.length === 0) return null;
+        return contacts.map(c => c.pubkey).filter(Boolean);
+    } catch (e) {
+        console.error('Failed to get following for feed:', e);
+        return null;
+    }
+}
+
+// Low-level fetch: relayUrls, optional authors (hex), optional since (unix ts).
+async function fetchFeedNotes(relayUrls, authors, since) {
+    if (!relayUrls || relayUrls.length === 0) return [];
+    const notesJson = await invoke('fetch_notes_from_relays', {
+        relayUrls,
+        limit: FEED_LIMIT,
+        authors: authors && authors.length ? authors : null,
+        since: since ?? null
+    });
+    if (!notesJson) return [];
+    const notes = JSON.parse(notesJson);
+    return Array.isArray(notes) ? notes : [];
+}
+
+// Merge new notes into state.notes. isIncremental: true = append new ones below the fold; false = replace and sort.
+function mergeNotesIntoState(newNotes, isIncremental) {
+    if (!newNotes || newNotes.length === 0 && !isIncremental) return;
+    const seen = new Set(state.notes.map(n => n.id));
+    if (!isIncremental) {
+        state.notes = newNotes.slice();
+        state.notes.sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
+        return;
+    }
+    const added = newNotes.filter(n => n.id && !seen.has(n.id));
+    if (added.length === 0) return;
+    added.sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
+    state.notes = state.notes.concat(added);
+}
+
+// Start initial feed fetch (non-blocking). Call after loadConfig; UI is already visible.
+async function startInitialFeedFetch() {
+    const t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
+    if (!state.config || !state.config.relays || state.config.relays.length === 0) {
+        showMessage(t('feed.noRelays'));
+        return;
+    }
+    state.loading = true;
+    try {
+        let authors = null;
+        if (state.homeFeedMode === 'follows') {
+            authors = await getHomeFeedAuthors();
+            if (!authors || authors.length === 0) {
+                authors = null; // no follows => firehose
+            }
+        }
+        const notes = await fetchFeedNotes(state.config.relays, authors, null);
+        mergeNotesIntoState(notes, false);
+        displayNotes(state.notes);
+        state.initialFeedLoadDone = true;
+        if (state.homeFeedMode === 'follows' && authors && authors.length > 0) {
+            if (state.feedPollIntervalId) clearInterval(state.feedPollIntervalId);
+            state.feedPollIntervalId = setInterval(pollForNewNotes, POLL_INTERVAL_MS);
         }
     } catch (error) {
-        console.error('Failed to fetch notes:', error);
-        showMessage('Failed to fetch notes: ' + error);
-        updateConnectionStatus('disconnected');
+        console.error('Initial feed fetch failed:', error);
+        showMessage((window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t('feed.feedFailed') : 'Failed to load feed. Check relays and try again.'));
     } finally {
         state.loading = false;
     }
 }
 
-// Update the connection status indicator
-function updateConnectionStatus(status) {
-    const statusEl = document.getElementById('connection-status');
-    
-    switch (status) {
-        case 'connected':
-            statusEl.textContent = 'Connected';
-            statusEl.className = 'status connected';
-            break;
-        case 'connecting':
-            statusEl.textContent = 'Connecting...';
-            statusEl.className = 'status connecting';
-            break;
-        case 'disconnected':
-        default:
-            statusEl.textContent = 'Disconnected';
-            statusEl.className = 'status disconnected';
-            break;
+// Incremental poll (follows mode only). Fetches notes since latest we have; appends below the fold.
+async function pollForNewNotes() {
+    if (!state.config || !state.config.relays.length || state.loading) return;
+    const authors = await getHomeFeedAuthors();
+    if (!authors || authors.length === 0) return;
+    const since = state.notes.length
+        ? Math.max(...state.notes.map(n => n.created_at || 0))
+        : 0;
+    try {
+        const notes = await fetchFeedNotes(state.config.relays, authors, since);
+        if (notes.length === 0) return;
+        mergeNotesIntoState(notes, true);
+        displayNotes(state.notes);
+    } catch (e) {
+        console.error('Feed poll failed:', e);
+    }
+}
+
+// Firehose: fetch new notes when user opens Home (no auto-poll).
+async function fetchNotesFirehoseOnHomeClick() {
+    if (!state.config || !state.config.relays.length || state.loading) return;
+    const since = state.notes.length
+        ? Math.max(...state.notes.map(n => n.created_at || 0))
+        : 0;
+    state.loading = true;
+    try {
+        const notes = await fetchFeedNotes(state.config.relays, null, since);
+        if (notes.length > 0) {
+            mergeNotesIntoState(notes, true);
+            displayNotes(state.notes);
+        }
+    } catch (e) {
+        console.error('Firehose fetch failed:', e);
+    } finally {
+        state.loading = false;
     }
 }
 
@@ -737,32 +798,113 @@ function showMessage(message) {
 // Note Display
 // ============================================================
 
-// Create HTML for a note card
+// Get display name and NIP-05 for a pubkey from profile cache (NIP-05 is the verified identity, e.g. user@domain.com).
+function getAuthorDisplay(pubkey) {
+    const t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
+    const c = state.profileCache[pubkey];
+    if (c) {
+        return { name: c.name || t('profile.anonymous'), nip05: c.nip05 || '' };
+    }
+    return { name: '…', nip05: '' };
+}
+
+// Fetch profiles for note authors and update cache + DOM.
+async function ensureProfilesForNotes(notes) {
+    if (!state.config || !state.config.relays || state.config.relays.length === 0) return;
+    const unique = [...new Set(notes.map(n => n.pubkey).filter(Boolean))];
+    const toFetch = unique.filter(p => !state.profileCache[p]);
+    if (toFetch.length === 0) return;
+    const relays = state.config.relays;
+    await Promise.all(toFetch.map(async (pubkey) => {
+        try {
+            const json = await invoke('fetch_profile', { pubkey, relayUrls: relays });
+            if (!json || json === '{}') return;
+            const p = JSON.parse(json);
+            state.profileCache[pubkey] = {
+                name: p.name || null,
+                nip05: p.nip05 || null,
+                picture: p.picture || null
+            };
+        } catch (_) { /* ignore */ }
+    }));
+    // Update cards: find by data-pubkey and set name + nip05
+    toFetch.forEach(pubkey => {
+        const profile = state.profileCache[pubkey];
+        if (!profile) return;
+        const t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
+        const name = profile.name || t('profile.anonymous');
+        const nip05 = profile.nip05 || '';
+        document.querySelectorAll(`.note-card[data-pubkey="${escapeCssAttr(pubkey)}"]`).forEach(card => {
+            const nameEl = card.querySelector('.note-author-name');
+            const nip05El = card.querySelector('.note-author-nip05');
+            if (nameEl) nameEl.textContent = name;
+            if (nip05El) {
+                nip05El.textContent = nip05;
+                nip05El.style.display = nip05 ? '' : 'none';
+            }
+            const avatar = card.querySelector('.note-avatar');
+            if (avatar && profile.picture) {
+                const fallback = avatar.querySelector('.avatar-fallback');
+                const img = avatar.querySelector('img');
+                if (img) {
+                    img.src = profile.picture;
+                    img.alt = '';
+                    img.style.display = '';
+                    if (fallback) fallback.style.display = 'none';
+                } else {
+                    const newImg = document.createElement('img');
+                    newImg.src = profile.picture;
+                    newImg.alt = '';
+                    newImg.onerror = () => { if (fallback) fallback.style.display = 'flex'; };
+                    avatar.insertBefore(newImg, avatar.firstChild);
+                    if (fallback) fallback.style.display = 'none';
+                }
+            }
+        });
+    });
+}
+
+function escapeCssAttr(s) {
+    return String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
+// Create HTML for a note card: name, tick, NIP-05, time; content; action bar (icons spaced across width).
 function createNoteCard(note, noteIndex) {
+    const t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
     const time = formatTimestamp(note.created_at);
-    const shortPubkey = shortenKey(note.pubkey);
-    
-    // Process content for media
+    const { name: displayName, nip05 } = getAuthorDisplay(note.pubkey);
     const processedContent = processNoteContent(note.content);
-    
+    const safePubkey = escapeHtml(note.pubkey || '');
+    const safeId = escapeHtml(note.id || '');
+
     const card = document.createElement('div');
     card.className = 'note-card';
     card.dataset.noteIndex = noteIndex;
+    card.dataset.noteId = safeId;
+    card.dataset.pubkey = note.pubkey || '';
+    const viewProfile = t('note.viewProfile');
+    const verifying = t('note.verifying');
     card.innerHTML = `
-        <div class="note-header">
-            <div class="note-avatar">👤</div>
-            <div class="note-author">
-                <div class="note-author-name">${escapeHtml(shortPubkey)}</div>
-                <div class="note-author-pubkey">${escapeHtml(shortPubkey)}</div>
+        <div class="note-top-row">
+            <button type="button" class="note-avatar note-author-link" data-pubkey="${safePubkey}" title="${escapeHtml(viewProfile)}" aria-label="${escapeHtml(viewProfile)}"><span class="avatar-fallback">?</span></button>
+            <div class="note-head">
+                <div class="note-head-line">
+                    <button type="button" class="note-author-name note-author-link" data-pubkey="${safePubkey}" title="${escapeHtml(viewProfile)}">${escapeHtml(displayName)}</button>
+                    <span class="note-verification" id="verify-${noteIndex}" title="${escapeHtml(verifying)}"><span class="verify-pending">·</span></span>
+                    <span class="note-author-nip05" ${nip05 ? '' : 'style="display:none"'}>${escapeHtml(nip05)}</span>
+                    <span class="note-time">${escapeHtml(time)}</span>
+                </div>
+                <div class="note-content">${processedContent}</div>
+                <div class="note-actions">
+                    <button type="button" class="note-action" title="${escapeHtml(t('note.reply'))}" aria-label="${escapeHtml(t('note.reply'))}" data-action="reply" data-note-id="${safeId}" data-pubkey="${safePubkey}"><img src="icons/reply.svg" alt="${escapeHtml(t('note.reply'))}" class="icon-reply"></button>
+                    <button type="button" class="note-action" title="${escapeHtml(t('note.zap'))}" aria-label="${escapeHtml(t('note.zap'))}" data-action="zap"><img src="icons/zap.svg" alt="${escapeHtml(t('note.zap'))}" class="icon-zap"></button>
+                    <button type="button" class="note-action" title="${escapeHtml(t('note.like'))}" aria-label="${escapeHtml(t('note.like'))}" data-action="like"><img src="icons/heart.svg" alt="${escapeHtml(t('note.like'))}" class="icon-heart"></button>
+                    <button type="button" class="note-action" title="${escapeHtml(t('note.repost'))}" aria-label="${escapeHtml(t('note.repost'))}" data-action="repost"><img src="icons/repost.svg" alt="${escapeHtml(t('note.repost'))}" class="icon-repost"></button>
+                    <button type="button" class="note-action" title="${escapeHtml(t('note.bookmark'))}" aria-label="${escapeHtml(t('note.bookmark'))}" data-action="bookmark"><img src="icons/bookmark.svg" alt="${escapeHtml(t('note.bookmark'))}" class="icon-bookmark"></button>
+                </div>
             </div>
-            <div class="note-verification" id="verify-${noteIndex}" title="Verifying signature...">
-                <span class="verify-pending">⏳</span>
-            </div>
-            <div class="note-time">${time}</div>
         </div>
-        <div class="note-content">${processedContent}</div>
     `;
-    
     return card;
 }
 
@@ -786,12 +928,13 @@ async function verifyNote(note, noteIndex) {
 function updateVerificationBadge(noteIndex, result) {
     const badgeEl = document.getElementById(`verify-${noteIndex}`);
     if (!badgeEl) return;
-    
+    const t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
     if (result.valid) {
-        badgeEl.innerHTML = '<span class="verify-valid" title="Signature verified ✓">✓</span>';
-        badgeEl.title = 'Signature verified';
+        const title = t('note.signatureVerified');
+        badgeEl.innerHTML = '<span class="verify-valid" title="' + escapeHtml(title) + '">✓</span>';
+        badgeEl.title = title;
     } else {
-        const errorMsg = result.error || 'Invalid signature';
+        const errorMsg = result.error || t('note.invalidSignature');
         badgeEl.innerHTML = '<span class="verify-invalid" title="' + escapeHtml(errorMsg) + '">✗</span>';
         badgeEl.title = errorMsg;
     }
@@ -805,7 +948,7 @@ function shortenKey(key) {
     return key.substring(0, 8) + '...' + key.substring(key.length - 4);
 }
 
-// Format a Unix timestamp to a readable string
+// Format a Unix timestamp to human-readable relative time (e.g. 1min, 4h, 2 months)
 function formatTimestamp(timestamp) {
     const date = new Date(timestamp * 1000);
     const now = new Date();
@@ -814,18 +957,15 @@ function formatTimestamp(timestamp) {
     const diffMin = Math.floor(diffSec / 60);
     const diffHour = Math.floor(diffMin / 60);
     const diffDay = Math.floor(diffHour / 24);
-    
-    if (diffSec < 60) {
-        return 'just now';
-    } else if (diffMin < 60) {
-        return diffMin + 'm ago';
-    } else if (diffHour < 24) {
-        return diffHour + 'h ago';
-    } else if (diffDay < 7) {
-        return diffDay + 'd ago';
-    } else {
-        return date.toLocaleDateString();
-    }
+    const diffMonth = Math.floor(diffDay / 30);
+    const diffYear = Math.floor(diffDay / 365);
+
+    if (diffSec < 60) return 'now';
+    if (diffMin < 60) return diffMin === 1 ? '1min' : diffMin + 'min';
+    if (diffHour < 24) return diffHour + 'h';
+    if (diffDay < 30) return diffDay === 1 ? '1 day' : diffDay + ' days';
+    if (diffMonth < 12) return diffMonth === 1 ? '1 month' : diffMonth + ' months';
+    return diffYear === 1 ? '1 year' : diffYear + ' years';
 }
 
 // Process note content - find and embed images/videos
@@ -834,9 +974,9 @@ function processNoteContent(content) {
     let html = escapeHtml(content);
     
     // Find image URLs and convert to img tags
-    // Common image extensions
+    const imageAlt = (window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t('content.image') : 'Image');
     const imageRegex = /(https?:\/\/[^\s]+\.(jpg|jpeg|png|gif|webp)(\?[^\s]*)?)/gi;
-    html = html.replace(imageRegex, '<img src="$1" alt="Image" loading="lazy">');
+    html = html.replace(imageRegex, '<img src="$1" alt="' + escapeHtml(imageAlt) + '" loading="lazy">');
     
     // Find video URLs and convert to video tags
     const videoRegex = /(https?:\/\/[^\s]+\.(mp4|webm|mov)(\?[^\s]*)?)/gi;
@@ -851,14 +991,15 @@ function processNoteContent(content) {
 
 // Display notes in the feed
 function displayNotes(notes) {
+    const t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
     const container = document.getElementById('notes-container');
     container.innerHTML = '';
     
     if (!notes || notes.length === 0) {
         container.innerHTML = `
             <div class="placeholder-message">
-                <p>No notes to display</p>
-                <p>Click Refresh to fetch notes from relays</p>
+                <p>${escapeHtml(t('feed.noNotes'))}</p>
+                <p>${escapeHtml(t('feed.notesHint'))}</p>
             </div>
         `;
         return;
@@ -881,15 +1022,15 @@ function displayNotes(notes) {
     if (container.children.length === 0) {
         container.innerHTML = `
             <div class="placeholder-message">
-                <p>No text notes found</p>
-                <p>Try connecting to different relays</p>
+                <p>${escapeHtml(t('feed.noTextNotes'))}</p>
+                <p>${escapeHtml(t('feed.tryRelays'))}</p>
             </div>
         `;
         return;
     }
     
-    // Verify notes asynchronously (don't block UI)
     verifyNotesAsync(notesToVerify);
+    ensureProfilesForNotes(notes);
 }
 
 // Verify notes asynchronously
@@ -980,28 +1121,30 @@ async function handleSettingsSubmit(event) {
 // State for compose
 let isPosting = false;
 
-// Open the compose modal
-function openCompose() {
+// Open the compose modal (optionally as a reply: openCompose({ id, pubkey, name }))
+function openCompose(replyingTo) {
+    state.replyingTo = replyingTo || null;
     const modal = document.getElementById('compose-modal');
+    const replyCtx = document.getElementById('compose-reply-context');
+    const replyName = document.getElementById('compose-reply-name');
+    if (replyCtx) replyCtx.style.display = state.replyingTo ? 'block' : 'none';
+    const t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
+    if (replyName && state.replyingTo) replyName.textContent = state.replyingTo.name ? `@${state.replyingTo.name}` : t('note.replyLabel');
     modal.classList.add('active');
-    
-    // Clear form
-    document.getElementById('compose-content').value = '';
-    document.getElementById('char-count').textContent = '0';
+    const content = document.getElementById('compose-content');
+    if (content) content.value = '';
+    const charCountEl = document.getElementById('compose-char-count');
+    if (charCountEl) charCountEl.textContent = t('composeModal.charCount', { count: 0 });
     hideComposeError();
     hideComposeStatus();
     enableComposeButton();
-    
-    // Focus the textarea
-    setTimeout(() => {
-        document.getElementById('compose-content').focus();
-    }, 100);
+    setTimeout(() => content && content.focus(), 100);
 }
 
 // Close the compose modal
 function closeCompose() {
-    const modal = document.getElementById('compose-modal');
-    modal.classList.remove('active');
+    state.replyingTo = null;
+    document.getElementById('compose-modal').classList.remove('active');
 }
 
 // Show error in compose modal
@@ -1041,22 +1184,33 @@ function hideComposeStatus() {
 // Disable compose button during posting
 function disableComposeButton() {
     const btn = document.getElementById('submit-compose');
-    btn.disabled = true;
-    document.getElementById('compose-btn-text').textContent = 'Posting...';
+    if (btn) {
+        btn.disabled = true;
+        const text = document.getElementById('compose-btn-text');
+        if (text) text.textContent = (window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t('composeModal.posting') : 'Posting…');
+    }
 }
 
 // Enable compose button
 function enableComposeButton() {
     const btn = document.getElementById('submit-compose');
-    btn.disabled = false;
-    document.getElementById('compose-btn-text').textContent = 'Post Note';
+    if (btn) {
+        btn.disabled = false;
+        const text = document.getElementById('compose-btn-text');
+        if (text) text.textContent = (window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t('composeModal.post') : 'Post');
+    }
 }
 
 // Update character count
 function updateCharCount() {
     const textarea = document.getElementById('compose-content');
-    const count = textarea.value.length;
-    document.getElementById('char-count').textContent = count;
+    const count = textarea ? textarea.value.length : 0;
+    const el = document.getElementById('compose-char-count');
+    if (el && window.PlumeI18n && window.PlumeI18n.t) {
+        el.textContent = window.PlumeI18n.t('composeModal.charCount', { count: count });
+    } else if (el) {
+        el.textContent = count + ' / 10000';
+    }
 }
 
 // Handle compose form submission
@@ -1069,50 +1223,53 @@ async function handleComposeSubmit(event) {
     
     const content = document.getElementById('compose-content').value.trim();
     
+    const t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
     // Validate content
     if (!content) {
-        showComposeError('Please enter some text for your note');
+        showComposeError(t('composeModal.contentRequired'));
         return;
     }
     
     if (content.length > 10000) {
-        showComposeError('Note is too long (max 10000 characters)');
+        showComposeError(t('composeModal.tooLong'));
         return;
     }
     
     // Check if we have a private key
     if (!state.config || !state.config.private_key) {
-        showComposeError('No private key configured. Add your nsec in Settings to post notes.');
+        showComposeError(t('composeModal.noPrivateKey'));
         return;
     }
     
     isPosting = true;
     hideComposeError();
-    showComposeStatus('Signing and publishing note...');
+    showComposeStatus(t('composeModal.signingPublishing'));
     disableComposeButton();
     
+    const replyTo = state.replyingTo ? { event_id: state.replyingTo.id, pubkey: state.replyingTo.pubkey } : null;
     try {
-        // Call the backend to post the note
-        const resultJson = await invoke('post_note', { content: content });
+        const resultJson = await invoke('post_note', {
+            content,
+            replyToEventId: replyTo ? replyTo.event_id : null,
+            replyToPubkey: replyTo ? replyTo.pubkey : null
+        });
         const result = JSON.parse(resultJson);
         
         console.log('Post result:', result);
         
         if (result.success_count > 0) {
-            showComposeStatus(
-                `Published to ${result.success_count} of ${result.total_count} relay(s)`,
-                true
-            );
+            const msg = (window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t('composeModal.publishedSuccess', { success: result.success_count, total: result.total_count }) : `Published to ${result.success_count} of ${result.total_count} relay(s)`);
+            showComposeStatus(msg, true);
             
-            // Close modal after a short delay
+            state.replyingTo = null;
             setTimeout(() => {
                 closeCompose();
-                // Refresh the feed to show the new note
-                fetchNotes();
+                if (state.homeFeedMode === 'follows') pollForNewNotes();
+                else fetchNotesFirehoseOnHomeClick();
             }, 1500);
         } else {
             // All relays failed
-            let errorMessage = 'Failed to publish to any relay';
+            let errorMessage = (window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t('composeModal.publishFailed') : 'Failed to publish to any relay');
             if (result.results && result.results.length > 0) {
                 const firstError = result.results[0].message;
                 if (firstError) {
@@ -1125,7 +1282,7 @@ async function handleComposeSubmit(event) {
         }
     } catch (error) {
         console.error('Failed to post note:', error);
-        showComposeError('Failed to post note: ' + error);
+        showComposeError((window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t('composeModal.postFailed') : 'Failed to post note') + ': ' + error);
         hideComposeStatus();
         enableComposeButton();
     } finally {
@@ -1141,31 +1298,46 @@ async function handleComposeSubmit(event) {
 async function init() {
     try {
         debugLog('Plume initializing...');
+        await (window.PlumeI18n && window.PlumeI18n.init ? window.PlumeI18n.init() : Promise.resolve());
         
         // Load configuration
         await loadConfig();
         
-        // Set up navigation
-        document.querySelectorAll('.nav-item').forEach(item => {
+        document.querySelector('.sidebar-logo')?.addEventListener('click', (e) => {
+            e.preventDefault();
+            switchView('feed');
+        });
+
+        document.querySelectorAll('.nav-item[data-view]').forEach(item => {
             item.addEventListener('click', (e) => {
                 e.preventDefault();
-                switchView(item.dataset.view);
+                if (item.dataset.view === 'profile') state.viewedProfilePubkey = null;
+                if (item.dataset.view) switchView(item.dataset.view);
             });
         });
-        
-        // Set up settings modal
-        const settingsBtn = document.getElementById('settings-btn');
+
+        // Settings modal (Account) – open from Settings menu
         const closeSettingsBtn = document.getElementById('close-settings');
         const settingsModal = document.getElementById('settings-modal');
-        if (settingsBtn) settingsBtn.addEventListener('click', openSettings);
         if (closeSettingsBtn) closeSettingsBtn.addEventListener('click', closeSettings);
         if (settingsModal) {
             settingsModal.addEventListener('click', (e) => {
-                if (e.target === e.currentTarget) {
-                    closeSettings();
-                }
+                if (e.target === e.currentTarget) closeSettings();
             });
         }
+
+        // Settings page menu – Account opens modal, Relays shows relay list
+        document.querySelectorAll('.settings-menu-item').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const key = btn.dataset.settings;
+                const detailDefault = document.getElementById('settings-detail-default');
+                const relaysContainer = document.getElementById('relays-container');
+                if (detailDefault) detailDefault.style.display = key === 'relays' ? 'none' : 'block';
+                if (relaysContainer) relaysContainer.style.display = key === 'relays' ? 'block' : 'none';
+                if (key === 'account') openSettings();
+                if (key === 'relays') updateRelayList();
+            });
+        });
         
         // Set up settings form
         const settingsForm = document.getElementById('settings-form');
@@ -1192,16 +1364,8 @@ async function init() {
         const composeContent = document.getElementById('compose-content');
         if (composeForm) composeForm.addEventListener('submit', handleComposeSubmit);
         if (composeContent) composeContent.addEventListener('input', updateCharCount);
-        
-        // Set up refresh buttons
-        const refreshBtn = document.getElementById('refresh-btn');
-        const refreshProfileBtn = document.getElementById('refresh-profile-btn');
-        const refreshFollowingBtn = document.getElementById('refresh-following-btn');
-        if (refreshBtn) refreshBtn.addEventListener('click', fetchNotes);
-        if (refreshProfileBtn) refreshProfileBtn.addEventListener('click', fetchProfile);
-        if (refreshFollowingBtn) refreshFollowingBtn.addEventListener('click', fetchFollowingAndFollowers);
-        
-        // Set up generate keys button
+
+        // Generate keys button (on profile when no key)
         debugLog('Looking for generate-keys-btn...');
         const generateKeysBtn = document.getElementById('generate-keys-btn');
         debugLog('generateKeysBtn found: ' + (generateKeysBtn ? 'YES' : 'NO'));
@@ -1215,20 +1379,53 @@ async function init() {
             debugLog('ERROR: Generate keys button not found in DOM!');
         }
         
-        // Set up following/followers tabs
-        document.querySelectorAll('.follow-tab').forEach(tab => {
+        document.querySelectorAll('.notif-tab').forEach(tab => {
             tab.addEventListener('click', () => {
-                switchFollowTab(tab.dataset.tab);
+                document.querySelectorAll('.notif-tab').forEach(t => t.classList.remove('active'));
+                tab.classList.add('active');
+                state.notifFilter = tab.dataset.filter;
+                // TODO: filter notifications by state.notifFilter
             });
         });
-        
-        // Show initial message
-        showMessage('Click Refresh to fetch notes from Nostr relays');
-        
+
+        document.querySelectorAll('.profile-tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                document.querySelectorAll('.profile-tab').forEach(t => t.classList.remove('active'));
+                tab.classList.add('active');
+                state.profileTab = tab.dataset.tab;
+                // TODO: load profile feed by state.profileTab
+            });
+        });
+
+        // Note card: reply button and author link (avatar/name -> profile)
+        const notesContainer = document.getElementById('notes-container');
+        if (notesContainer) {
+            notesContainer.addEventListener('click', (e) => {
+                const authorLink = e.target.closest('.note-author-link');
+                if (authorLink && authorLink.dataset.pubkey) {
+                    e.preventDefault();
+                    openProfileForUser(authorLink.dataset.pubkey);
+                    return;
+                }
+                const replyBtn = e.target.closest('.note-action[data-action="reply"]');
+                if (replyBtn) {
+                    e.preventDefault();
+                    const card = replyBtn.closest('.note-card');
+                    const name = card ? (card.querySelector('.note-author-name')?.textContent || '').trim() : '';
+                    openCompose({
+                        id: replyBtn.dataset.noteId || '',
+                        pubkey: replyBtn.dataset.pubkey || '',
+                        name: name || '…'
+                    });
+                }
+            });
+        }
+
+        startInitialFeedFetch();
         debugLog('Plume initialized successfully');
     } catch (error) {
         debugLog('Init FAILED: ' + error.message);
-        alert('Initialization error: ' + error.message);
+        alert((window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t('errors.initError') : 'Initialization error') + ': ' + error.message);
     }
 }
 

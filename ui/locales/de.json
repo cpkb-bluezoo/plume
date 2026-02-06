@@ -1,0 +1,135 @@
+{
+  "app": {
+    "title": "Plume",
+    "logoAlt": "Plume Startseite",
+    "close": "Schließen"
+  },
+  "nav": {
+    "home": "Start",
+    "messages": "Nachrichten",
+    "bookmarks": "Lesezeichen",
+    "notifications": "Benachrichtigungen",
+    "settings": "Einstellungen",
+    "profile": "Profil",
+    "newNote": "Neue Notiz",
+    "yourProfilePhoto": "Ihr Profilfoto"
+  },
+  "feed": {
+    "title": "Start",
+    "welcomeTitle": "Willkommen bei Plume!",
+    "welcomeHint": "Richten Sie Ihre Schlüssel in den Einstellungen ein, um Nostr zu nutzen.",
+    "noNotes": "Keine Notizen anzuzeigen",
+    "notesHint": "Notizen erscheinen hier, sobald sie verfügbar sind.",
+    "noTextNotes": "Keine Textnotizen gefunden",
+    "tryRelays": "Versuchen Sie, andere Relays zu verbinden",
+    "noRelays": "Keine Relays konfiguriert. Fügen Sie Relays in den Einstellungen hinzu.",
+    "feedFailed": "Feed konnte nicht geladen werden. Bitte Relays prüfen und erneut versuchen."
+  },
+  "messages": {
+    "title": "Nachrichten",
+    "noConversations": "Noch keine Unterhaltungen",
+    "selectOrStart": "Wählen Sie eine Unterhaltung oder starten Sie eine neue Nachricht",
+    "messagePlaceholder": "Nachricht…",
+    "sendMessage": "Nachricht senden"
+  },
+  "bookmarks": {
+    "title": "Lesezeichen",
+    "noBookmarks": "Keine Lesezeichen"
+  },
+  "notifications": {
+    "title": "Benachrichtigungen",
+    "noNotifications": "Keine Benachrichtigungen",
+    "all": "Alle",
+    "zaps": "Zaps",
+    "replies": "Antworten",
+    "mentions": "Erwähnungen",
+    "reposts": "Reposts"
+  },
+  "settings": {
+    "title": "Einstellungen",
+    "selectOption": "Wählen Sie oben eine Option",
+    "account": "Konto",
+    "homeFeed": "Start-Feed",
+    "mediaUploads": "Medien-Uploads",
+    "mutedContent": "Stummgeschaltete Inhalte",
+    "wallets": "Wallets",
+    "relays": "Relays",
+    "zaps": "Zaps",
+    "logout": "Abmelden"
+  },
+  "profile": {
+    "editProfile": "Profil bearbeiten",
+    "follow": "Folgen",
+    "message": "Nachricht",
+    "mute": "Stummschalten",
+    "following": "Folgt",
+    "followers": "Follower",
+    "joined": "Beigetreten am",
+    "website": "Website",
+    "notConfigured": "Nicht konfiguriert",
+    "noIdentityYet": "Sie haben noch keine Nostr-Identität.",
+    "generateKeyPair": "Schlüsselpaar erzeugen",
+    "notes": "Notizen",
+    "replies": "Antworten",
+    "zaps": "Zaps",
+    "relays": "Relays",
+    "notesAppearHere": "Notizen erscheinen hier",
+    "profilePhoto": "Profilfoto",
+    "anonymous": "Anonym",
+    "generating": "Wird erstellt…",
+    "newIdentityCreated": "Neue Identität erstellt!",
+    "saveNsecWarning": "WICHTIG: Bewahren Sie Ihren nsec an einem sicheren Ort auf. Sie benötigen ihn zur Wiederherstellung Ihrer Identität!"
+  },
+  "accountModal": {
+    "title": "Konto",
+    "displayName": "Anzeigename",
+    "displayNamePlaceholder": "Ihr Anzeigename",
+    "publicKey": "Öffentlicher Schlüssel (npub oder Hex)",
+    "publicKeyPlaceholder": "npub1... oder 64-Zeichen-Hex",
+    "publicKeyHint": "Ihre Nostr-Identität",
+    "privateKey": "Privater Schlüssel (nsec oder Hex) – Optional",
+    "privateKeyPlaceholder": "nsec1... oder Hex (optional)",
+    "privateKeyHint": "Nur zum Veröffentlichen von Notizen nötig",
+    "save": "Speichern"
+  },
+  "composeModal": {
+    "title": "Neue Notiz",
+    "replyingTo": "Antwort an",
+    "placeholder": "Was denken Sie?",
+    "cancel": "Abbrechen",
+    "post": "Veröffentlichen",
+    "posting": "Wird veröffentlicht…",
+    "charCount": "{count} / 10000",
+    "contentRequired": "Bitte geben Sie Text für Ihre Notiz ein",
+    "tooLong": "Notiz ist zu lang (max. 10000 Zeichen)",
+    "noPrivateKey": "Kein privater Schlüssel konfiguriert. Fügen Sie Ihren nsec in den Einstellungen hinzu, um zu veröffentlichen.",
+    "signingPublishing": "Notiz wird signiert und veröffentlicht…",
+    "publishedSuccess": "An {success} von {total} Relais veröffentlicht",
+    "publishFailed": "Veröffentlichung an keinem Relais möglich",
+    "postFailed": "Notiz konnte nicht veröffentlicht werden"
+  },
+  "note": {
+    "viewProfile": "Profil anzeigen",
+    "verifying": "Wird geprüft…",
+    "signatureVerified": "Signatur verifiziert ✓",
+    "invalidSignature": "Ungültige Signatur",
+    "reply": "Antworten",
+    "zap": "Zap",
+    "like": "Gefällt mir",
+    "repost": "Reposten",
+    "bookmark": "Lesezeichen",
+    "replyLabel": "(Antwort)"
+  },
+  "relays": {
+    "test": "Test",
+    "notTested": "Nicht getestet"
+  },
+  "content": {
+    "image": "Bild"
+  },
+  "errors": {
+    "failedToSaveSettings": "Einstellungen konnten nicht gespeichert werden",
+    "failedToGenerateKeys": "Schlüsselpaar konnte nicht erstellt werden",
+    "initError": "Initialisierungsfehler"
+  }
+}

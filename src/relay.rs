@@ -173,11 +173,14 @@ impl RelayConnection {
 //   ["NOTICE", message]
 //   ["OK", event_id, success, message]
 pub enum RelayMessage {
-    Event { subscription_id: String, event: nostr::Event },
-    EndOfStoredEvents { subscription_id: String },
+    Event {
+        _subscription_id: String,
+        event: nostr::Event,
+    },
+    EndOfStoredEvents { _subscription_id: String },
     Notice { message: String },
     Ok { event_id: String, success: bool, message: String },
-    Unknown { raw: String },
+    Unknown { _raw: String },
 }
 
 // Parse a message received from a relay
@@ -215,7 +218,7 @@ pub fn parse_relay_message(message: &str) -> Result<RelayMessage, String> {
             let event = nostr::parse_event(&event_json)?;
             
             return Ok(RelayMessage::Event {
-                subscription_id: subscription_id,
+                _subscription_id: subscription_id,
                 event: event,
             });
         }
@@ -230,7 +233,7 @@ pub fn parse_relay_message(message: &str) -> Result<RelayMessage, String> {
             }
             
             return Ok(RelayMessage::EndOfStoredEvents {
-                subscription_id: subscription_id,
+                _subscription_id: subscription_id,
             });
         }
         
@@ -275,7 +278,7 @@ pub fn parse_relay_message(message: &str) -> Result<RelayMessage, String> {
         
         _ => {
             return Ok(RelayMessage::Unknown {
-                raw: message.to_string(),
+                _raw: message.to_string(),
             });
         }
     }
@@ -317,10 +320,10 @@ pub fn fetch_notes_from_relay(
         match relay.receive() {
             Ok(message) => {
                 match parse_relay_message(&message) {
-                    Ok(RelayMessage::Event { subscription_id: _, event }) => {
+                    Ok(RelayMessage::Event { _subscription_id: _, event }) => {
                         events.push(event);
                     }
-                    Ok(RelayMessage::EndOfStoredEvents { subscription_id: _ }) => {
+                    Ok(RelayMessage::EndOfStoredEvents { _subscription_id: _ }) => {
                         println!("Received EOSE, done fetching stored events");
                         break;
                     }

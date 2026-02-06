@@ -1,0 +1,135 @@
+{
+  "app": {
+    "title": "Plume",
+    "logoAlt": "Plume home",
+    "close": "Close"
+  },
+  "nav": {
+    "home": "Home",
+    "messages": "Messages",
+    "bookmarks": "Bookmarks",
+    "notifications": "Notifications",
+    "settings": "Settings",
+    "profile": "Profile",
+    "newNote": "New note",
+    "yourProfilePhoto": "Your profile photo"
+  },
+  "feed": {
+    "title": "Home",
+    "welcomeTitle": "Welcome to Plume!",
+    "welcomeHint": "Configure your keys in Settings to start browsing Nostr.",
+    "noNotes": "No notes to display",
+    "notesHint": "Notes will appear here when they're available.",
+    "noTextNotes": "No text notes found",
+    "tryRelays": "Try connecting to different relays",
+    "noRelays": "No relays configured. Add relays in Settings.",
+    "feedFailed": "Failed to load feed. Check relays and try again."
+  },
+  "messages": {
+    "title": "Messages",
+    "noConversations": "No conversations yet",
+    "selectOrStart": "Select a conversation or start a new message",
+    "messagePlaceholder": "Message…",
+    "sendMessage": "Send message"
+  },
+  "bookmarks": {
+    "title": "Bookmarks",
+    "noBookmarks": "No bookmarks yet"
+  },
+  "notifications": {
+    "title": "Notifications",
+    "noNotifications": "No notifications",
+    "all": "All",
+    "zaps": "Zaps",
+    "replies": "Replies",
+    "mentions": "Mentions",
+    "reposts": "Reposts"
+  },
+  "settings": {
+    "title": "Settings",
+    "selectOption": "Select an option above",
+    "account": "Account",
+    "homeFeed": "Home feed",
+    "mediaUploads": "Media uploads",
+    "mutedContent": "Muted content",
+    "wallets": "Wallets",
+    "relays": "Relays",
+    "zaps": "Zaps",
+    "logout": "Log out"
+  },
+  "profile": {
+    "editProfile": "Edit profile",
+    "follow": "Follow",
+    "message": "Message",
+    "mute": "Mute",
+    "following": "following",
+    "followers": "followers",
+    "joined": "Joined",
+    "website": "Website",
+    "notConfigured": "Not configured",
+    "noIdentityYet": "You don't have a Nostr identity yet.",
+    "generateKeyPair": "Generate key pair",
+    "notes": "Notes",
+    "replies": "Replies",
+    "zaps": "Zaps",
+    "relays": "Relays",
+    "notesAppearHere": "Notes appear here",
+    "profilePhoto": "Profile photo",
+    "anonymous": "Anonymous",
+    "generating": "Generating...",
+    "newIdentityCreated": "New identity created!",
+    "saveNsecWarning": "IMPORTANT: Save your nsec in a safe place. You will need it to recover your identity!"
+  },
+  "accountModal": {
+    "title": "Account",
+    "displayName": "Display Name",
+    "displayNamePlaceholder": "Your display name",
+    "publicKey": "Public Key (npub or hex)",
+    "publicKeyPlaceholder": "npub1... or 64-char hex",
+    "publicKeyHint": "Your Nostr identity",
+    "privateKey": "Private Key (nsec or hex) – Optional",
+    "privateKeyPlaceholder": "nsec1... or hex (optional)",
+    "privateKeyHint": "Only needed to post notes",
+    "save": "Save"
+  },
+  "composeModal": {
+    "title": "New note",
+    "replyingTo": "Replying to",
+    "placeholder": "What's on your mind?",
+    "cancel": "Cancel",
+    "post": "Post",
+    "posting": "Posting…",
+    "charCount": "{count} / 10000",
+    "contentRequired": "Please enter some text for your note",
+    "tooLong": "Note is too long (max 10000 characters)",
+    "noPrivateKey": "No private key configured. Add your nsec in Settings to post notes.",
+    "signingPublishing": "Signing and publishing note...",
+    "publishedSuccess": "Published to {success} of {total} relay(s)",
+    "publishFailed": "Failed to publish to any relay",
+    "postFailed": "Failed to post note"
+  },
+  "note": {
+    "viewProfile": "View profile",
+    "verifying": "Verifying…",
+    "signatureVerified": "Signature verified ✓",
+    "invalidSignature": "Invalid signature",
+    "reply": "Reply",
+    "zap": "Zap",
+    "like": "Like",
+    "repost": "Repost",
+    "bookmark": "Bookmark",
+    "replyLabel": "(reply)"
+  },
+  "relays": {
+    "test": "Test",
+    "notTested": "Not tested"
+  },
+  "content": {
+    "image": "Image"
+  },
+  "errors": {
+    "failedToSaveSettings": "Failed to save settings",
+    "failedToGenerateKeys": "Failed to generate key pair",
+    "initError": "Initialization error"
+  }
+}
