@@ -44,6 +44,12 @@ lint:
 test:
 	cargo test
 
+# Regenerate app icons (32x32, 128x128, icon.ico, icon.icns) from icons/app-icon.svg
+# Requires: ImageMagick (convert), librsvg (rsvg-convert), or Python cairosvg
+icons:
+	@chmod +x scripts/gen-icons.sh 2>/dev/null || true
+	./scripts/gen-icons.sh
+
 # Install required tools (run once during setup)
 setup:
 	@echo "Installing required tools..."
@@ -64,8 +70,9 @@ help:
 	@echo "  make fmt        - Format source code"
 	@echo "  make lint       - Run clippy linter"
 	@echo "  make test       - Run tests"
+	@echo "  make icons      - Regenerate app icons from icons/app-icon.svg"
 	@echo "  make setup      - Install required tools"
 	@echo ""
 
-.PHONY: all build release run run-release bundle clean check fmt lint test setup help
+.PHONY: all build release run run-release bundle clean check fmt lint test setup icons help
 

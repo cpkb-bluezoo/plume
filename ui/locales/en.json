@@ -78,7 +78,28 @@
     "anonymous": "Anonymous",
     "generating": "Generating...",
     "newIdentityCreated": "New identity created!",
-    "saveNsecWarning": "IMPORTANT: Save your nsec in a safe place. You will need it to recover your identity!"
+    "saveNsecWarning": "IMPORTANT: Save your nsec in a safe place. You will need it to recover your identity!",
+    "publicKeyQR": "Public key (QR code)",
+    "publicKeySelectToCopy": "Public key (select to copy)"
+  },
+  "editProfileModal": {
+    "title": "Edit profile",
+    "name": "Name",
+    "namePlaceholder": "Your display name",
+    "nip05": "Verified Nostr Address (NIP-05)",
+    "nip05Placeholder": "user@example.com",
+    "website": "Website",
+    "websitePlaceholder": "https://example.com",
+    "about": "About Me",
+    "aboutPlaceholder": "A short bio",
+    "lud16": "Bitcoin Lightning address",
+    "lud16Placeholder": "you@getalby.com",
+    "pictureUrl": "Avatar (image URL)",
+    "picturePlaceholder": "https://...",
+    "bannerUrl": "Banner (image URL)",
+    "bannerPlaceholder": "https://...",
+    "cancel": "Cancel",
+    "ok": "OK"
   },
   "accountModal": {
     "title": "Account",
@@ -118,7 +139,8 @@
     "like": "Like",
     "repost": "Repost",
     "bookmark": "Bookmark",
-    "replyLabel": "(reply)"
+    "replyLabel": "(reply)",
+    "replyingTo": "Replying to"
   },
   "relays": {
     "test": "Test",

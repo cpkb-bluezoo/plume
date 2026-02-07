@@ -19,3 +19,6 @@ Cargo.lock
 *.rpm
 *.AppImage
 
+# Icon generation intermediate (source: icons/app-icon.svg)
+icons/app-icon.png
+

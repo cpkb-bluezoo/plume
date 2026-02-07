@@ -38,8 +38,11 @@ pub const KIND_REPOST: u32 = 6;         // Repost/boost of another note
 pub const KIND_REACTION: u32 = 7;       // Reaction (like, emoji)
 #[allow(dead_code)]
 pub const KIND_LONG_FORM: u32 = 30023;  // Long-form content (articles)
+/// NIP-65: Relay list metadata (tags: ["r", "relay_url"] or ["r", "url", "read"/"write"])
+pub const KIND_RELAY_LIST: u32 = 10002;
 
 // A filter for requesting events from relays
+#[derive(Clone)]
 pub struct Filter {
     // Filter by event IDs
     pub ids: Option<Vec<String>>,
@@ -89,6 +92,8 @@ pub struct ProfileMetadata {
     pub banner: Option<String>,
     pub website: Option<String>,
     pub lud16: Option<String>,  // Lightning address
+    /// When the profile (kind 0) event was created; from event.created_at
+    pub created_at: Option<u64>,
 }
 
 impl ProfileMetadata {
@@ -101,6 +106,7 @@ impl ProfileMetadata {
             banner: None,
             website: None,
             lud16: None,
+            created_at: None,
         }
     }
 }
@@ -531,8 +537,71 @@ pub fn profile_to_json(profile: &ProfileMetadata) -> String {
         json.push_str("\"");
     }
     
+    if let Some(created_at) = profile.created_at {
+        if !first { json.push_str(","); }
+        json.push_str("\"created_at\":");
+        json.push_str(&created_at.to_string());
+    }
+    
     json.push_str("}");
     return json;
+}
+
+/// Build kind 0 event content JSON (profile fields only; no created_at - that is the event timestamp).
+pub fn profile_to_content(profile: &ProfileMetadata) -> String {
+    let mut json = String::new();
+    json.push_str("{");
+    let mut first = true;
+    if let Some(ref name) = profile.name {
+        if !first { json.push_str(","); }
+        first = false;
+        json.push_str("\"name\":\"");
+        json.push_str(&escape_json_string(name));
+        json.push_str("\"");
+    }
+    if let Some(ref about) = profile.about {
+        if !first { json.push_str(","); }
+        first = false;
+        json.push_str("\"about\":\"");
+        json.push_str(&escape_json_string(about));
+        json.push_str("\"");
+    }
+    if let Some(ref picture) = profile.picture {
+        if !first { json.push_str(","); }
+        first = false;
+        json.push_str("\"picture\":\"");
+        json.push_str(&escape_json_string(picture));
+        json.push_str("\"");
+    }
+    if let Some(ref nip05) = profile.nip05 {
+        if !first { json.push_str(","); }
+        first = false;
+        json.push_str("\"nip05\":\"");
+        json.push_str(&escape_json_string(nip05));
+        json.push_str("\"");
+    }
+    if let Some(ref banner) = profile.banner {
+        if !first { json.push_str(","); }
+        first = false;
+        json.push_str("\"banner\":\"");
+        json.push_str(&escape_json_string(banner));
+        json.push_str("\"");
+    }
+    if let Some(ref website) = profile.website {
+        if !first { json.push_str(","); }
+        first = false;
+        json.push_str("\"website\":\"");
+        json.push_str(&escape_json_string(website));
+        json.push_str("\"");
+    }
+    if let Some(ref lud16) = profile.lud16 {
+        if !first { json.push_str(","); }
+        json.push_str("\"lud16\":\"");
+        json.push_str(&escape_json_string(lud16));
+        json.push_str("\"");
+    }
+    json.push_str("}");
+    json
 }
 
 // ============================================================
@@ -645,6 +714,36 @@ pub fn filter_followers_by_pubkey(target_pubkey: &str) -> Filter {
         limit: Some(500),  // Limit to avoid huge responses
         p_tags: Some(vec![target_pubkey.to_string()]),
     }
+}
+
+// Create a filter for a user's relay list (NIP-65 kind 10002)
+pub fn filter_relay_list_by_author(author_pubkey: &str) -> Filter {
+    Filter {
+        ids: None,
+        authors: Some(vec![author_pubkey.to_string()]),
+        kinds: Some(vec![KIND_RELAY_LIST]),
+        since: None,
+        until: None,
+        limit: Some(1),
+        p_tags: None,
+    }
+}
+
+/// Parse relay list from a kind 10002 event (NIP-65). Tags: ["r", "relay_url"] or ["r", "url", "read"/"write"].
+pub fn parse_relay_list(event: &Event) -> Result<Vec<String>, String> {
+    if event.kind != KIND_RELAY_LIST {
+        return Err(format!("Expected kind 10002 event, got kind {}", event.kind));
+    }
+    let mut urls: Vec<String> = Vec::new();
+    for tag in &event.tags {
+        if tag.len() >= 2 && tag[0] == "r" && !tag[1].is_empty() {
+            let url = tag[1].trim();
+            if !url.is_empty() && !urls.contains(&url.to_string()) {
+                urls.push(url.to_string());
+            }
+        }
+    }
+    Ok(urls)
 }
 
 // Convert a ContactList to JSON string

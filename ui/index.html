@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self' ipc: tauri:; img-src 'self' https: data:; media-src 'self' https:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self' ipc: tauri: https:">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self' ipc: tauri:; img-src 'self' https: data:; media-src 'self' https:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; connect-src 'self' ipc: tauri: https:">
     <title>Plume</title>
     <link rel="stylesheet" href="style.css">
     <link rel="icon" type="image/svg+xml" href="plume.svg">
@@ -134,10 +134,15 @@
                                 <img id="profile-picture" src="" style="display: none;" data-i18n-alt="profile.profilePhoto">
                                 <div id="profile-placeholder" class="avatar-placeholder">?</div>
                             </div>
-                            <div class="profile-actions">
-                                <button id="edit-profile-btn" class="btn btn-primary" style="display: none;" data-i18n="profile.editProfile"></button>
+                            <div class="profile-header-actions">
+                                <button type="button" id="profile-qr-btn" class="profile-qr-btn" title="Show QR code" aria-label="Show public key QR code">
+                                    <img src="icons/qr.svg" alt="" width="24" height="24">
+                                </button>
+                                <button id="message-user-btn" class="profile-icon-btn" style="display: none;" title="Message" aria-label="Message user">
+                                    <img src="icons/envelope.svg" alt="" width="24" height="24">
+                                </button>
                                 <button id="follow-btn" class="btn btn-primary" style="display: none;" data-i18n="profile.follow"></button>
-                                <button id="message-user-btn" class="btn" style="display: none;"><img src="icons/envelope.svg" alt="" class="icon-sm" data-i18n-alt="profile.message"> <span data-i18n="profile.message"></span></button>
+                                <button id="edit-profile-btn" class="btn btn-primary" style="display: none;" data-i18n="profile.editProfile"></button>
                                 <button id="mute-btn" class="btn" style="display: none;" data-i18n="profile.mute"></button>
                             </div>
                         </div>
@@ -157,7 +162,6 @@
                             <a id="profile-website" href="#" target="_blank" rel="noopener" style="display: none;" data-i18n="profile.website"></a>
                             <span id="profile-lightning" style="display: none;">⚡ <span id="profile-lud16"></span></span>
                         </div>
-                        <p id="profile-pubkey" class="pubkey" style="display: none;"></p>
                         <div id="no-key-notice" class="no-key-notice">
                             <p data-i18n="profile.noIdentityYet"></p>
                             <button id="generate-keys-btn" class="btn btn-primary" type="button" data-i18n="profile.generateKeyPair"></button>
@@ -213,6 +217,65 @@
             </div>
         </div>
 
+        <div id="profile-qr-modal" class="modal">
+            <div class="modal-content modal-qr">
+                <div class="modal-header">
+                    <h2 data-i18n="profile.publicKeyQR"></h2>
+                    <button type="button" id="close-profile-qr" class="close-btn" data-i18n-aria-label="app.close">&times;</button>
+                </div>
+                <div class="modal-body modal-qr-body">
+                    <label for="profile-qr-npub-input" class="profile-qr-npub-label" data-i18n="profile.publicKeySelectToCopy">Public key (select to copy)</label>
+                    <textarea id="profile-qr-npub-input" class="profile-qr-npub-input" readonly rows="3" aria-label="Public key"></textarea>
+                    <div id="profile-qr-image-wrap" class="profile-qr-image-wrap"></div>
+                </div>
+            </div>
+        </div>
+
+        <div id="edit-profile-modal" class="modal">
+            <div class="modal-content modal-edit-profile">
+                <div class="modal-header">
+                    <h2 data-i18n="editProfileModal.title">Edit profile</h2>
+                    <button type="button" id="close-edit-profile" class="close-btn" data-i18n-aria-label="app.close">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <form id="edit-profile-form">
+                        <div class="form-group">
+                            <label for="edit-profile-name" data-i18n="editProfileModal.name">Name</label>
+                            <input type="text" id="edit-profile-name" data-i18n-placeholder="editProfileModal.namePlaceholder">
+                        </div>
+                        <div class="form-group">
+                            <label for="edit-profile-nip05" data-i18n="editProfileModal.nip05">Verified Nostr Address (NIP-05)</label>
+                            <input type="text" id="edit-profile-nip05" data-i18n-placeholder="editProfileModal.nip05Placeholder">
+                        </div>
+                        <div class="form-group">
+                            <label for="edit-profile-website" data-i18n="editProfileModal.website">Website</label>
+                            <input type="url" id="edit-profile-website" data-i18n-placeholder="editProfileModal.websitePlaceholder">
+                        </div>
+                        <div class="form-group">
+                            <label for="edit-profile-about" data-i18n="editProfileModal.about">About Me</label>
+                            <textarea id="edit-profile-about" rows="4" data-i18n-placeholder="editProfileModal.aboutPlaceholder"></textarea>
+                        </div>
+                        <div class="form-group">
+                            <label for="edit-profile-lud16" data-i18n="editProfileModal.lud16">Bitcoin Lightning address</label>
+                            <input type="text" id="edit-profile-lud16" data-i18n-placeholder="editProfileModal.lud16Placeholder">
+                        </div>
+                        <div class="form-group">
+                            <label for="edit-profile-picture" data-i18n="editProfileModal.pictureUrl">Avatar (image URL)</label>
+                            <input type="url" id="edit-profile-picture" data-i18n-placeholder="editProfileModal.picturePlaceholder">
+                        </div>
+                        <div class="form-group">
+                            <label for="edit-profile-banner" data-i18n="editProfileModal.bannerUrl">Banner (image URL)</label>
+                            <input type="url" id="edit-profile-banner" data-i18n-placeholder="editProfileModal.bannerPlaceholder">
+                        </div>
+                        <div class="form-actions">
+                            <button type="button" id="edit-profile-cancel" class="btn" data-i18n="editProfileModal.cancel">Cancel</button>
+                            <button type="button" id="edit-profile-ok" class="btn btn-primary" data-i18n="editProfileModal.ok">OK</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+
         <div id="compose-modal" class="modal">
             <div class="modal-content modal-compose">
                 <div class="modal-header">
@@ -238,6 +301,8 @@
         </div>
     </div>
 
+    <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js"></script>
     <script src="i18n.js"></script>
     <script src="app.js"></script>
 </body>

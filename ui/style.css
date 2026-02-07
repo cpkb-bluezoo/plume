@@ -85,6 +85,12 @@ html, body {
 .logo-icon {
     width: 32px;
     height: 32px;
+    /* Match sidebar nav icons: currentColor SVG shows as light on dark */
+    filter: brightness(0) invert(0.85);
+}
+
+.sidebar-logo:hover .logo-icon {
+    filter: brightness(0) invert(1);
 }
 
 .nav-list {
@@ -422,6 +428,26 @@ html, body {
     cursor: help;
 }
 
+.note-reply-context {
+    margin-top: 2px;
+    font-size: 0.9em;
+    color: var(--text-secondary);
+}
+
+.note-reply-to-link {
+    background: none;
+    border: none;
+    padding: 0;
+    font: inherit;
+    color: var(--accent);
+    cursor: pointer;
+    text-decoration: underline;
+}
+
+.note-reply-to-link:hover {
+    color: var(--accent-hover, var(--accent));
+}
+
 .note-content {
     margin-top: 4px;
     color: var(--text-primary);
@@ -687,6 +713,50 @@ html, body {
     padding: 0 20px 16px;
     margin-top: -50px;
     position: relative;
+    gap: 12px;
+}
+
+.profile-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    flex-shrink: 0;
+}
+
+.profile-qr-btn,
+.profile-icon-btn {
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    min-height: 44px;
+    border-radius: 50%;
+    border: 1px solid var(--border-color);
+    background: var(--bg-secondary);
+    cursor: pointer;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.profile-qr-btn.visible,
+.profile-icon-btn.visible {
+    display: flex;
+}
+
+.profile-qr-btn:hover,
+.profile-icon-btn:hover {
+    background: var(--bg-tertiary);
+    border-color: var(--text-muted);
+}
+
+/* Icon contrast: light foreground on dark button so QR and envelope are visible */
+.profile-qr-btn img,
+.profile-icon-btn img {
+    display: block;
+    filter: brightness(0) invert(1);
 }
 
 .profile-avatar-wrap.profile-page-avatar {
@@ -766,6 +836,78 @@ html, body {
 .profile-feed {
     flex: 1;
     padding: 0 20px;
+}
+
+.profile-relay-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+
+.profile-relay-item {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border-color);
+    font-family: var(--font-mono);
+    font-size: 0.9rem;
+    word-break: break-all;
+}
+
+.profile-relay-item:last-child {
+    border-bottom: none;
+}
+
+.modal-qr-body {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.profile-qr-npub-label {
+    display: block;
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+    margin-bottom: -8px;
+}
+
+.profile-qr-npub-input {
+    width: 100%;
+    box-sizing: border-box;
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    line-height: 1.4;
+    padding: 10px 12px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius);
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    resize: none;
+    user-select: text;
+    -webkit-user-select: text;
+}
+
+.profile-qr-image-wrap {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: 16px;
+    min-height: 260px;
+    background: #fff;
+    border-radius: var(--radius);
+    border: 1px solid var(--border-color);
+}
+
+.profile-qr-image-wrap .profile-qr-img,
+.profile-qr-image-wrap svg,
+.profile-qr-image-wrap canvas {
+    width: 256px;
+    height: 256px;
+    display: block;
+    flex-shrink: 0;
+}
+
+.profile-qr-image-wrap svg {
+    max-width: 100%;
+    height: auto;
 }
 
 /* Profile card (legacy / modal-style) */
@@ -1158,6 +1300,20 @@ html, body {
 }
 
 /* Compose modal */
+.modal-edit-profile {
+    max-width: 560px;
+}
+
+.modal-edit-profile .form-group {
+    margin-bottom: 16px;
+}
+
+.modal-edit-profile .form-actions {
+    margin-top: 24px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border-color);
+}
+
 .modal-compose {
     max-width: 600px;
 }

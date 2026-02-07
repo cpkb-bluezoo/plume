@@ -40,7 +40,13 @@ const state = {
     // Profile page: null = current user, or hex pubkey of the user being viewed
     viewedProfilePubkey: null,
     // Profile data for the profile page (own or other); state.profile is always current user for sidebar
-    viewedProfile: null
+    viewedProfile: null,
+    // Profile feed: notes for the currently viewed user (streamed or batch)
+    profileNotes: [],
+    profileFeedStreamNoteIndex: 0,
+    profileNotesForPubkey: null, // pubkey for which profileNotes was loaded (so tab switch can reuse)
+    viewedProfileRelays: null,   // relay URLs for the currently displayed user (NIP-65); null = not loaded
+    viewedProfileRelaysForPubkey: null
 };
 
 // ============================================================
@@ -158,6 +164,16 @@ async function loadConfig() {
             state.config = JSON.parse(configJson);
             console.log('Config loaded:', state.config);
             
+            // Restore full profile from config so sidebar and profile page have it at launch
+            if (state.config.profile_metadata) {
+                try {
+                    state.profile = JSON.parse(state.config.profile_metadata);
+                    state.viewedProfile = state.profile;
+                } catch (e) {
+                    state.profile = null;
+                }
+            }
+            
             // Parse the public key to get npub format
             if (state.config.public_key) {
                 const keyInfo = await validatePublicKey(state.config.public_key);
@@ -176,7 +192,9 @@ async function loadConfig() {
             public_key: '',
             private_key: null,
             relays: ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.nostr.band'],
-            display_name: 'Anonymous'
+            display_name: 'Anonymous',
+            profile_picture: null,
+            profile_metadata: null
         };
         updateUIFromConfig();
     }
@@ -185,12 +203,37 @@ async function loadConfig() {
 // Save configuration to the backend
 async function saveConfig() {
     try {
+        if (state.profile) {
+            state.config.profile_picture = state.profile.picture || null;
+            state.config.profile_metadata = JSON.stringify(state.profile);
+        }
         const configJson = JSON.stringify(state.config);
         await invoke('save_config', { configJson: configJson });
         console.log('Config saved');
     } catch (error) {
         console.error('Failed to save config:', error);
         alert((window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t('errors.failedToSaveSettings') : 'Failed to save settings') + ': ' + error);
+    }
+}
+
+// Update sidebar profile avatar from config (so it shows at launch before profile page is loaded)
+function updateSidebarAvatarFromConfig() {
+    if (!state.config) return;
+    const sidebarAvatar = document.getElementById('sidebar-avatar');
+    const sidebarPlaceholder = document.getElementById('sidebar-avatar-placeholder');
+    if (!sidebarAvatar || !sidebarPlaceholder) return;
+    const pic = state.config.profile_picture;
+    if (pic) {
+        sidebarAvatar.src = pic;
+        sidebarAvatar.style.display = 'block';
+        sidebarPlaceholder.style.display = 'none';
+        sidebarAvatar.onerror = function() {
+            sidebarAvatar.style.display = 'none';
+            sidebarPlaceholder.style.display = 'flex';
+        };
+    } else {
+        sidebarAvatar.style.display = 'none';
+        sidebarPlaceholder.style.display = 'flex';
     }
 }
 
@@ -207,8 +250,45 @@ function updateUIFromConfig() {
     if (pubEl) pubEl.value = state.config.public_key || '';
     if (privEl) privEl.value = state.config.private_key || '';
 
+    updateSidebarAvatarFromConfig();
     updateProfileDisplay();
     updateRelayList();
+    updateFeedInitialState();
+}
+
+// Set the feed placeholder based on config: welcome only when keys not configured; loading or noRelays otherwise.
+function updateFeedInitialState() {
+    const t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
+    const container = document.getElementById('notes-container');
+    if (!container) return;
+
+    const hasRelays = state.config && state.config.relays && state.config.relays.length > 0;
+    const hasKeys = !!(state.config && state.config.public_key);
+
+    if (!hasRelays) {
+        container.innerHTML = `
+            <div class="placeholder-message">
+                <p>${escapeHtml(t('feed.noRelays'))}</p>
+            </div>
+        `;
+        return;
+    }
+    // Relays configured: show "configure keys" only when user has not configured keys
+    if (!hasKeys) {
+        container.innerHTML = `
+            <div class="placeholder-message" id="feed-welcome">
+                <p>${escapeHtml(t('feed.welcomeTitle'))}</p>
+                <p>${escapeHtml(t('feed.welcomeHint'))}</p>
+            </div>
+        `;
+        return;
+    }
+    // Keys configured: show loading hint until first note arrives (or feed-eose)
+    container.innerHTML = `
+        <div class="placeholder-message" id="feed-loading">
+            <p>${escapeHtml(t('feed.notesHint'))}</p>
+        </div>
+    `;
 }
 
 // ============================================================
@@ -248,6 +328,19 @@ async function fetchProfile() {
             }
         }
         updateProfileDisplay();
+        if (state.viewedProfile && state.viewedProfilePubkey) {
+            state.profileCache[state.viewedProfilePubkey] = {
+                name: state.viewedProfile.name || null,
+                nip05: state.viewedProfile.nip05 || null,
+                picture: state.viewedProfile.picture || null
+            };
+        }
+        if (viewingOwn) {
+            loadProfileFeed(); // load own notes/relays tabs
+        } else if (state.viewedProfilePubkey) {
+            fetchFollowingAndFollowersForUser(state.viewedProfilePubkey);
+            loadProfileFeed(); // fire-and-forget: stream or fetch notes in background
+        }
     } catch (error) {
         console.error('Failed to fetch profile:', error);
         state.viewedProfile = null;
@@ -261,7 +354,454 @@ async function fetchProfile() {
 function openProfileForUser(pubkey) {
     if (!pubkey) return;
     state.viewedProfilePubkey = pubkey;
+    state.viewedProfile = null;
+    state.viewedProfileRelaysForPubkey = null; // so Relays tab fetches this user's list
     switchView('profile');
+}
+
+// Get the npub string for the currently viewed profile (for QR modal). Returns a Promise.
+function getProfileNpub() {
+    var viewingOwn = state.viewedProfilePubkey === null || state.viewedProfilePubkey === state.publicKeyHex;
+    if (viewingOwn && state.publicKeyNpub) return Promise.resolve(state.publicKeyNpub);
+    if (viewingOwn && state.config && state.config.public_key) {
+        return invoke('convert_hex_to_npub', { hex_key: state.config.public_key }).then(function(n) { return n || ''; });
+    }
+    if (!viewingOwn && state.viewedProfilePubkey) {
+        var key = state.viewedProfilePubkey;
+        if (key.length === 64 && /^[a-fA-F0-9]+$/.test(key)) {
+            return invoke('convert_hex_to_npub', { hex_key: key }).then(function(n) { return n || key; });
+        }
+        return Promise.resolve(key);
+    }
+    return Promise.resolve('');
+}
+
+// Generate QR code as SVG string from text (black modules on white).
+// Uses qrcode-generator (global: qrcode) or node-qrcode (QRCode) if available.
+function generateQRCodeSVG(text) {
+    var gen = (typeof qrcode !== 'undefined' && typeof qrcode === 'function') ? qrcode : (typeof window.qrcode !== 'undefined' && typeof window.qrcode === 'function' ? window.qrcode : null);
+    if (!gen) return null;
+    try {
+        var qr = gen(0, 'M');
+        qr.addData(text);
+        qr.make();
+        if (typeof qr.createSvgTag === 'function') {
+            return qr.createSvgTag(8, 4);
+        }
+        var n = qr.getModuleCount();
+        var padding = 4;
+        var cell = 8;
+        var size = n * cell + padding * 2;
+        var parts = [];
+        for (var row = 0; row < n; row++) {
+            for (var col = 0; col < n; col++) {
+                if (qr.isDark(row, col)) {
+                    parts.push('<rect x="' + (padding + col * cell) + '" y="' + (padding + row * cell) + '" width="' + cell + '" height="' + cell + '" fill="#000"/>');
+                }
+            }
+        }
+        return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + size + ' ' + size + '" width="256" height="256">' + parts.join('') + '</svg>';
+    } catch (e) {
+        return null;
+    }
+}
+
+function openProfileQRModal() {
+    var modal = document.getElementById('profile-qr-modal');
+    var wrap = document.getElementById('profile-qr-image-wrap');
+    var npubInput = document.getElementById('profile-qr-npub-input');
+    if (!modal || !wrap || !npubInput) return;
+    wrap.innerHTML = '';
+    npubInput.value = '';
+    var openModal = function() { modal.classList.add('active'); };
+
+    getProfileNpub().then(function(npub) {
+        if (!npub) {
+            openModal();
+            return;
+        }
+        npubInput.value = npub;
+
+        var setQRAndOpen = function() {
+            openModal();
+        };
+
+        var qrcodeLib = typeof QRCode !== 'undefined' ? QRCode : (typeof window.qrcode !== 'undefined' ? window.qrcode : null);
+
+        function tryCanvas() {
+            if (!qrcodeLib || typeof qrcodeLib.toCanvas !== 'function') return false;
+            var opts = { width: 256, margin: 2 };
+            var done = function() { setQRAndOpen(); };
+            var canvas = document.createElement('canvas');
+            qrcodeLib.toCanvas(canvas, npub, opts, function(err) {
+                if (!err) wrap.appendChild(canvas);
+                done();
+            });
+            return true;
+        }
+
+        function tryDataURL() {
+            if (!qrcodeLib || typeof qrcodeLib.toDataURL !== 'function') return false;
+            var opts = { width: 256, margin: 2 };
+            qrcodeLib.toDataURL(npub, opts, function(err, url) {
+                if (!err && url) {
+                    var img = document.createElement('img');
+                    img.src = url;
+                    img.alt = 'QR code';
+                    img.className = 'profile-qr-img';
+                    wrap.appendChild(img);
+                }
+                setQRAndOpen();
+            });
+            return true;
+        }
+
+        var svgString = generateQRCodeSVG(npub);
+        if (svgString) {
+            wrap.innerHTML = svgString;
+            setQRAndOpen();
+            return;
+        }
+
+        if (tryCanvas()) return;
+        if (tryDataURL()) return;
+
+        setQRAndOpen();
+    }).catch(function() { openModal(); });
+}
+
+function closeProfileQRModal() {
+    var modal = document.getElementById('profile-qr-modal');
+    if (modal) modal.classList.remove('active');
+}
+
+function openEditProfileModal() {
+    var modal = document.getElementById('edit-profile-modal');
+    if (!modal) return;
+    var profile = state.profile || state.viewedProfile || {};
+    document.getElementById('edit-profile-name').value = profile.name || state.config?.display_name || '';
+    document.getElementById('edit-profile-nip05').value = profile.nip05 || '';
+    document.getElementById('edit-profile-website').value = profile.website || '';
+    document.getElementById('edit-profile-about').value = profile.about || '';
+    document.getElementById('edit-profile-lud16').value = profile.lud16 || '';
+    document.getElementById('edit-profile-picture').value = profile.picture || '';
+    document.getElementById('edit-profile-banner').value = profile.banner || '';
+    modal.classList.add('active');
+}
+
+function closeEditProfileModal() {
+    var modal = document.getElementById('edit-profile-modal');
+    if (modal) modal.classList.remove('active');
+}
+
+function handleEditProfileSubmit(e) {
+    if (e && e.preventDefault) e.preventDefault();
+    debugLog('Edit profile submit/OK clicked');
+    var nameEl = document.getElementById('edit-profile-name');
+    var nip05El = document.getElementById('edit-profile-nip05');
+    var websiteEl = document.getElementById('edit-profile-website');
+    var aboutEl = document.getElementById('edit-profile-about');
+    var lud16El = document.getElementById('edit-profile-lud16');
+    var pictureEl = document.getElementById('edit-profile-picture');
+    var bannerEl = document.getElementById('edit-profile-banner');
+    var profile = {};
+    var name = (nameEl ? nameEl.value : '') || '';
+    var nip05 = (nip05El ? nip05El.value : '') || '';
+    var website = (websiteEl ? websiteEl.value : '') || '';
+    var about = (aboutEl ? aboutEl.value : '') || '';
+    var lud16 = (lud16El ? lud16El.value : '') || '';
+    var picture = (pictureEl ? pictureEl.value : '') || '';
+    var banner = (bannerEl ? bannerEl.value : '') || '';
+    name = name.trim();
+    nip05 = nip05.trim();
+    website = website.trim();
+    about = about.trim();
+    lud16 = lud16.trim();
+    picture = picture.trim();
+    banner = banner.trim();
+    if (name) profile.name = name;
+    if (nip05) profile.nip05 = nip05;
+    if (website) profile.website = website;
+    if (about) profile.about = about;
+    if (lud16) profile.lud16 = lud16;
+    if (picture) profile.picture = picture;
+    if (banner) profile.banner = banner;
+    var profileJson = JSON.stringify(profile);
+    invoke('set_profile_metadata', { profileJson: profileJson })
+        .then(function() {
+            if (state.config) {
+                if (name) state.config.display_name = name;
+                if (picture) state.config.profile_picture = picture;
+                state.config.profile_metadata = profileJson;
+            }
+            closeEditProfileModal();
+            return fetchProfile();
+        })
+        .then(function() {
+            if (state.profile && state.config) {
+                state.config.display_name = state.profile.name || state.config.display_name;
+                if (state.profile.picture) state.config.profile_picture = state.profile.picture;
+            }
+            updateProfileDisplay();
+        })
+        .catch(function(err) {
+            console.error('Failed to save profile:', err);
+            alert(typeof err === 'string' ? err : (err?.message || 'Failed to save profile'));
+        });
+}
+
+// Whether the note should be shown on the current profile tab (notes / replies / zaps).
+function profileNoteMatchesTab(note, tab) {
+    if (tab === 'zaps') return false;
+    if (tab === 'notes') return true;
+    if (tab === 'replies') {
+        return note.tags && note.tags.some(function(tag) { return Array.isArray(tag) && tag[0] === 'e'; });
+    }
+    return true;
+}
+
+// Append a single note to #profile-feed (streaming). Dedupes by id; inserts in sorted position. Returns true if appended.
+function appendProfileNoteCardSync(note) {
+    if (!note || note.kind !== 1) return false;
+    var container = document.getElementById('profile-feed');
+    if (!container || !state.viewedProfilePubkey) return false;
+    var tab = state.profileTab || 'notes';
+    if (!profileNoteMatchesTab(note, tab)) return false;
+    if (state.profileNotes.some(function(n) { return n.id === note.id; })) return false;
+
+    state.profileNotes.push(note);
+    state.profileNotes.sort(function(a, b) { return (b.created_at || 0) - (a.created_at || 0); });
+    var idx = state.profileNotes.findIndex(function(n) { return n.id === note.id; });
+
+    var placeholder = container.querySelector('.placeholder-message');
+    if (placeholder) placeholder.remove();
+
+    var noteIndex = state.profileFeedStreamNoteIndex++;
+    var replyToPubkey = getReplyToPubkey(note);
+    var card = createNoteCard(note, noteIndex, 'profile-', replyToPubkey);
+    var viewedPubkey = state.viewedProfilePubkey ? String(state.viewedProfilePubkey).toLowerCase() : '';
+    if (state.viewedProfile && viewedPubkey && String((note.pubkey || '')).toLowerCase() === viewedPubkey) {
+        setCardAvatar(card, state.viewedProfile.picture);
+    }
+    if (idx === 0) {
+        container.insertBefore(card, container.firstChild);
+    } else if (idx >= container.children.length) {
+        container.appendChild(card);
+    } else {
+        container.insertBefore(card, container.children[idx]);
+    }
+    verifyNote(note, noteIndex, 'profile-');
+    ensureProfilesForNotes([note]);
+    return true;
+}
+
+// Effective pubkey for the profile page: when viewing own profile (viewedProfilePubkey null or self), returns publicKeyHex; otherwise viewedProfilePubkey.
+function getEffectiveProfilePubkey() {
+    var viewingOwn = state.viewedProfilePubkey === null || state.viewedProfilePubkey === state.publicKeyHex;
+    return viewingOwn ? state.publicKeyHex : state.viewedProfilePubkey;
+}
+
+// Load content for the currently viewed profile into #profile-feed (notes/replies/zaps/relays by tab).
+// Non-blocking: shows loading state, then fetches/streams in background like home feed.
+// When viewing own profile, viewedProfilePubkey is null; we use state.publicKeyHex for notes and state.config.relays for Relays tab.
+function loadProfileFeed() {
+    var container = document.getElementById('profile-feed');
+    if (!container || !state.config) return;
+    var t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
+    var tab = state.profileTab || 'notes';
+    var viewingOwn = state.viewedProfilePubkey === null || state.viewedProfilePubkey === state.publicKeyHex;
+    var effectivePubkey = viewingOwn ? state.publicKeyHex : state.viewedProfilePubkey;
+
+    if (tab === 'relays') {
+        loadProfileRelays();
+        return;
+    }
+
+    if (!effectivePubkey) {
+        container.innerHTML = '<div class="placeholder-message"><p>' + escapeHtml(t('profile.noIdentityYet')) + '</p></div>';
+        return;
+    }
+
+    // Reuse already-loaded notes when just switching tab (notes <-> replies <-> zaps)
+    if (state.profileNotes.length > 0 && state.profileNotesForPubkey === effectivePubkey) {
+        var filtered = state.profileNotes.filter(function(n) { return profileNoteMatchesTab(n, tab); });
+        displayProfileNotes(filtered);
+        return;
+    }
+
+    container.innerHTML = '<div class="placeholder-message"><p>' + escapeHtml(t('feed.notesHint')) + '</p></div>';
+    if (!state.config.relays || !state.config.relays.length) {
+        container.innerHTML = '<div class="placeholder-message"><p>' + escapeHtml(t('feed.noRelays')) + '</p></div>';
+        return;
+    }
+
+    var authors = [effectivePubkey];
+    var viewedPubkeyAtStart = effectivePubkey;
+
+    var useStream = window.__TAURI__ && window.__TAURI__.event && typeof window.__TAURI__.event.listen === 'function';
+    if (useStream) {
+        state.profileNotes = [];
+        state.profileNotesForPubkey = viewedPubkeyAtStart;
+        state.profileFeedStreamNoteIndex = 0;
+        var unlisten = { note: function() {}, eose: function() {} };
+        Promise.all([
+            window.__TAURI__.event.listen('profile-feed-note', function(event) {
+                var payload = event.payload;
+                var note = typeof payload === 'string' ? JSON.parse(payload) : payload;
+                if (getEffectiveProfilePubkey() !== viewedPubkeyAtStart) return;
+                if (note.kind !== 1 || (note.pubkey && String(note.pubkey).toLowerCase() !== String(viewedPubkeyAtStart).toLowerCase())) return;
+                appendProfileNoteCardSync(note);
+            }),
+            window.__TAURI__.event.listen('profile-feed-eose', function() {
+                if (getEffectiveProfilePubkey() !== viewedPubkeyAtStart) return;
+                unlisten.note();
+                unlisten.eose();
+                var c = document.getElementById('profile-feed');
+                if (c && c.querySelectorAll('.note-card').length === 0 && !c.querySelector('.placeholder-message')) {
+                    c.innerHTML = '<div class="placeholder-message"><p>' + escapeHtml(t('feed.noNotes')) + '</p></div>';
+                }
+            })
+        ]).then(function(listeners) {
+            unlisten.note = listeners[0];
+            unlisten.eose = listeners[1];
+        }).catch(function(err) {
+            console.error('Profile stream listen failed:', err);
+            container.innerHTML = '<div class="placeholder-message"><p>' + escapeHtml(t('feed.feedFailed')) + '</p></div>';
+        });
+        invoke('start_feed_stream', {
+            relayUrls: state.config.relays,
+            limit: FEED_LIMIT,
+            authors: authors,
+            since: null,
+            stream_context: 'profile'
+        }).catch(function(err) {
+            console.error('Profile stream start failed:', err);
+            if (getEffectiveProfilePubkey() === viewedPubkeyAtStart && container) {
+                container.innerHTML = '<div class="placeholder-message"><p>' + escapeHtml(t('feed.feedFailed')) + '</p></div>';
+            }
+            unlisten.note();
+            unlisten.eose();
+        });
+        return;
+    }
+
+    // Batch fallback: fetch in background, then display (non-blocking)
+    state.profileNotesForPubkey = viewedPubkeyAtStart;
+    fetchFeedNotes(state.config.relays, authors, null).then(function(notes) {
+        if (getEffectiveProfilePubkey() !== viewedPubkeyAtStart) return;
+        var kind1 = notes ? notes.filter(function(n) { return n.kind === 1; }) : [];
+        state.profileNotes = kind1;
+        if (tab === 'notes') {
+            displayProfileNotes(kind1);
+        } else if (tab === 'replies') {
+            var replies = kind1.filter(function(n) {
+                return n.tags && n.tags.some(function(tag) { return Array.isArray(tag) && tag[0] === 'e'; });
+            });
+            displayProfileNotes(replies);
+        } else if (tab === 'zaps') {
+            displayProfileNotes([]);
+        } else {
+            displayProfileNotes(kind1);
+        }
+    }).catch(function(e) {
+        console.error('Profile feed failed:', e);
+        if (getEffectiveProfilePubkey() === viewedPubkeyAtStart && container) {
+            container.innerHTML = '<div class="placeholder-message"><p>' + escapeHtml(t('feed.feedFailed')) + '</p></div>';
+        }
+    });
+}
+
+// Load relay list for the profile Relays tab: own = config.relays, other = fetch NIP-65 kind 10002.
+function loadProfileRelays() {
+    var container = document.getElementById('profile-feed');
+    if (!container) return;
+    var t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
+    var viewingOwn = state.viewedProfilePubkey === null || state.viewedProfilePubkey === state.publicKeyHex;
+
+    if (viewingOwn) {
+        var relays = state.config && state.config.relays ? state.config.relays : [];
+        displayProfileRelays(relays);
+        return;
+    }
+
+    if (state.viewedProfileRelaysForPubkey === state.viewedProfilePubkey && state.viewedProfileRelays) {
+        displayProfileRelays(state.viewedProfileRelays);
+        return;
+    }
+
+    container.innerHTML = '<div class="placeholder-message"><p>' + escapeHtml(t('feed.notesHint')) + '</p></div>';
+    if (!state.config || !state.config.relays || !state.config.relays.length) {
+        container.innerHTML = '<div class="placeholder-message"><p>' + escapeHtml(t('feed.noRelays')) + '</p></div>';
+        return;
+    }
+    var pubkey = state.viewedProfilePubkey;
+    invoke('fetch_relay_list', { pubkey: pubkey, relayUrls: state.config.relays })
+        .then(function(json) {
+            if (state.viewedProfilePubkey !== pubkey) return;
+            var relays = [];
+            try {
+                if (json) relays = JSON.parse(json);
+                if (!Array.isArray(relays)) relays = [];
+            } catch (e) { relays = []; }
+            state.viewedProfileRelays = relays;
+            state.viewedProfileRelaysForPubkey = pubkey;
+            displayProfileRelays(relays);
+        })
+        .catch(function(e) {
+            console.error('Fetch relay list failed:', e);
+            if (state.viewedProfilePubkey === pubkey && container) {
+                container.innerHTML = '<div class="placeholder-message"><p>' + escapeHtml(t('feed.feedFailed')) + '</p></div>';
+            }
+        });
+}
+
+function displayProfileRelays(relays) {
+    var container = document.getElementById('profile-feed');
+    if (!container) return;
+    var t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
+    if (!relays || relays.length === 0) {
+        container.innerHTML = '<div class="placeholder-message"><p>' + escapeHtml(t('feed.noRelays')) + '</p></div>';
+        return;
+    }
+    container.innerHTML = '';
+    var ul = document.createElement('ul');
+    ul.className = 'profile-relay-list';
+    relays.forEach(function(url) {
+        var li = document.createElement('li');
+        li.className = 'profile-relay-item';
+        li.textContent = url;
+        ul.appendChild(li);
+    });
+    container.appendChild(ul);
+}
+
+// Render note cards into #profile-feed (uses id prefix 'profile-' for verification badges).
+function displayProfileNotes(notes) {
+    var container = document.getElementById('profile-feed');
+    if (!container) return;
+    var t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
+    container.innerHTML = '';
+    if (!notes || notes.length === 0) {
+        container.innerHTML = '<div class="placeholder-message"><p>' + escapeHtml(t('feed.noNotes')) + '</p></div>';
+        return;
+    }
+    var viewedPubkey = state.viewedProfilePubkey ? String(state.viewedProfilePubkey).toLowerCase() : '';
+    var viewedProfile = state.viewedProfile;
+    notes.sort(function(a, b) { return (b.created_at || 0) - (a.created_at || 0); });
+    var noteIndex = 0;
+    var prefix = 'profile-';
+    notes.forEach(function(note) {
+        if (note.kind !== 1) return;
+        var replyToPubkey = getReplyToPubkey(note);
+        var card = createNoteCard(note, noteIndex, prefix, replyToPubkey);
+        container.appendChild(card);
+        if (viewedProfile && viewedPubkey && String((note.pubkey || '')).toLowerCase() === viewedPubkey) {
+            setCardAvatar(card, viewedProfile.picture);
+        }
+        verifyNote(note, noteIndex, prefix);
+        noteIndex++;
+    });
+    ensureProfilesForNotes(notes);
 }
 
 // Generate a new key pair
@@ -312,7 +852,6 @@ async function generateNewKeyPair() {
 // Update the profile display (profile page from state.viewedProfile; sidebar from state.profile)
 function updateProfileDisplay() {
     const nameEl = document.getElementById('profile-name');
-    const pubkeyEl = document.getElementById('profile-pubkey');
     const aboutEl = document.getElementById('profile-about');
     const pictureEl = document.getElementById('profile-picture');
     const placeholderEl = document.getElementById('profile-placeholder');
@@ -330,6 +869,8 @@ function updateProfileDisplay() {
 
     const viewingOwn = state.viewedProfilePubkey === null || state.viewedProfilePubkey === state.publicKeyHex;
     const profile = state.viewedProfile;
+    // When viewing another user without profile yet, use cache so we can show name/picture if we had it
+    const cache = !viewingOwn && state.viewedProfilePubkey ? state.profileCache[state.viewedProfilePubkey] : null;
 
     const t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
     if (profile) {
@@ -364,29 +905,42 @@ function updateProfileDisplay() {
             lud16El.textContent = profile.lud16 || '';
             lightningEl.style.display = profile.lud16 ? 'inline' : 'none';
         }
+        var joinedEl = document.getElementById('profile-joined');
+        if (joinedEl) {
+            if (profile.created_at) {
+                var d = new Date(profile.created_at * 1000);
+                joinedEl.textContent = d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+            } else {
+                joinedEl.textContent = '—';
+            }
+        }
     } else {
-        if (nameEl) nameEl.textContent = viewingOwn ? (state.config?.display_name || t('profile.notConfigured')) : '…';
+        var displayName = viewingOwn ? (state.config?.display_name || t('profile.notConfigured')) : (cache && cache.name ? cache.name : '…');
+        if (nameEl) nameEl.textContent = displayName;
         if (aboutEl) aboutEl.textContent = '';
         if (pictureEl && placeholderEl) {
-            pictureEl.style.display = 'none';
-            placeholderEl.style.display = 'flex';
+            if (cache && cache.picture) {
+                pictureEl.src = cache.picture;
+                pictureEl.style.display = 'block';
+                placeholderEl.style.display = 'none';
+                pictureEl.onerror = function() { pictureEl.style.display = 'none'; placeholderEl.style.display = 'flex'; };
+            } else {
+                pictureEl.style.display = 'none';
+                placeholderEl.style.display = 'flex';
+            }
         }
         if (bannerEl) bannerEl.style.backgroundImage = '';
         if (nip05El) nip05El.style.display = 'none';
         if (websiteEl) websiteEl.style.display = 'none';
         if (lightningEl) lightningEl.style.display = 'none';
+        var joinedEl = document.getElementById('profile-joined');
+        if (joinedEl) joinedEl.textContent = '—';
     }
 
-    if (pubkeyEl) {
-        if (viewingOwn && (state.publicKeyNpub || state.config?.public_key)) {
-            pubkeyEl.textContent = state.publicKeyNpub || state.config.public_key;
-            pubkeyEl.style.display = 'block';
-        } else if (!viewingOwn && state.viewedProfilePubkey) {
-            pubkeyEl.textContent = state.viewedProfilePubkey;
-            pubkeyEl.style.display = 'block';
-        } else {
-            pubkeyEl.style.display = 'none';
-        }
+    var qrBtn = document.getElementById('profile-qr-btn');
+    if (qrBtn) {
+        var hasPubkey = (viewingOwn && (state.publicKeyNpub || state.config?.public_key)) || (!viewingOwn && state.viewedProfilePubkey);
+        qrBtn.classList.toggle('visible', !!hasPubkey);
     }
 
     const noKeyNotice = document.getElementById('no-key-notice');
@@ -396,11 +950,11 @@ function updateProfileDisplay() {
 
     if (editProfileBtn) editProfileBtn.style.display = viewingOwn ? 'block' : 'none';
     if (followBtn) followBtn.style.display = viewingOwn ? 'none' : 'block';
-    if (messageUserBtn) messageUserBtn.style.display = viewingOwn ? 'none' : 'block';
+    if (messageUserBtn) messageUserBtn.style.display = viewingOwn ? 'none' : 'flex';
     if (muteBtn) muteBtn.style.display = viewingOwn ? 'none' : 'block';
 
     if (sidebarAvatar && sidebarPlaceholder) {
-        const pic = state.profile?.picture;
+        const pic = state.profile?.picture || state.config?.profile_picture;
         if (pic) {
             sidebarAvatar.src = pic;
             sidebarAvatar.style.display = 'block';
@@ -420,32 +974,47 @@ function updateProfileDisplay() {
 // Following / Followers Management
 // ============================================================
 
-// Fetch following and followers
+// Fetch following and followers (for own profile)
 async function fetchFollowingAndFollowers() {
     if (!state.config || !state.config.public_key) return;
-    const fc = document.getElementById('following-count');
-    const fl = document.getElementById('followers-count');
+    return fetchFollowingAndFollowersForUser(state.config.public_key);
+}
+
+// Fetch following and followers for any user (profile page counts). pubkey can be hex or npub.
+async function fetchFollowingAndFollowersForUser(pubkey) {
+    if (!state.config || !state.config.relays || !pubkey) return;
+    var fc = document.getElementById('following-count');
+    var fl = document.getElementById('followers-count');
     if (fc) fc.textContent = '…';
     if (fl) fl.textContent = '…';
 
-    // Fetch both in parallel
-    const [followingResult, followersResult] = await Promise.allSettled([
-        fetchFollowing(),
-        fetchFollowers()
-    ]);
-    
-    // Handle following result
-    if (followingResult.status === 'fulfilled' && followingResult.value) {
-        displayFollowing(followingResult.value);
-    } else {
-        showFollowingMessage('Failed to fetch following list');
+    var relays = state.config.relays;
+    var followingResult = null;
+    var followersResult = null;
+    try {
+        followingResult = await invoke('fetch_following', { pubkey: pubkey, relayUrls: relays });
+        followersResult = await invoke('fetch_followers', { pubkey: pubkey, relayUrls: relays });
+    } catch (e) {
+        console.error('Failed to fetch following/followers:', e);
+        if (fc) fc.textContent = '0';
+        if (fl) fl.textContent = '0';
+        return;
     }
-    
-    // Handle followers result
-    if (followersResult.status === 'fulfilled' && followersResult.value) {
-        displayFollowers(followersResult.value);
-    } else {
-        showFollowersMessage('Failed to fetch followers');
+    if (followingResult) {
+        try {
+            var data = JSON.parse(followingResult);
+            displayFollowing(data);
+        } catch (_) {
+            if (fc) fc.textContent = '0';
+        }
+    }
+    if (followersResult) {
+        try {
+            var data = JSON.parse(followersResult);
+            displayFollowers(data);
+        } catch (_) {
+            if (fl) fl.textContent = '0';
+        }
     }
 }
 
@@ -572,13 +1141,29 @@ function switchView(viewName) {
     state.currentView = viewName;
 
     if (viewName === 'profile') {
-        fetchProfile();
-        if (state.viewedProfilePubkey === null || state.viewedProfilePubkey === state.publicKeyHex) {
+        updateProfileDisplay(); // Paint requested user (or placeholder) immediately
+        var viewingOwn = state.viewedProfilePubkey === null || state.viewedProfilePubkey === state.publicKeyHex;
+        if (viewingOwn) {
+            state.profileNotes = [];
+            state.profileNotesForPubkey = null;
+            var feedEl = document.getElementById('profile-feed');
+            if (feedEl) {
+                var msg = (window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t('profile.notesAppearHere') : 'Notes appear here');
+                feedEl.innerHTML = '<div class="placeholder-message"><p>' + escapeHtml(msg) + '</p></div>';
+            }
+        }
+        fetchProfile(); // Fetch metadata and notes in background (no await)
+        if (viewingOwn) {
             fetchFollowingAndFollowers();
         }
     }
-    if (viewName === 'feed' && state.initialFeedLoadDone && state.homeFeedMode === 'firehose') {
-        fetchNotesFirehoseOnHomeClick();
+    // When switching to Home (including clicking Home again while already on feed), request incremental updates only.
+    if (viewName === 'feed' && state.initialFeedLoadDone) {
+        if (state.homeFeedMode === 'firehose') {
+            fetchNotesFirehoseOnHomeClick();
+        } else {
+            pollForNewNotes();
+        }
     }
 }
 
@@ -714,21 +1299,86 @@ function mergeNotesIntoState(newNotes, isIncremental) {
     state.notes = state.notes.concat(added);
 }
 
-// Start initial feed fetch (non-blocking). Call after loadConfig; UI is already visible.
+// Start initial feed fetch: async stream (each note shown as it arrives) when in Tauri; else batch fetch.
 async function startInitialFeedFetch() {
     const t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
+    updateFeedInitialState();
     if (!state.config || !state.config.relays || state.config.relays.length === 0) {
-        showMessage(t('feed.noRelays'));
         return;
     }
+
+    const useStream = window.__TAURI__ && window.__TAURI__.event && typeof window.__TAURI__.event.listen === 'function';
+
+    if (useStream) {
+        // Stream mode: backend emits "feed-note" per note and "feed-eose" when done. UI stays responsive.
+        state.loading = true;
+        feedStreamNoteIndex = 0;
+        state.notes = [];
+
+        let unlistenNote = function() {};
+        let unlistenEose = function() {};
+
+        try {
+            unlistenNote = await window.__TAURI__.event.listen('feed-note', function(event) {
+                const payload = event.payload;
+                const note = typeof payload === 'string' ? JSON.parse(payload) : payload;
+                appendNoteCardToFeed(note);
+            });
+            unlistenEose = await window.__TAURI__.event.listen('feed-eose', function() {
+                state.loading = false;
+                state.initialFeedLoadDone = true;
+                if (state.homeFeedMode === 'follows') {
+                    getHomeFeedAuthors().then(function(authors) {
+                        if (authors && authors.length > 0) {
+                            if (state.feedPollIntervalId) clearInterval(state.feedPollIntervalId);
+                            state.feedPollIntervalId = setInterval(pollForNewNotes, POLL_INTERVAL_MS);
+                        }
+                    });
+                }
+                unlistenNote();
+                unlistenEose();
+                // If no notes arrived, show empty state
+                if (state.notes.length === 0) {
+                    const container = document.getElementById('notes-container');
+                    if (container) {
+                        container.innerHTML = `
+                            <div class="placeholder-message">
+                                <p>${escapeHtml(t('feed.noTextNotes'))}</p>
+                                <p>${escapeHtml(t('feed.tryRelays'))}</p>
+                            </div>
+                        `;
+                    }
+                }
+            });
+
+            let authors = null;
+            if (state.homeFeedMode === 'follows') {
+                authors = await getHomeFeedAuthors();
+                if (!authors || authors.length === 0) authors = null;
+            }
+            await invoke('start_feed_stream', {
+                relayUrls: state.config.relays,
+                limit: FEED_LIMIT,
+                authors: authors,
+                since: null
+            });
+        } catch (error) {
+            console.error('Feed stream failed:', error);
+            state.loading = false;
+            unlistenNote();
+            unlistenEose();
+            showMessage(t('feed.feedFailed'));
+        }
+        return;
+    }
+
+    // Fallback: batch fetch (e.g. in browser or no event API)
     state.loading = true;
     try {
         let authors = null;
         if (state.homeFeedMode === 'follows') {
             authors = await getHomeFeedAuthors();
-            if (!authors || authors.length === 0) {
-                authors = null; // no follows => firehose
-            }
+            if (!authors || authors.length === 0) authors = null;
         }
         const notes = await fetchFeedNotes(state.config.relays, authors, null);
         mergeNotesIntoState(notes, false);
@@ -740,7 +1390,7 @@ async function startInitialFeedFetch() {
         }
     } catch (error) {
         console.error('Initial feed fetch failed:', error);
-        showMessage((window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t('feed.feedFailed') : 'Failed to load feed. Check relays and try again.'));
+        showMessage(t('feed.feedFailed'));
     } finally {
         state.loading = false;
     }
@@ -794,6 +1444,65 @@ function showMessage(message) {
     `;
 }
 
+// Next note index for streamed cards (verification badge id, etc.)
+let feedStreamNoteIndex = 0;
+
+// Queue of notes waiting to be inserted (so we can drain one-per-frame and keep UI responsive).
+var feedNoteQueue = [];
+var feedNoteDrainScheduled = false;
+
+function scheduleFeedNoteDrain() {
+    if (feedNoteDrainScheduled) return;
+    feedNoteDrainScheduled = true;
+    requestAnimationFrame(function drainFeedNoteQueue() {
+        feedNoteDrainScheduled = false;
+        if (feedNoteQueue.length === 0) return;
+        var note = feedNoteQueue.shift();
+        var noteIndex = appendNoteCardToFeedSync(note);
+        if (noteIndex !== -1) {
+            ensureProfilesForNotes([note]);
+            verifyNote(note, noteIndex);
+        }
+        if (feedNoteQueue.length > 0) scheduleFeedNoteDrain();
+    });
+}
+
+// Append a single note card to the feed (streaming). Dedupes by id; inserts in sorted position.
+// Returns the noteIndex used for the card, or -1 if skipped.
+function appendNoteCardToFeedSync(note) {
+    if (!note || note.kind !== 1) return -1;
+    if (state.notes.some(function(n) { return n.id === note.id; })) return -1;
+
+    const container = document.getElementById('notes-container');
+    if (!container) return -1;
+
+    state.notes.push(note);
+    state.notes.sort(function(a, b) { return (b.created_at || 0) - (a.created_at || 0); });
+    const idx = state.notes.findIndex(function(n) { return n.id === note.id; });
+
+    const placeholder = document.getElementById('feed-loading') || document.getElementById('feed-welcome');
+    if (placeholder) placeholder.remove();
+
+    const noteIndex = feedStreamNoteIndex++;
+    const replyToPubkey = getReplyToPubkey(note);
+    const card = createNoteCard(note, noteIndex, '', replyToPubkey);
+    if (idx === 0) {
+        container.insertBefore(card, container.firstChild);
+    } else if (idx >= container.children.length) {
+        container.appendChild(card);
+    } else {
+        container.insertBefore(card, container.children[idx]);
+    }
+    return noteIndex;
+}
+
+function appendNoteCardToFeed(note) {
+    if (!note || note.kind !== 1) return;
+    if (state.notes.some(function(n) { return n.id === note.id; })) return;
+    feedNoteQueue.push(note);
+    scheduleFeedNoteDrain();
+}
+
 // ============================================================
 // Note Display
 // ============================================================
@@ -808,10 +1517,15 @@ function getAuthorDisplay(pubkey) {
     return { name: '…', nip05: '' };
 }
 
-// Fetch profiles for note authors and update cache + DOM.
+// Fetch profiles for note authors (and reply-to targets) and update cache + DOM.
 async function ensureProfilesForNotes(notes) {
     if (!state.config || !state.config.relays || state.config.relays.length === 0) return;
-    const unique = [...new Set(notes.map(n => n.pubkey).filter(Boolean))];
+    var pubkeys = notes.map(n => n.pubkey).filter(Boolean);
+    notes.forEach(function(n) {
+        var p = getReplyToPubkey(n);
+        if (p) pubkeys.push(p);
+    });
+    const unique = [...new Set(pubkeys)];
     const toFetch = unique.filter(p => !state.profileCache[p]);
     if (toFetch.length === 0) return;
     const relays = state.config.relays;
@@ -827,39 +1541,41 @@ async function ensureProfilesForNotes(notes) {
             };
         } catch (_) { /* ignore */ }
     }));
-    // Update cards: find by data-pubkey and set name + nip05
-    toFetch.forEach(pubkey => {
-        const profile = state.profileCache[pubkey];
+    // Update cards for all authors that we have in cache (including just-seeded viewed profile)
+    unique.forEach(function(pubkey) {
+        var profile = state.profileCache[pubkey];
         if (!profile) return;
-        const t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
-        const name = profile.name || t('profile.anonymous');
-        const nip05 = profile.nip05 || '';
-        document.querySelectorAll(`.note-card[data-pubkey="${escapeCssAttr(pubkey)}"]`).forEach(card => {
-            const nameEl = card.querySelector('.note-author-name');
-            const nip05El = card.querySelector('.note-author-nip05');
+        var t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
+        var name = profile.name || t('profile.anonymous');
+        var nip05 = profile.nip05 || '';
+        document.querySelectorAll('.note-card[data-pubkey="' + escapeCssAttr(pubkey) + '"]').forEach(function(card) {
+            var nameEl = card.querySelector('.note-author-name');
+            var nip05El = card.querySelector('.note-author-nip05');
             if (nameEl) nameEl.textContent = name;
             if (nip05El) {
                 nip05El.textContent = nip05;
                 nip05El.style.display = nip05 ? '' : 'none';
             }
-            const avatar = card.querySelector('.note-avatar');
+            var avatar = card.querySelector('.note-avatar');
             if (avatar && profile.picture) {
-                const fallback = avatar.querySelector('.avatar-fallback');
-                const img = avatar.querySelector('img');
+                var fallback = avatar.querySelector('.avatar-fallback');
+                var img = avatar.querySelector('img');
                 if (img) {
                     img.src = profile.picture;
                     img.alt = '';
                     img.style.display = '';
                     if (fallback) fallback.style.display = 'none';
                 } else {
-                    const newImg = document.createElement('img');
+                    var newImg = document.createElement('img');
                     newImg.src = profile.picture;
                     newImg.alt = '';
-                    newImg.onerror = () => { if (fallback) fallback.style.display = 'flex'; };
+                    newImg.onerror = function() { if (fallback) fallback.style.display = 'flex'; };
                     avatar.insertBefore(newImg, avatar.firstChild);
                     if (fallback) fallback.style.display = 'none';
                 }
             }
+            var replyToLink = card.querySelector('.note-reply-to-link[data-pubkey="' + escapeCssAttr(pubkey) + '"]');
+            if (replyToLink) replyToLink.textContent = name;
         });
     });
 }
@@ -868,14 +1584,56 @@ function escapeCssAttr(s) {
     return String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }
 
-// Create HTML for a note card: name, tick, NIP-05, time; content; action bar (icons spaced across width).
-function createNoteCard(note, noteIndex) {
+// Get the pubkey of the user being replied to (first "p" tag) when note is a reply (has "e" tag). Returns null if not a reply.
+function getReplyToPubkey(note) {
+    if (!note.tags || !note.tags.length) return null;
+    var hasE = note.tags.some(function(tag) { return Array.isArray(tag) && tag[0] === 'e'; });
+    if (!hasE) return null;
+    for (var i = 0; i < note.tags.length; i++) {
+        var tag = note.tags[i];
+        if (Array.isArray(tag) && tag[0] === 'p' && tag[1]) return tag[1];
+    }
+    return null;
+}
+
+function setCardAvatar(card, pictureUrl) {
+    if (!card || !pictureUrl) return;
+    var avatar = card.querySelector('.note-avatar');
+    if (!avatar) return;
+    var fallback = avatar.querySelector('.avatar-fallback');
+    var img = avatar.querySelector('img');
+    if (img) {
+        img.src = pictureUrl;
+        img.alt = '';
+        img.style.display = '';
+        if (fallback) fallback.style.display = 'none';
+    } else {
+        img = document.createElement('img');
+        img.src = pictureUrl;
+        img.alt = '';
+        img.onerror = function() { if (fallback) fallback.style.display = 'flex'; };
+        avatar.insertBefore(img, avatar.firstChild);
+        if (fallback) fallback.style.display = 'none';
+    }
+}
+
+// Create HTML for a note card: name, tick, NIP-05, time; content; action bar. idPrefix avoids id clashes. replyToPubkey adds "Replying to [name]" when set.
+function createNoteCard(note, noteIndex, idPrefix, replyToPubkey) {
+    if (idPrefix === undefined) idPrefix = '';
     const t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
     const time = formatTimestamp(note.created_at);
     const { name: displayName, nip05 } = getAuthorDisplay(note.pubkey);
     const processedContent = processNoteContent(note.content);
     const safePubkey = escapeHtml(note.pubkey || '');
     const safeId = escapeHtml(note.id || '');
+    var replyToName = '';
+    var safeReplyToPubkey = '';
+    if (replyToPubkey) {
+        var replyToDisplay = getAuthorDisplay(replyToPubkey);
+        replyToName = replyToDisplay.name || shortenKey(replyToPubkey);
+        safeReplyToPubkey = escapeHtml(replyToPubkey);
+    }
+    const replyingToLabel = t('note.replyingTo');
 
     const card = document.createElement('div');
     card.className = 'note-card';
@@ -884,16 +1642,21 @@ function createNoteCard(note, noteIndex) {
     card.dataset.pubkey = note.pubkey || '';
     const viewProfile = t('note.viewProfile');
     const verifying = t('note.verifying');
+    const verifyId = idPrefix + 'verify-' + noteIndex;
+    var replyContextHtml = replyToPubkey
+        ? '<div class="note-reply-context">' + escapeHtml(replyingToLabel) + ' <button type="button" class="note-reply-to-link note-author-link" data-pubkey="' + safeReplyToPubkey + '" title="' + escapeHtml(viewProfile) + '">' + escapeHtml(replyToName) + '</button></div>'
+        : '';
     card.innerHTML = `
         <div class="note-top-row">
             <button type="button" class="note-avatar note-author-link" data-pubkey="${safePubkey}" title="${escapeHtml(viewProfile)}" aria-label="${escapeHtml(viewProfile)}"><span class="avatar-fallback">?</span></button>
             <div class="note-head">
                 <div class="note-head-line">
                     <button type="button" class="note-author-name note-author-link" data-pubkey="${safePubkey}" title="${escapeHtml(viewProfile)}">${escapeHtml(displayName)}</button>
-                    <span class="note-verification" id="verify-${noteIndex}" title="${escapeHtml(verifying)}"><span class="verify-pending">·</span></span>
+                    <span class="note-verification" id="${escapeHtml(verifyId)}" title="${escapeHtml(verifying)}"><span class="verify-pending">·</span></span>
                     <span class="note-author-nip05" ${nip05 ? '' : 'style="display:none"'}>${escapeHtml(nip05)}</span>
                     <span class="note-time">${escapeHtml(time)}</span>
                 </div>
+                ${replyContextHtml}
                 <div class="note-content">${processedContent}</div>
                 <div class="note-actions">
                     <button type="button" class="note-action" title="${escapeHtml(t('note.reply'))}" aria-label="${escapeHtml(t('note.reply'))}" data-action="reply" data-note-id="${safeId}" data-pubkey="${safePubkey}"><img src="icons/reply.svg" alt="${escapeHtml(t('note.reply'))}" class="icon-reply"></button>
@@ -908,25 +1671,27 @@ function createNoteCard(note, noteIndex) {
     return card;
 }
 
-// Verify a note's signature
-async function verifyNote(note, noteIndex) {
+// Verify a note's signature. idPrefix optional (e.g. 'profile-' for profile feed).
+async function verifyNote(note, noteIndex, idPrefix) {
+    if (idPrefix === undefined) idPrefix = '';
     try {
         const noteJson = JSON.stringify(note);
         const resultJson = await invoke('verify_event', { eventJson: noteJson });
         
         if (resultJson) {
             const result = JSON.parse(resultJson);
-            updateVerificationBadge(noteIndex, result);
+            updateVerificationBadge(noteIndex, result, idPrefix);
         }
     } catch (error) {
         console.error('Verification failed for note', noteIndex, error);
-        updateVerificationBadge(noteIndex, { valid: false, error: error.toString() });
+        updateVerificationBadge(noteIndex, { valid: false, error: error.toString() }, idPrefix);
     }
 }
 
 // Update the verification badge for a note
-function updateVerificationBadge(noteIndex, result) {
-    const badgeEl = document.getElementById(`verify-${noteIndex}`);
+function updateVerificationBadge(noteIndex, result, idPrefix) {
+    if (idPrefix === undefined) idPrefix = '';
+    const badgeEl = document.getElementById(idPrefix + 'verify-' + noteIndex);
     if (!badgeEl) return;
     const t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
     if (result.valid) {
@@ -1311,7 +2076,10 @@ async function init() {
         document.querySelectorAll('.nav-item[data-view]').forEach(item => {
             item.addEventListener('click', (e) => {
                 e.preventDefault();
-                if (item.dataset.view === 'profile') state.viewedProfilePubkey = null;
+                if (item.dataset.view === 'profile') {
+                    state.viewedProfilePubkey = null;
+                    state.viewedProfile = state.profile; // show own profile immediately
+                }
                 if (item.dataset.view) switchView(item.dataset.view);
             });
         });
@@ -1358,6 +2126,38 @@ async function init() {
                 }
             });
         }
+
+        var profileQrBtn = document.getElementById('profile-qr-btn');
+        var closeProfileQrBtn = document.getElementById('close-profile-qr');
+        var profileQrModal = document.getElementById('profile-qr-modal');
+        if (profileQrBtn) profileQrBtn.addEventListener('click', openProfileQRModal);
+        if (closeProfileQrBtn) closeProfileQrBtn.addEventListener('click', closeProfileQRModal);
+        if (profileQrModal) {
+            profileQrModal.addEventListener('click', function(e) {
+                if (e.target === e.currentTarget) closeProfileQRModal();
+            });
+        }
+
+        var editProfileBtn = document.getElementById('edit-profile-btn');
+        var closeEditProfileBtn = document.getElementById('close-edit-profile');
+        var editProfileCancelBtn = document.getElementById('edit-profile-cancel');
+        var editProfileModal = document.getElementById('edit-profile-modal');
+        var editProfileForm = document.getElementById('edit-profile-form');
+        if (editProfileBtn) editProfileBtn.addEventListener('click', openEditProfileModal);
+        if (closeEditProfileBtn) closeEditProfileBtn.addEventListener('click', closeEditProfileModal);
+        if (editProfileCancelBtn) editProfileCancelBtn.addEventListener('click', closeEditProfileModal);
+        if (editProfileModal) {
+            editProfileModal.addEventListener('click', function(e) {
+                if (e.target === e.currentTarget) closeEditProfileModal();
+            });
+        }
+        if (editProfileForm) editProfileForm.addEventListener('submit', function(e) { e.preventDefault(); handleEditProfileSubmit(e); });
+        var editProfileOkBtn = document.getElementById('edit-profile-ok');
+        if (editProfileOkBtn) editProfileOkBtn.addEventListener('click', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            handleEditProfileSubmit(e);
+        });
         
         // Set up compose form
         const composeForm = document.getElementById('compose-form');
@@ -1388,38 +2188,39 @@ async function init() {
             });
         });
 
-        document.querySelectorAll('.profile-tab').forEach(tab => {
-            tab.addEventListener('click', () => {
-                document.querySelectorAll('.profile-tab').forEach(t => t.classList.remove('active'));
-                tab.classList.add('active');
-                state.profileTab = tab.dataset.tab;
-                // TODO: load profile feed by state.profileTab
+        document.querySelectorAll('.profile-tab').forEach(function(tabEl) {
+            tabEl.addEventListener('click', function() {
+                document.querySelectorAll('.profile-tab').forEach(function(t) { t.classList.remove('active'); });
+                tabEl.classList.add('active');
+                state.profileTab = tabEl.dataset.tab;
+                loadProfileFeed();
             });
         });
 
-        // Note card: reply button and author link (avatar/name -> profile)
-        const notesContainer = document.getElementById('notes-container');
-        if (notesContainer) {
-            notesContainer.addEventListener('click', (e) => {
-                const authorLink = e.target.closest('.note-author-link');
-                if (authorLink && authorLink.dataset.pubkey) {
-                    e.preventDefault();
-                    openProfileForUser(authorLink.dataset.pubkey);
-                    return;
-                }
-                const replyBtn = e.target.closest('.note-action[data-action="reply"]');
-                if (replyBtn) {
-                    e.preventDefault();
-                    const card = replyBtn.closest('.note-card');
-                    const name = card ? (card.querySelector('.note-author-name')?.textContent || '').trim() : '';
-                    openCompose({
-                        id: replyBtn.dataset.noteId || '',
-                        pubkey: replyBtn.dataset.pubkey || '',
-                        name: name || '…'
-                    });
-                }
-            });
+        // Note card: reply button and author link (avatar/name -> profile). Same behavior for home feed and profile feed.
+        function handleNoteCardClick(e) {
+            var authorLink = e.target.closest('.note-author-link');
+            if (authorLink && authorLink.dataset.pubkey) {
+                e.preventDefault();
+                openProfileForUser(authorLink.dataset.pubkey);
+                return;
+            }
+            var replyBtn = e.target.closest('.note-action[data-action="reply"]');
+            if (replyBtn) {
+                e.preventDefault();
+                var card = replyBtn.closest('.note-card');
+                var name = card ? (card.querySelector('.note-author-name') && card.querySelector('.note-author-name').textContent.trim()) : '';
+                openCompose({
+                    id: replyBtn.dataset.noteId || '',
+                    pubkey: replyBtn.dataset.pubkey || '',
+                    name: name || '…'
+                });
+            }
         }
+        var notesContainer = document.getElementById('notes-container');
+        if (notesContainer) notesContainer.addEventListener('click', handleNoteCardClick);
+        var profileFeed = document.getElementById('profile-feed');
+        if (profileFeed) profileFeed.addEventListener('click', handleNoteCardClick);
 
         startInitialFeedFetch();
         debugLog('Plume initialized successfully');

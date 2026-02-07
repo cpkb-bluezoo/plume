@@ -1,6 +1,10 @@
-# Plume 🪶
+# Plume
 
+<p>
+<img src="icons/app-icon.svg" alt="Plume" width="48" height="48" align="left" style="margin-right: 12px;">
 A cross-platform Nostr desktop client built with Rust and Tauri.
+<br style="clear: both;">
+</p>
 
 ## Features
 
@@ -8,7 +12,24 @@ A cross-platform Nostr desktop client built with Rust and Tauri.
 - View images and videos embedded in notes
 - Manage your Nostr identity (public/private keys)
 - Configure relay connections
+- Secure encrypted chat with Nostr users
 - Cross-platform: MacOS, Linux, Windows
+- Localisations for English, French, German, Spanish, Italian
+
+## Screenshots
+
+| Home feed | Profile |
+|-----------|---------|
+| ![Home feed](screenshots/home.png) | ![Profile](screenshots/profile.png) |
+
+## Relay I/O architecture
+
+Feed streaming uses an **async, selector-based** design for scalability and performance:
+
+- **Selector-based I/O** – One Tokio runtime multiplexes many relay connections. When any socket has data, the runtime wakes and dispatches to that relay’s handler instead of blocking one thread per connection.
+- **Per-relay push-parser pipeline** – Each relay has a dedicated channel handler. Incoming WebSocket messages are pushed into an [Actson](https://github.com/michel-kraemer/actson-rs) streaming JSON parser; the handler pulls parser events and recognises complete Nostr events as they are parsed. Notes are submitted to the UI as soon as they are available, with no separate thread “monitoring” for complete messages.
+- **Scalability** – Connecting to many relays no longer implies many OS threads. A small number of threads serve all connections via non-blocking I/O and async tasks.
+- **Performance** – Events are streamed to the UI as they arrive; parsing is incremental and event-driven, so the app stays responsive under load.
 
 ## Prerequisites
 
@@ -71,12 +92,15 @@ cargo tauri dev
 
 ## Configuration
 
-Plume stores its configuration in `~/.plume/config.json`. This includes:
+Plume stores configuration and user-related data in `~/.plume/config.json`. This includes:
 
 - Your Nostr public key (required for following/viewing)
 - Your Nostr private key (optional, for posting)
 - List of relay URLs to connect to
-- Display name and other preferences
+- Display name, profile metadata (name, about, picture, nip05, banner, website, lud16), and other preferences
+- Bookmarks and other user data are intended to live in config as well (see TODO)
+
+**Messages** are expected to be cached locally and synced with relays; this is not yet implemented.
 
 ## License
 

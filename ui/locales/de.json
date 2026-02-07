@@ -78,7 +78,28 @@
     "anonymous": "Anonym",
     "generating": "Wird erstellt…",
     "newIdentityCreated": "Neue Identität erstellt!",
-    "saveNsecWarning": "WICHTIG: Bewahren Sie Ihren nsec an einem sicheren Ort auf. Sie benötigen ihn zur Wiederherstellung Ihrer Identität!"
+    "saveNsecWarning": "WICHTIG: Bewahren Sie Ihren nsec an einem sicheren Ort auf. Sie benötigen ihn zur Wiederherstellung Ihrer Identität!",
+    "publicKeyQR": "Öffentlicher Schlüssel (QR-Code)",
+    "publicKeySelectToCopy": "Öffentlicher Schlüssel (zum Kopieren markieren)"
+  },
+  "editProfileModal": {
+    "title": "Profil bearbeiten",
+    "name": "Name",
+    "namePlaceholder": "Ihr Anzeigename",
+    "nip05": "Verifizierte Nostr-Adresse (NIP-05)",
+    "nip05Placeholder": "nutzer@beispiel.com",
+    "website": "Webseite",
+    "websitePlaceholder": "https://beispiel.com",
+    "about": "Über mich",
+    "aboutPlaceholder": "Eine kurze Bio",
+    "lud16": "Bitcoin-Lightning-Adresse",
+    "lud16Placeholder": "sie@getalby.com",
+    "pictureUrl": "Avatar (Bild-URL)",
+    "picturePlaceholder": "https://…",
+    "bannerUrl": "Banner (Bild-URL)",
+    "bannerPlaceholder": "https://…",
+    "cancel": "Abbrechen",
+    "ok": "OK"
   },
   "accountModal": {
     "title": "Konto",
@@ -118,7 +139,8 @@
     "like": "Gefällt mir",
     "repost": "Reposten",
     "bookmark": "Lesezeichen",
-    "replyLabel": "(Antwort)"
+    "replyLabel": "(Antwort)",
+    "replyingTo": "Antwort an"
   },
   "relays": {
     "test": "Test",

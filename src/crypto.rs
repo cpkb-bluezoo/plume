@@ -383,6 +383,26 @@ pub fn create_signed_note(
     return Ok(event);
 }
 
+/// Create and sign a kind 0 (metadata) event.
+pub fn create_signed_metadata_event(content: &str, secret_key_hex: &str) -> Result<Event, String> {
+    let pubkey = get_public_key_from_secret(secret_key_hex)?;
+    let created_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let mut event = Event {
+        id: String::new(),
+        pubkey: pubkey,
+        created_at: created_at,
+        kind: 0,
+        tags: Vec::new(),
+        content: content.to_string(),
+        sig: String::new(),
+    };
+    sign_event(&mut event, secret_key_hex)?;
+    Ok(event)
+}
+
 // ============================================================
 // Helper Functions
 // ============================================================

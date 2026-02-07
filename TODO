@@ -1,0 +1,24 @@
+- posting, including media upload
+- note detail page, including reply to field
+- like action, including popup for emoji selection
+- repost action
+- follow/unfollow
+- mute/unmute
+- follows note page
+- manage follows
+- bookmarks
+  - store bookmarks in config.json (with profile / user data)
+  - bookmark action
+  - bookmarked notes page
+- config.json scope
+  - keep all configuration and user-related data in config.json (profile, bookmarks, settings)
+- messages
+  - basically everything
+  - local cache + sync with relays (not yet implemented)
+- zaps
+  - settings, wallet
+  - zap action
+  - zap item cards in profile
+- settings
+  - media upload server
+  - normalise "Account" and edit profile page

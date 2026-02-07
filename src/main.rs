@@ -12,7 +12,7 @@ mod nostr;
 mod relay;
 
 // Import what we need from external crates
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 // Application state that persists while the app is running
 struct AppState {
@@ -53,10 +53,19 @@ fn save_config(state: tauri::State<AppState>, config_json: String) -> Result<(),
     let config_dir = &state.config_dir;
     
     // Parse the JSON string into a Config struct
-    let cfg = match config::json_to_config(&config_json) {
+    let mut cfg = match config::json_to_config(&config_json) {
         Ok(c) => c,
         Err(e) => return Err(format!("Invalid config JSON: {}", e)),
     };
+    // Preserve profile fields from disk if the frontend didn't send them (e.g. old state.config)
+    if let Ok(existing) = config::load_config(config_dir) {
+        if cfg.profile_picture.is_none() && existing.profile_picture.is_some() {
+            cfg.profile_picture = existing.profile_picture.clone();
+        }
+        if cfg.profile_metadata.is_none() && existing.profile_metadata.is_some() {
+            cfg.profile_metadata = existing.profile_metadata.clone();
+        }
+    }
     
     // Save it to disk
     match config::save_config(config_dir, &cfg) {
@@ -225,6 +234,95 @@ fn fetch_notes_from_relays(
     let json = events_to_json_array(&unique_events);
     println!("Returning {} unique events", unique_events.len());
     Ok(json)
+}
+
+// Tauri command: Start streaming feed; emits "feed-note" per event and "feed-eose" when done.
+// If stream_context == "profile", emits "profile-feed-note" and "profile-feed-eose" instead (so profile page doesn't conflict with home).
+// Uses tokio-tungstenite (selector-based I/O) and per-relay Actson push-parser pipelines; events are sent as soon as they are parsed.
+#[tauri::command]
+fn start_feed_stream(
+    app: tauri::AppHandle,
+    relay_urls: Vec<String>,
+    limit: u32,
+    authors: Option<Vec<String>>,
+    since: Option<u64>,
+    stream_context: Option<String>,
+) -> Result<(), String> {
+    let use_follows = authors.as_ref().map(|a| !a.is_empty()).unwrap_or(false);
+    let is_profile = stream_context.as_deref() == Some("profile");
+    println!(
+        "Starting feed stream from {} relays (follows={}, since={:?}, profile={})",
+        relay_urls.len(),
+        use_follows,
+        since,
+        is_profile
+    );
+
+    let filter = if use_follows {
+        nostr::filter_notes_by_authors_since(
+            authors.unwrap_or_default(),
+            limit,
+            since,
+        )
+    } else {
+        nostr::filter_recent_notes_since(limit, since)
+    };
+
+    let (note_event, eose_event) = if is_profile {
+        ("profile-feed-note".to_string(), "profile-feed-eose".to_string())
+    } else {
+        ("feed-note".to_string(), "feed-eose".to_string())
+    };
+
+    let num_relays = relay_urls.len() as u32;
+    std::thread::spawn(move || {
+        let rt = match tokio::runtime::Runtime::new() {
+            Ok(r) => r,
+            Err(e) => {
+                println!("Failed to create Tokio runtime: {}", e);
+                return;
+            }
+        };
+        rt.block_on(async move {
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            for relay_url in relay_urls {
+                let filter = filter.clone();
+                let tx = tx.clone();
+                tokio::spawn(async move {
+                    relay::run_relay_feed_stream(
+                        relay_url,
+                        filter,
+                        10,
+                        tx,
+                    )
+                    .await;
+                });
+            }
+            drop(tx);
+
+            let mut eose_count = 0u32;
+            while let Some(msg) = rx.recv().await {
+                match msg {
+                    relay::StreamMessage::Event(event) => {
+                        let json = nostr::event_to_json(&event);
+                        let _ = app.emit(&note_event, &json);
+                    }
+                    relay::StreamMessage::Eose => {
+                        eose_count += 1;
+                        if eose_count >= num_relays {
+                            let _ = app.emit(&eose_event, ());
+                            break;
+                        }
+                    }
+                    relay::StreamMessage::Notice(msg) => {
+                        println!("Relay notice: {}", msg);
+                    }
+                }
+            }
+        });
+    });
+
+    Ok(())
 }
 
 // Tauri command: Test connection to a relay
@@ -476,6 +574,31 @@ fn fetch_own_followers(state: tauri::State<AppState>) -> Result<String, String> 
     }
 }
 
+// Tauri command: Fetch a user's relay list (NIP-65 kind 10002). Returns JSON array of relay URLs.
+#[tauri::command]
+fn fetch_relay_list(pubkey: String, relay_urls: Vec<String>) -> Result<String, String> {
+    let hex_pubkey = match keys::public_key_to_hex(&pubkey) {
+        Ok(hex) => hex,
+        Err(e) => return Err(format!("Invalid public key: {}", e)),
+    };
+    match relay::fetch_relay_list_from_relays(&relay_urls, &hex_pubkey, 10) {
+        Ok(urls) => {
+            let mut json = String::from("[");
+            for (i, url) in urls.iter().enumerate() {
+                if i > 0 {
+                    json.push_str(",");
+                }
+                json.push('"');
+                json.push_str(&url.replace('\\', "\\\\").replace('"', "\\\""));
+                json.push('"');
+            }
+            json.push(']');
+            Ok(json)
+        }
+        Err(e) => Err(format!("Failed to fetch relay list: {}", e)),
+    }
+}
+
 // ============================================================
 // Posting / Signing Commands
 // ============================================================
@@ -532,6 +655,49 @@ fn post_note(
     // Return the results
     let json = relay::publish_results_to_json(&results);
     return Ok(json);
+}
+
+// Tauri command: Set profile metadata (publish kind 0 event). profile_json: JSON with optional name, about, picture, nip05, banner, website, lud16.
+// Updates local config (.plume) with the new display name and publishes the profile to the user's relays.
+#[tauri::command]
+fn set_profile_metadata(state: tauri::State<AppState>, profile_json: String) -> Result<String, String> {
+    let config_dir = &state.config_dir;
+    let mut cfg = match config::load_config(config_dir) {
+        Ok(c) => c,
+        Err(e) => return Err(format!("Failed to load config: {}", e)),
+    };
+    let secret_key = match cfg.private_key.as_ref() {
+        Some(k) => k.as_str(),
+        None => return Err(String::from("No private key configured. Add your nsec in Settings to update profile.")),
+    };
+    if cfg.relays.is_empty() {
+        return Err(String::from("No relays configured"));
+    }
+    let profile = match nostr::parse_profile(&profile_json) {
+        Ok(p) => p,
+        Err(e) => return Err(format!("Invalid profile JSON: {}", e)),
+    };
+    let content = nostr::profile_to_content(&profile);
+    let event = match crypto::create_signed_metadata_event(&content, secret_key) {
+        Ok(e) => e,
+        Err(e) => return Err(format!("Failed to create profile event: {}", e)),
+    };
+    let results = relay::publish_event_to_relays(&cfg.relays, &event, 10);
+    let success_count = results.iter().filter(|r| r.success).count();
+    if success_count == 0 {
+        return Err(String::from("Failed to publish profile to any relay"));
+    }
+    // Save full profile to local config (.plume)
+    if let Some(ref name) = profile.name {
+        cfg.display_name = name.clone();
+    }
+    cfg.profile_picture = profile.picture.clone();
+    cfg.profile_metadata = Some(content);
+    if let Err(e) = config::save_config(config_dir, &cfg) {
+        return Err(format!("Profile published but failed to save local config: {}", e));
+    }
+    let json = relay::publish_results_to_json(&results);
+    Ok(json)
 }
 
 // Tauri command: Sign an event (without publishing)
@@ -626,6 +792,8 @@ fn generate_keypair(state: tauri::State<AppState>) -> Result<String, String> {
                 String::from("wss://nos.lol"),
                 String::from("wss://relay.nostr.band"),
             ],
+            profile_picture: None,
+            profile_metadata: None,
             home_feed_mode: String::from("firehose"),
         },
     };
@@ -714,10 +882,12 @@ fn main() {
             // Relay commands
             fetch_notes,
             fetch_notes_from_relays,
+            start_feed_stream,
             test_relay_connection,
             // Profile commands
             fetch_profile,
             fetch_own_profile,
+            set_profile_metadata,
             // Verification commands
             verify_event,
             verify_event_id,
@@ -728,6 +898,7 @@ fn main() {
             fetch_own_following,
             fetch_followers,
             fetch_own_followers,
+            fetch_relay_list,
             // Posting / Signing commands
             post_note,
             sign_event,

@@ -20,6 +20,12 @@ pub struct Config {
     // Display name for the user
     pub display_name: String,
 
+    // Profile picture URL (optional; used for sidebar avatar at launch)
+    pub profile_picture: Option<String>,
+
+    // Full profile as JSON (kind 0 content: name, about, picture, nip05, banner, website, lud16)
+    pub profile_metadata: Option<String>,
+
     // Home feed mode: "follows" (notes from people you follow) or "firehose" (global)
     pub home_feed_mode: String,
 }
@@ -36,6 +42,8 @@ impl Config {
                 String::from("wss://relay.nostr.band"),
             ],
             display_name: String::from("Anonymous"),
+            profile_picture: None,
+            profile_metadata: None,
             home_feed_mode: String::from("firehose"),
         }
     }
@@ -86,6 +94,30 @@ pub fn config_to_json(config: &Config) -> String {
     json.push_str(&escape_json_string(&config.display_name));
     json.push_str("\",\n");
 
+    // Add profile_picture field (optional)
+    json.push_str("  \"profile_picture\": ");
+    match &config.profile_picture {
+        Some(url) => {
+            json.push_str("\"");
+            json.push_str(&escape_json_string(url));
+            json.push_str("\"");
+        }
+        None => json.push_str("null"),
+    }
+    json.push_str(",\n");
+
+    // Add profile_metadata field (optional; full profile JSON)
+    json.push_str("  \"profile_metadata\": ");
+    match &config.profile_metadata {
+        Some(s) => {
+            json.push_str("\"");
+            json.push_str(&escape_json_string(s));
+            json.push_str("\"");
+        }
+        None => json.push_str("null"),
+    }
+    json.push_str(",\n");
+
     // Add home_feed_mode field
     json.push_str("  \"home_feed_mode\": \"");
     json.push_str(&escape_json_string(&config.home_feed_mode));
@@ -129,6 +161,22 @@ pub fn json_to_config(json_str: &str) -> Result<Config, String> {
         display_name = String::from("Anonymous");
     }
 
+    // Extract profile_picture (optional string)
+    let profile_picture: Option<String>;
+    if parsed["profile_picture"].is_string() {
+        profile_picture = Some(parsed["profile_picture"].as_str().unwrap().to_string());
+    } else {
+        profile_picture = None;
+    }
+
+    // Extract profile_metadata (optional string; full profile JSON)
+    let profile_metadata: Option<String>;
+    if parsed["profile_metadata"].is_string() {
+        profile_metadata = Some(parsed["profile_metadata"].as_str().unwrap().to_string());
+    } else {
+        profile_metadata = None;
+    }
+
     // Extract home_feed_mode (string: "follows" or "firehose")
     let home_feed_mode: String;
     if parsed["home_feed_mode"].is_string() {
@@ -164,6 +212,8 @@ pub fn json_to_config(json_str: &str) -> Result<Config, String> {
         private_key: private_key,
         relays: relays,
         display_name: display_name,
+        profile_picture: profile_picture,
+        profile_metadata: profile_metadata,
         home_feed_mode: home_feed_mode,
     };
     

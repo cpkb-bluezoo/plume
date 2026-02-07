@@ -7,6 +7,14 @@ use url::Url;
 
 use crate::nostr;
 
+// --- Async stream (tokio-tungstenite + Actson) ---
+
+use actson::feeder::SliceJsonFeeder;
+use actson::{JsonEvent, JsonParser};
+use futures_util::{SinkExt, StreamExt};
+use tokio::sync::mpsc;
+use tokio_tungstenite::{connect_async, tungstenite::Message as WsMessage};
+
 // A connection to a single Nostr relay
 pub struct RelayConnection {
     // The relay URL (e.g., "wss://relay.damus.io")
@@ -284,6 +292,292 @@ pub fn parse_relay_message(message: &str) -> Result<RelayMessage, String> {
     }
 }
 
+/// Message sent from async relay stream to the UI forwarder.
+pub enum StreamMessage {
+    Event(nostr::Event),
+    Eose,
+    Notice(String),
+}
+
+/// Parse a single relay message using Actson (push feeder, pull events).
+/// Each complete message is one WebSocket frame; we push its bytes and pull events to build RelayMessage.
+pub fn parse_relay_message_actson(message: &str) -> Result<RelayMessage, String> {
+    let bytes = message.as_bytes();
+    let feeder = SliceJsonFeeder::new(bytes);
+    let mut parser = JsonParser::new(feeder);
+
+    let mut depth: i32 = 0;
+    let mut top_level_index: i32 = -1;
+    let mut msg_type: Option<String> = None;
+    let mut second_str: Option<String> = None;
+    // EVENT: third element is event object
+    let mut sub_id: Option<String> = None;
+    // OK: third is bool, fourth is string
+    let mut ok_event_id: Option<String> = None;
+    let mut ok_success: bool = false;
+    let mut ok_message: Option<String> = None;
+    // Event object state (when parsing ["EVENT", sub_id, { ... }])
+    let mut current_field: Option<String> = None;
+    let mut event_id: Option<String> = None;
+    let mut event_pubkey: Option<String> = None;
+    let mut event_created_at: u64 = 0;
+    let mut event_kind: u32 = 0;
+    let mut event_content: String = String::new();
+    let mut event_sig: Option<String> = None;
+    let mut event_tags: Vec<Vec<String>> = Vec::new();
+    let mut current_tag: Vec<String> = Vec::new();
+    let mut tags_depth: i32 = 0; // 0 = not in tags, 1 = in tags array, 2 = in one tag array
+
+    loop {
+        let event = match parser.next_event() {
+            Ok(Some(ev)) => ev,
+            Ok(None) => break,
+            Err(e) => return Err(format!("Relay message parse error: {}", e)),
+        };
+
+        match event {
+            JsonEvent::NeedMoreInput => {
+                // SliceJsonFeeder has the full slice; we don't push more. Should not happen for a complete message.
+                break;
+            }
+            JsonEvent::StartArray => {
+                depth += 1;
+                if depth == 1 {
+                    top_level_index = 0;
+                } else if tags_depth == 1 {
+                    tags_depth = 2; // entering the tags array
+                } else if tags_depth == 2 {
+                    current_tag.clear(); // entering one tag array
+                }
+            }
+            JsonEvent::EndArray => {
+                if tags_depth == 2 && depth == 4 {
+                    if !current_tag.is_empty() {
+                        event_tags.push(current_tag.clone());
+                    }
+                    current_tag.clear();
+                } else if tags_depth == 2 && depth == 3 {
+                    tags_depth = 0; // leaving the tags array
+                }
+                depth -= 1;
+            }
+            JsonEvent::StartObject => {
+                depth += 1;
+                if depth == 1 {
+                    top_level_index += 1;
+                }
+                if depth == 2 && msg_type.as_deref() == Some("EVENT") {
+                    // Reset event fields for this object
+                    current_field = None;
+                    event_id = None;
+                    event_pubkey = None;
+                    event_created_at = 0;
+                    event_kind = 0;
+                    event_content.clear();
+                    event_sig = None;
+                    event_tags.clear();
+                }
+            }
+            JsonEvent::EndObject => {
+                depth -= 1;
+                if depth == 1 && msg_type.as_deref() == Some("EVENT") && second_str.is_some() {
+                    // Finished the event object; we have all fields (or defaults). Build RelayMessage and return.
+                    let sub_id_owned = sub_id.clone().unwrap_or_default();
+                    let event = nostr::Event {
+                        id: event_id.unwrap_or_default(),
+                        pubkey: event_pubkey.unwrap_or_default(),
+                        created_at: event_created_at,
+                        kind: event_kind,
+                        tags: event_tags.clone(),
+                        content: event_content.clone(),
+                        sig: event_sig.unwrap_or_default(),
+                    };
+                    return Ok(RelayMessage::Event {
+                        _subscription_id: sub_id_owned,
+                        event,
+                    });
+                }
+            }
+            JsonEvent::FieldName => {
+                if let Ok(s) = parser.current_str() {
+                    current_field = Some(s.to_string());
+                    if depth == 2 && s == "tags" {
+                        tags_depth = 1; // next StartArray is the tags array
+                    }
+                }
+            }
+            JsonEvent::ValueString => {
+                let s = parser.current_str().map(|x| x.to_string()).unwrap_or_default();
+                if depth == 1 {
+                    top_level_index += 1;
+                    if top_level_index == 1 {
+                        msg_type = Some(s);
+                    } else if top_level_index == 2 {
+                        second_str = Some(s.clone());
+                        sub_id = Some(s.clone()); // EVENT/EOSE
+                        ok_event_id = Some(s); // OK
+                    } else if top_level_index == 4 && msg_type.as_deref() == Some("OK") {
+                        ok_message = Some(s);
+                    }
+                } else if depth >= 2 && tags_depth == 0 {
+                    if tags_depth == 2 {
+                        current_tag.push(s);
+                    } else if let Some(ref f) = current_field {
+                        match f.as_str() {
+                            "id" => event_id = Some(s),
+                            "pubkey" => event_pubkey = Some(s),
+                            "content" => event_content = s,
+                            "sig" => event_sig = Some(s),
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            JsonEvent::ValueInt => {
+                if depth == 2 {
+                    if let Some(ref f) = current_field {
+                        if f == "created_at" {
+                            if let Ok(n) = parser.current_int::<i64>() {
+                                event_created_at = n.max(0) as u64;
+                            }
+                        } else if f == "kind" {
+                            if let Ok(n) = parser.current_int::<i32>() {
+                                event_kind = n.max(0) as u32;
+                            }
+                        }
+                    }
+                } else if depth == 1 && top_level_index == 2 && msg_type.as_deref() == Some("OK") {
+                    // OK has no integer at index 2 (it's bool); skip
+                }
+            }
+            JsonEvent::ValueFloat => {
+                if depth == 2 {
+                    if let Some(ref f) = current_field {
+                        if f == "created_at" {
+                            if let Ok(n) = parser.current_float() {
+                                event_created_at = n.max(0.0) as u64;
+                            }
+                        } else if f == "kind" {
+                            if let Ok(n) = parser.current_float() {
+                                event_kind = n.max(0.0) as u32;
+                            }
+                        }
+                    }
+                }
+            }
+            JsonEvent::ValueTrue | JsonEvent::ValueFalse => {
+                if depth == 1 {
+                    top_level_index += 1;
+                    if top_level_index == 3 && msg_type.as_deref() == Some("OK") {
+                        ok_success = matches!(event, JsonEvent::ValueTrue);
+                    }
+                }
+            }
+            JsonEvent::ValueNull => {}
+        }
+    }
+
+    // End of input: if we have msg_type and second_str we can build non-EVENT messages
+    match msg_type.as_deref() {
+        Some("EOSE") => Ok(RelayMessage::EndOfStoredEvents {
+            _subscription_id: second_str.unwrap_or_default(),
+        }),
+        Some("NOTICE") => Ok(RelayMessage::Notice {
+            message: second_str.unwrap_or_else(|| "Unknown notice".to_string()),
+        }),
+        Some("OK") => Ok(RelayMessage::Ok {
+            event_id: ok_event_id.unwrap_or_default(),
+            success: ok_success,
+            message: ok_message.unwrap_or_default(),
+        }),
+        _ => Ok(RelayMessage::Unknown {
+            _raw: message.to_string(),
+        }),
+    }
+}
+
+/// Run one relay's feed stream over tokio-tungstenite. Pushes each WebSocket message into
+/// an Actson parser and pulls relay messages; sends events (and EOSE) to `tx`.
+pub async fn run_relay_feed_stream(
+    relay_url: String,
+    filter: nostr::Filter,
+    timeout_seconds: u32,
+    tx: mpsc::UnboundedSender<StreamMessage>,
+) {
+    let url = match Url::parse(&relay_url) {
+        Ok(u) => u,
+        Err(e) => {
+            let _ = tx.send(StreamMessage::Notice(format!("Invalid URL {}: {}", relay_url, e)));
+            return;
+        }
+    };
+
+    let (ws_stream, _) = match connect_async(&url).await {
+        Ok(t) => t,
+        Err(e) => {
+            println!("Failed to connect to {}: {}", relay_url, e);
+            return;
+        }
+    };
+
+    println!("Connected to {}", relay_url);
+
+    let (mut write, mut read) = ws_stream.split();
+    let subscription_id = format!(
+        "plume_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+    );
+
+    let filter_json = nostr::filter_to_json(&filter);
+    let req_message = format!("[\"REQ\",\"{}\",{}]", subscription_id, filter_json);
+
+    if write.send(WsMessage::Text(req_message)).await.is_err() {
+        return;
+    }
+
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(timeout_seconds as u64);
+
+    loop {
+        if tokio::time::Instant::now() >= deadline {
+            break;
+        }
+        let timeout = tokio::time::timeout(
+            tokio::time::Duration::from_secs(1),
+            read.next(),
+        );
+        match timeout.await {
+            Ok(Some(Ok(WsMessage::Text(text)))) => {
+                match parse_relay_message_actson(&text) {
+                    Ok(RelayMessage::Event { event, .. }) => {
+                        if tx.send(StreamMessage::Event(event)).is_err() {
+                            break;
+                        }
+                    }
+                    Ok(RelayMessage::EndOfStoredEvents { .. }) => {
+                        break;
+                    }
+                    Ok(RelayMessage::Notice { message }) => {
+                        println!("Notice from {}: {}", relay_url, message);
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        println!("Parse error from {}: {}", relay_url, e);
+                    }
+                }
+            }
+            Ok(Some(Ok(WsMessage::Close(_)))) | Ok(Some(Err(_))) => break,
+            Ok(Some(Ok(_))) => {} // Ping/Pong/Binary, ignore
+            Ok(None) => break,
+            Err(_) => {} // timeout, loop again
+        }
+    }
+
+    let _ = tx.send(StreamMessage::Eose);
+}
+
 // Fetch notes from a relay (simple blocking function)
 // Returns a vector of events
 pub fn fetch_notes_from_relay(
@@ -393,7 +687,8 @@ pub fn fetch_profile_from_relay(
     match best_event {
         Some(event) => {
             match nostr::parse_profile(&event.content) {
-                Ok(profile) => {
+                Ok(mut profile) => {
+                    profile.created_at = Some(event.created_at);
                     println!("Found profile for {}", pubkey);
                     return Ok(Some(profile));
                 }
@@ -580,6 +875,62 @@ pub fn fetch_followers_from_relays(
     
     println!("Total {} unique followers found", all_followers.len());
     return Ok(all_followers);
+}
+
+// ============================================================
+// Relay list (NIP-65 kind 10002)
+// ============================================================
+
+/// Fetch a user's relay list (kind 10002) from a single relay.
+pub fn fetch_relay_list_from_relay(
+    relay_url: &str,
+    pubkey: &str,
+    timeout_seconds: u32,
+) -> Result<Option<Vec<String>>, String> {
+    let filter = nostr::filter_relay_list_by_author(pubkey);
+    let events = fetch_notes_from_relay(relay_url, &filter, timeout_seconds)?;
+    let mut best_event: Option<&nostr::Event> = None;
+    for event in &events {
+        if event.kind == nostr::KIND_RELAY_LIST {
+            match &best_event {
+                None => best_event = Some(event),
+                Some(current) => {
+                    if event.created_at > current.created_at {
+                        best_event = Some(event);
+                    }
+                }
+            }
+        }
+    }
+    match best_event {
+        Some(event) => match nostr::parse_relay_list(event) {
+            Ok(urls) => Ok(Some(urls)),
+            Err(e) => {
+                println!("Failed to parse relay list: {}", e);
+                Ok(None)
+            }
+        },
+        None => Ok(None),
+    }
+}
+
+/// Fetch a user's relay list from multiple relays (returns first non-empty list found).
+pub fn fetch_relay_list_from_relays(
+    relay_urls: &Vec<String>,
+    pubkey: &str,
+    timeout_seconds: u32,
+) -> Result<Vec<String>, String> {
+    for relay_url in relay_urls {
+        match fetch_relay_list_from_relay(relay_url, pubkey, timeout_seconds) {
+            Ok(Some(urls)) if !urls.is_empty() => return Ok(urls),
+            Ok(_) => continue,
+            Err(e) => {
+                println!("Error fetching relay list from {}: {}", relay_url, e);
+                continue;
+            }
+        }
+    }
+    Ok(Vec::new())
 }
 
 // ============================================================
