@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/>
+  <g fill="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="round">
+    <polygon points="3,6 12,12 21,6"/>
+  </g>
+  <g fill="currentColor" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter">
+    <polygon points="3,10 12,16 21,10 21,19 3,19"/>
+  </g>
+</svg>

@@ -60,6 +60,7 @@
   "profile": {
     "editProfile": "Modifier le profil",
     "follow": "Suivre",
+    "unfollow": "Ne plus suivre",
     "message": "Message",
     "mute": "Masquer",
     "following": "abonnements",
@@ -152,6 +153,8 @@
   "errors": {
     "failedToSaveSettings": "Échec de l'enregistrement des paramètres",
     "failedToGenerateKeys": "Échec de la génération de la paire de clés",
-    "initError": "Erreur d'initialisation"
+    "initError": "Erreur d'initialisation",
+    "loadFailed": "Échec du chargement des favoris",
+    "failedToPublish": "Échec de la publication"
   }
 }

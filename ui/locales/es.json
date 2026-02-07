@@ -60,6 +60,7 @@
   "profile": {
     "editProfile": "Editar perfil",
     "follow": "Seguir",
+    "unfollow": "Dejar de seguir",
     "message": "Mensaje",
     "mute": "Silenciar",
     "following": "siguiendo",
@@ -152,6 +153,8 @@
   "errors": {
     "failedToSaveSettings": "Error al guardar la configuración",
     "failedToGenerateKeys": "Error al generar el par de claves",
-    "initError": "Error de inicialización"
+    "initError": "Error de inicialización",
+    "loadFailed": "Error al cargar los marcadores",
+    "failedToPublish": "Error al publicar"
   }
 }

@@ -47,19 +47,40 @@
   },
   "settings": {
     "title": "Settings",
-    "selectOption": "Select an option above",
+    "selectOption": "Select an option from the menu",
     "account": "Account",
+    "profile": "Profile",
+    "keys": "Keys",
     "homeFeed": "Home feed",
+    "homeFeedModalTitle": "Home feed",
+    "homeFeedModalHint": "Choose what appears on your Home page.",
+    "homeFeedFirehose": "Firehose – notes from everyone (global feed)",
+    "homeFeedFollows": "Follows – notes only from people you follow",
     "mediaUploads": "Media uploads",
+    "mediaServerHint": "A media server hosts images and files you upload. Some servers may restrict who can upload.",
+    "mediaServerUrl": "Media server URL",
     "mutedContent": "Muted content",
+    "mutedUsers": "Users",
+    "mutedWords": "Words",
+    "mutedHashtags": "Hashtags",
+    "mutedUsersHint": "Users you mute from their profile page appear here. Unmute there to remove.",
+    "mutedWordPlaceholder": "Add a word to mute…",
+    "mutedHashtagPlaceholder": "Add a hashtag (without #)…",
+    "comingSoon": "Coming soon.",
     "wallets": "Wallets",
+    "zapsDefaultAmount": "Default zap amount (sats)",
+    "zapsDefaultAmountHint": "Used when you zap a note or profile. Default: 42 sats.",
     "relays": "Relays",
+    "relayAdd": "Add",
+    "relayAddPlaceholder": "wss://relay.example.com",
+    "relayDelete": "Remove",
     "zaps": "Zaps",
     "logout": "Log out"
   },
   "profile": {
     "editProfile": "Edit profile",
     "follow": "Follow",
+    "unfollow": "Unfollow",
     "message": "Message",
     "mute": "Mute",
     "following": "following",
@@ -113,6 +134,9 @@
     "privateKeyHint": "Only needed to post notes",
     "save": "Save"
   },
+  "likeModal": {
+    "title": "Choose reaction"
+  },
   "composeModal": {
     "title": "New note",
     "replyingTo": "Replying to",
@@ -136,15 +160,27 @@
     "invalidSignature": "Invalid signature",
     "reply": "Reply",
     "zap": "Zap",
+    "zapNoWallet": "Zap requires you and the author to have a Lightning address",
     "like": "Like",
     "repost": "Repost",
+    "reposted": "Reposted",
+    "repostedNote": "Reposted a note",
     "bookmark": "Bookmark",
     "replyLabel": "(reply)",
     "replyingTo": "Replying to"
   },
+  "noteDetail": {
+    "back": "← Back",
+    "title": "Note",
+    "reply": "Reply",
+    "replyPlaceholder": "Write a reply…",
+    "loading": "Loading…",
+    "noReplies": "No replies yet"
+  },
   "relays": {
-    "test": "Test",
-    "notTested": "Not tested"
+    "statusUnknown": "Not tested yet",
+    "statusConnected": "Connected",
+    "statusFailed": "Connection failed"
   },
   "content": {
     "image": "Image"
@@ -152,6 +188,8 @@
   "errors": {
     "failedToSaveSettings": "Failed to save settings",
     "failedToGenerateKeys": "Failed to generate key pair",
-    "initError": "Initialization error"
+    "initError": "Initialization error",
+    "loadFailed": "Failed to load bookmarks",
+    "failedToPublish": "Failed to publish"
   }
 }

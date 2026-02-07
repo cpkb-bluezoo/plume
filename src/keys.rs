@@ -1,12 +1,28 @@
-// Plume - Key Format Handling
-// Convert between hex keys and npub/nsec (Bech32) format
-//
+/*
+ * keys.rs
+ * Copyright (C) 2026 Chris Burdess
+ *
+ * This file is part of Plume, a Nostr desktop client.
+ *
+ * Plume is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * Plume is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with Plume.  If not, see <http://www.gnu.org/licenses/>.
+ */
+
 // Nostr uses two key formats:
 // - Hex: 64 character hexadecimal string (32 bytes)
 // - Bech32: Human-readable format with error detection
 //   - npub1... for public keys
 //   - nsec1... for private keys (secrets)
-//
 // See: https://github.com/nostr-protocol/nips/blob/master/19.md
 
 use bech32::{Bech32, Hrp};

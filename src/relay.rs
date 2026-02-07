@@ -1,5 +1,22 @@
-// Plume - Relay Connection Management
-// Handles WebSocket connections to Nostr relays
+/*
+ * relay.rs
+ * Copyright (C) 2026 Chris Burdess
+ *
+ * This file is part of Plume, a Nostr desktop client.
+ *
+ * Plume is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * Plume is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with Plume.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 use std::net::TcpStream;
 use tungstenite::{connect, stream::MaybeTlsStream, Message, WebSocket};
@@ -576,6 +593,81 @@ pub async fn run_relay_feed_stream(
     }
 
     let _ = tx.send(StreamMessage::Eose);
+}
+
+/// Run a long-lived DM subscription (kind 4) with two filters (received + sent). Does not exit on EOSE.
+pub async fn run_relay_dm_stream(
+    relay_url: String,
+    filter_received: nostr::Filter,
+    filter_sent: nostr::Filter,
+    tx: mpsc::UnboundedSender<StreamMessage>,
+) {
+    let url = match Url::parse(&relay_url) {
+        Ok(u) => u,
+        Err(e) => {
+            let _ = tx.send(StreamMessage::Notice(format!("Invalid URL {}: {}", relay_url, e)));
+            return;
+        }
+    };
+
+    let (ws_stream, _) = match connect_async(&url).await {
+        Ok(t) => t,
+        Err(e) => {
+            println!("DM stream: failed to connect to {}: {}", relay_url, e);
+            return;
+        }
+    };
+
+    let (mut write, mut read) = ws_stream.split();
+    let subscription_id = format!(
+        "plume_dm_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+    );
+
+    let f1 = nostr::filter_to_json(&filter_received);
+    let f2 = nostr::filter_to_json(&filter_sent);
+    let req_message = format!("[\"REQ\",\"{}\",{},{}]", subscription_id, f1, f2);
+
+    if write.send(WsMessage::Text(req_message)).await.is_err() {
+        return;
+    }
+
+    loop {
+        let timeout = tokio::time::timeout(
+            tokio::time::Duration::from_secs(60),
+            read.next(),
+        );
+        match timeout.await {
+            Ok(Some(Ok(WsMessage::Text(text)))) => {
+                match parse_relay_message_actson(&text) {
+                    Ok(RelayMessage::Event { event, .. }) => {
+                        if event.kind == nostr::KIND_DM {
+                            if tx.send(StreamMessage::Event(event)).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    Ok(RelayMessage::EndOfStoredEvents { .. }) => {
+                        // Keep connection open for new DMs
+                    }
+                    Ok(RelayMessage::Notice { message }) => {
+                        println!("DM stream {} notice: {}", relay_url, message);
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        println!("DM stream {} parse error: {}", relay_url, e);
+                    }
+                }
+            }
+            Ok(Some(Ok(WsMessage::Close(_)))) | Ok(Some(Err(_))) => break,
+            Ok(Some(Ok(_))) => {}
+            Ok(None) => break,
+            Err(_) => {} // timeout, continue
+        }
+    }
 }
 
 // Fetch notes from a relay (simple blocking function)

@@ -1,9 +1,28 @@
 <!DOCTYPE html>
+<!--
+  index.html
+  Copyright (C) 2026 Chris Burdess
+
+  This file is part of Plume, a Nostr desktop client.
+
+  Plume is free software: you can redistribute it and/or modify
+  it under the terms of the GNU General Public License as published by
+  the Free Software Foundation, either version 3 of the License, or
+  (at your option) any later version.
+
+  Plume is distributed in the hope that it will be useful,
+  but WITHOUT ANY WARRANTY; without even the implied warranty of
+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+  GNU General Public License for more details.
+
+  You should have received a copy of the GNU General Public License
+  along with Plume.  If not, see <http://www.gnu.org/licenses/>.
+-->
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self' ipc: tauri:; img-src 'self' https: data:; media-src 'self' https:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; connect-src 'self' ipc: tauri: https:">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self' ipc: tauri:; img-src 'self' https: data:; media-src 'self' https:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self' ipc: tauri: https:">
     <title>Plume</title>
     <link rel="stylesheet" href="style.css">
     <link rel="icon" type="image/svg+xml" href="plume.svg">
@@ -17,7 +36,7 @@
                 </a>
                 <ul class="nav-list">
                     <li><a href="#" class="nav-item active" data-view="feed" data-i18n-title="nav.home" data-i18n-aria-label="nav.home"><img src="icons/home.svg" alt="" class="nav-icon" data-i18n-alt="nav.home"></a></li>
-                    <li><a href="#" class="nav-item" data-view="messages" data-i18n-title="nav.messages" data-i18n-aria-label="nav.messages"><img src="icons/envelope.svg" alt="" class="nav-icon" data-i18n-alt="nav.messages"></a></li>
+                    <li><a href="#" class="nav-item" data-view="messages" data-i18n-title="nav.messages" data-i18n-aria-label="nav.messages"><span class="nav-icon-wrap" id="messages-nav-icon-wrap"><img id="messages-nav-icon" src="icons/envelope.svg" alt="" class="nav-icon" data-i18n-alt="nav.messages"><span class="nav-unread-badge" id="messages-unread-badge" aria-hidden="true"></span></span></a></li>
                     <li><a href="#" class="nav-item" data-view="bookmarks" data-i18n-title="nav.bookmarks" data-i18n-aria-label="nav.bookmarks"><img src="icons/bookmark.svg" alt="" class="nav-icon" data-i18n-alt="nav.bookmarks"></a></li>
                     <li><a href="#" class="nav-item" data-view="notifications" data-i18n-title="nav.notifications" data-i18n-aria-label="nav.notifications"><img src="icons/bell.svg" alt="" class="nav-icon" data-i18n-alt="nav.notifications"></a></li>
                     <li><a href="#" class="nav-item" data-view="settings" data-i18n-title="nav.settings" data-i18n-aria-label="nav.settings"><img src="icons/cog.svg" alt="" class="nav-icon" data-i18n-alt="nav.settings"></a></li>
@@ -102,27 +121,167 @@
                     </div>
                 </div>
 
-                <div id="view-settings" class="view">
-                    <div class="view-header view-header-border">
-                        <h2 class="view-title" data-i18n="settings.title"></h2>
-                    </div>
-                    <ul class="settings-menu">
-                        <li><button type="button" class="settings-menu-item" data-settings="account" data-i18n="settings.account"></button></li>
-                        <li><button type="button" class="settings-menu-item" data-settings="home-feed" data-i18n="settings.homeFeed"></button></li>
-                        <li><button type="button" class="settings-menu-item" data-settings="media" data-i18n="settings.mediaUploads"></button></li>
-                        <li><button type="button" class="settings-menu-item" data-settings="muted" data-i18n="settings.mutedContent"></button></li>
-                        <li><button type="button" class="settings-menu-item" data-settings="wallets" data-i18n="settings.wallets"></button></li>
-                        <li><button type="button" class="settings-menu-item" data-settings="relays" data-i18n="settings.relays"></button></li>
-                        <li><button type="button" class="settings-menu-item" data-settings="zaps" data-i18n="settings.zaps"></button></li>
-                    </ul>
-                    <div class="settings-detail" id="settings-detail">
-                        <p class="text-muted" id="settings-detail-default" data-i18n="settings.selectOption"></p>
-                        <div id="relays-container" class="settings-panel" style="display: none;">
-                            <ul id="relay-list"></ul>
+                <div id="view-settings" class="view view-settings-layout">
+                    <div class="settings-sidebar">
+                        <div class="view-header view-header-border">
+                            <h2 class="view-title" data-i18n="settings.title"></h2>
+                        </div>
+                        <ul class="settings-menu">
+                            <li><button type="button" class="settings-menu-item" data-settings="profile" data-i18n="settings.profile"></button></li>
+                            <li><button type="button" class="settings-menu-item" data-settings="keys" data-i18n="settings.keys"></button></li>
+                            <li><button type="button" class="settings-menu-item" data-settings="home-feed" data-i18n="settings.homeFeed"></button></li>
+                            <li><button type="button" class="settings-menu-item" data-settings="media" data-i18n="settings.mediaUploads"></button></li>
+                            <li><button type="button" class="settings-menu-item" data-settings="muted" data-i18n="settings.mutedContent"></button></li>
+                            <li><button type="button" class="settings-menu-item" data-settings="relays" data-i18n="settings.relays"></button></li>
+                            <li><button type="button" class="settings-menu-item" data-settings="zaps" data-i18n="settings.zaps"></button></li>
+                        </ul>
+                        <div class="settings-footer">
+                            <button type="button" id="logout-btn" class="btn btn-ghost" data-i18n="settings.logout"></button>
                         </div>
                     </div>
-                    <div class="settings-footer">
-                        <button type="button" id="logout-btn" class="btn btn-ghost" data-i18n="settings.logout"></button>
+                    <div class="settings-detail-wrap">
+                        <div id="settings-detail" class="settings-detail">
+                            <div id="settings-panel-profile" class="settings-panel" style="display: none;">
+                                <h3 class="settings-panel-title" data-i18n="editProfileModal.title"></h3>
+                                <form id="edit-profile-form">
+                                    <div class="form-group">
+                                        <label for="edit-profile-name" data-i18n="editProfileModal.name"></label>
+                                        <input type="text" id="edit-profile-name" data-i18n-placeholder="editProfileModal.namePlaceholder">
+                                    </div>
+                                    <div class="form-group">
+                                        <label for="edit-profile-nip05" data-i18n="editProfileModal.nip05"></label>
+                                        <input type="text" id="edit-profile-nip05" data-i18n-placeholder="editProfileModal.nip05Placeholder">
+                                    </div>
+                                    <div class="form-group">
+                                        <label for="edit-profile-website" data-i18n="editProfileModal.website"></label>
+                                        <input type="url" id="edit-profile-website" data-i18n-placeholder="editProfileModal.websitePlaceholder">
+                                    </div>
+                                    <div class="form-group">
+                                        <label for="edit-profile-about" data-i18n="editProfileModal.about"></label>
+                                        <textarea id="edit-profile-about" rows="4" data-i18n-placeholder="editProfileModal.aboutPlaceholder"></textarea>
+                                    </div>
+                                    <div class="form-group">
+                                        <label for="edit-profile-lud16" data-i18n="editProfileModal.lud16"></label>
+                                        <input type="text" id="edit-profile-lud16" data-i18n-placeholder="editProfileModal.lud16Placeholder">
+                                    </div>
+                                    <div class="form-group">
+                                        <label for="edit-profile-picture" data-i18n="editProfileModal.pictureUrl"></label>
+                                        <input type="url" id="edit-profile-picture" data-i18n-placeholder="editProfileModal.picturePlaceholder">
+                                    </div>
+                                    <div class="form-group">
+                                        <label for="edit-profile-banner" data-i18n="editProfileModal.bannerUrl"></label>
+                                        <input type="url" id="edit-profile-banner" data-i18n-placeholder="editProfileModal.bannerPlaceholder">
+                                    </div>
+                                    <div class="form-actions form-actions-end">
+                                        <button type="submit" class="btn btn-primary" data-i18n="accountModal.save">Save</button>
+                                    </div>
+                                </form>
+                            </div>
+                            <div id="settings-panel-keys" class="settings-panel" style="display: none;">
+                                <h3 class="settings-panel-title" data-i18n="settings.keys"></h3>
+                                <form id="settings-keys-form">
+                                    <div class="form-group">
+                                        <label for="settings-keys-npub" data-i18n="accountModal.publicKey"></label>
+                                        <input type="text" id="settings-keys-npub" data-i18n-placeholder="accountModal.publicKeyPlaceholder" placeholder="npub1... or 64-char hex">
+                                        <small class="form-hint" data-i18n="accountModal.publicKeyHint"></small>
+                                        <span id="settings-keys-npub-error" class="validation-error"></span>
+                                    </div>
+                                    <div class="form-group">
+                                        <label for="settings-keys-nsec" data-i18n="accountModal.privateKey"></label>
+                                        <input type="password" id="settings-keys-nsec" data-i18n-placeholder="accountModal.privateKeyPlaceholder" placeholder="nsec1... or hex (optional)">
+                                        <small class="form-hint" data-i18n="accountModal.privateKeyHint"></small>
+                                        <span id="settings-keys-nsec-error" class="validation-error"></span>
+                                    </div>
+                                    <div class="form-actions form-actions-end">
+                                        <button type="submit" class="btn btn-primary" data-i18n="accountModal.save">Save</button>
+                                    </div>
+                                </form>
+                            </div>
+                            <div id="settings-panel-home-feed" class="settings-panel" style="display: none;">
+                                <h3 class="settings-panel-title" data-i18n="settings.homeFeed"></h3>
+                                <p class="form-hint" data-i18n="settings.homeFeedModalHint"></p>
+                                <div class="form-group">
+                                    <fieldset class="home-feed-options">
+                                        <label class="radio-label">
+                                            <input type="radio" name="home-feed-mode" value="firehose" id="home-feed-firehose">
+                                            <span data-i18n="settings.homeFeedFirehose"></span>
+                                        </label>
+                                        <label class="radio-label">
+                                            <input type="radio" name="home-feed-mode" value="follows" id="home-feed-follows">
+                                            <span data-i18n="settings.homeFeedFollows"></span>
+                                        </label>
+                                    </fieldset>
+                                </div>
+                                <div class="form-actions form-actions-end">
+                                    <button type="button" id="home-feed-panel-save" class="btn btn-primary" data-i18n="accountModal.save">Save</button>
+                                </div>
+                            </div>
+                            <div id="settings-panel-media" class="settings-panel" style="display: none;">
+                                <h3 class="settings-panel-title" data-i18n="settings.mediaUploads"></h3>
+                                <p class="form-hint" data-i18n="settings.mediaServerHint"></p>
+                                <div class="form-group">
+                                    <label for="settings-media-server-url" data-i18n="settings.mediaServerUrl"></label>
+                                    <input type="url" id="settings-media-server-url" placeholder="https://blossom.primal.net">
+                                </div>
+                                <div class="form-actions form-actions-end">
+                                    <button type="button" id="settings-media-save" class="btn btn-primary" data-i18n="accountModal.save">Save</button>
+                                </div>
+                            </div>
+                            <div id="settings-panel-muted" class="settings-panel" style="display: none;">
+                                <h3 class="settings-panel-title" data-i18n="settings.mutedContent"></h3>
+                                <div class="muted-tabs">
+                                    <button type="button" class="muted-tab active" data-muted-tab="users" data-i18n="settings.mutedUsers"></button>
+                                    <button type="button" class="muted-tab" data-muted-tab="words" data-i18n="settings.mutedWords"></button>
+                                    <button type="button" class="muted-tab" data-muted-tab="hashtags" data-i18n="settings.mutedHashtags"></button>
+                                </div>
+                                <div id="muted-tab-users" class="muted-tab-panel">
+                                    <ul id="muted-users-list" class="muted-list"></ul>
+                                    <p class="form-hint" data-i18n="settings.mutedUsersHint"></p>
+                                </div>
+                                <div id="muted-tab-words" class="muted-tab-panel" style="display: none;">
+                                    <ul id="muted-words-list" class="muted-list"></ul>
+                                    <div class="muted-add-row">
+                                        <input type="text" id="muted-word-input" data-i18n-placeholder="settings.mutedWordPlaceholder" placeholder="Add a word…">
+                                        <button type="button" id="muted-word-add" class="btn">+</button>
+                                    </div>
+                                </div>
+                                <div id="muted-tab-hashtags" class="muted-tab-panel" style="display: none;">
+                                    <ul id="muted-hashtags-list" class="muted-list"></ul>
+                                    <div class="muted-add-row">
+                                        <input type="text" id="muted-hashtag-input" data-i18n-placeholder="settings.mutedHashtagPlaceholder" placeholder="Add a hashtag (without #)…">
+                                        <button type="button" id="muted-hashtag-add" class="btn">+</button>
+                                    </div>
+                                </div>
+                                <div class="form-actions form-actions-end">
+                                    <button type="button" id="settings-muted-save" class="btn btn-primary" data-i18n="accountModal.save">Save</button>
+                                </div>
+                            </div>
+                            <div id="settings-panel-relays" class="settings-panel" style="display: none;">
+                                <h3 class="settings-panel-title" data-i18n="settings.relays"></h3>
+                                <ul id="relay-list"></ul>
+                                <div class="relay-add-row">
+                                    <input type="url" id="relay-add-input" data-i18n-placeholder="settings.relayAddPlaceholder" placeholder="wss://relay.example.com">
+                                    <button type="button" id="relay-add-btn" class="btn" data-i18n="settings.relayAdd">Add</button>
+                                </div>
+                                <div class="form-actions form-actions-end">
+                                    <button type="button" id="settings-relays-save" class="btn btn-primary" data-i18n="accountModal.save">Save</button>
+                                </div>
+                            </div>
+                            <div id="settings-panel-zaps" class="settings-panel" style="display: none;">
+                                <h3 class="settings-panel-title" data-i18n="settings.zaps"></h3>
+                                <div class="form-group">
+                                    <label for="settings-zaps-default-amount" data-i18n="settings.zapsDefaultAmount"></label>
+                                    <input type="number" id="settings-zaps-default-amount" min="1" max="1000000" step="1" value="42">
+                                    <small class="form-hint" data-i18n="settings.zapsDefaultAmountHint"></small>
+                                </div>
+                                <div class="form-actions form-actions-end">
+                                    <button type="button" id="settings-zaps-save" class="btn btn-primary" data-i18n="accountModal.save">Save</button>
+                                </div>
+                            </div>
+                            <div id="settings-detail-default" class="settings-panel settings-panel-default">
+                                <p class="text-muted" data-i18n="settings.selectOption"></p>
+                            </div>
+                        </div>
                     </div>
                 </div>
 
@@ -180,6 +339,20 @@
                     </div>
                 </div>
 
+                <div id="view-note-detail" class="view">
+                    <div class="view-header view-header-border">
+                        <button type="button" id="note-detail-back" class="btn btn-ghost note-detail-back" data-i18n="noteDetail.back">← Back</button>
+                        <h2 class="view-title" data-i18n="noteDetail.title">Note</h2>
+                    </div>
+                    <div id="note-detail-ancestors" class="note-detail-ancestors"></div>
+                    <div id="note-detail-subject-wrap" class="note-detail-subject-wrap"></div>
+                    <div id="note-detail-reply-compose" class="note-detail-reply-compose">
+                        <textarea id="note-detail-reply-content" rows="3" data-i18n-placeholder="noteDetail.replyPlaceholder" placeholder="Write a reply…" maxlength="10000"></textarea>
+                        <button type="button" id="note-detail-reply-btn" class="btn btn-primary" data-i18n="noteDetail.reply">Reply</button>
+                    </div>
+                    <div id="note-detail-replies" class="note-detail-replies"></div>
+                </div>
+
                 <div id="view-following" class="view" aria-hidden="true" style="display: none;"></div>
                 <div id="view-relays" class="view" aria-hidden="true" style="display: none;"></div>
             </section>
@@ -231,51 +404,6 @@
             </div>
         </div>
 
-        <div id="edit-profile-modal" class="modal">
-            <div class="modal-content modal-edit-profile">
-                <div class="modal-header">
-                    <h2 data-i18n="editProfileModal.title">Edit profile</h2>
-                    <button type="button" id="close-edit-profile" class="close-btn" data-i18n-aria-label="app.close">&times;</button>
-                </div>
-                <div class="modal-body">
-                    <form id="edit-profile-form">
-                        <div class="form-group">
-                            <label for="edit-profile-name" data-i18n="editProfileModal.name">Name</label>
-                            <input type="text" id="edit-profile-name" data-i18n-placeholder="editProfileModal.namePlaceholder">
-                        </div>
-                        <div class="form-group">
-                            <label for="edit-profile-nip05" data-i18n="editProfileModal.nip05">Verified Nostr Address (NIP-05)</label>
-                            <input type="text" id="edit-profile-nip05" data-i18n-placeholder="editProfileModal.nip05Placeholder">
-                        </div>
-                        <div class="form-group">
-                            <label for="edit-profile-website" data-i18n="editProfileModal.website">Website</label>
-                            <input type="url" id="edit-profile-website" data-i18n-placeholder="editProfileModal.websitePlaceholder">
-                        </div>
-                        <div class="form-group">
-                            <label for="edit-profile-about" data-i18n="editProfileModal.about">About Me</label>
-                            <textarea id="edit-profile-about" rows="4" data-i18n-placeholder="editProfileModal.aboutPlaceholder"></textarea>
-                        </div>
-                        <div class="form-group">
-                            <label for="edit-profile-lud16" data-i18n="editProfileModal.lud16">Bitcoin Lightning address</label>
-                            <input type="text" id="edit-profile-lud16" data-i18n-placeholder="editProfileModal.lud16Placeholder">
-                        </div>
-                        <div class="form-group">
-                            <label for="edit-profile-picture" data-i18n="editProfileModal.pictureUrl">Avatar (image URL)</label>
-                            <input type="url" id="edit-profile-picture" data-i18n-placeholder="editProfileModal.picturePlaceholder">
-                        </div>
-                        <div class="form-group">
-                            <label for="edit-profile-banner" data-i18n="editProfileModal.bannerUrl">Banner (image URL)</label>
-                            <input type="url" id="edit-profile-banner" data-i18n-placeholder="editProfileModal.bannerPlaceholder">
-                        </div>
-                        <div class="form-actions">
-                            <button type="button" id="edit-profile-cancel" class="btn" data-i18n="editProfileModal.cancel">Cancel</button>
-                            <button type="button" id="edit-profile-ok" class="btn btn-primary" data-i18n="editProfileModal.ok">OK</button>
-                        </div>
-                    </form>
-                </div>
-            </div>
-        </div>
-
         <div id="compose-modal" class="modal">
             <div class="modal-content modal-compose">
                 <div class="modal-header">
@@ -299,10 +427,20 @@
                 </div>
             </div>
         </div>
+
+        <div id="like-emoji-modal" class="modal" aria-hidden="true">
+            <div class="modal-content modal-like-emoji">
+                <div class="modal-header">
+                    <h2 data-i18n="likeModal.title">Choose reaction</h2>
+                    <button type="button" id="close-like-emoji-modal" class="close-btn" data-i18n-aria-label="app.close">&times;</button>
+                </div>
+                <div class="modal-body like-emoji-list-wrap">
+                    <div id="like-emoji-list" class="like-emoji-list"></div>
+                </div>
+            </div>
+        </div>
     </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js"></script>
     <script src="i18n.js"></script>
     <script src="app.js"></script>
 </body>

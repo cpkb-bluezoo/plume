@@ -1,13 +1,38 @@
-// Plume - Cryptographic Operations
-// Handles signature verification and signing for Nostr events
-//
+/*
+ * crypto.rs
+ * Copyright (C) 2026 Chris Burdess
+ *
+ * This file is part of Plume, a Nostr desktop client.
+ *
+ * Plume is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * Plume is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with Plume.  If not, see <http://www.gnu.org/licenses/>.
+ */
+
 // Nostr uses secp256k1 Schnorr signatures (BIP-340)
 // Event IDs are SHA256 hashes of the serialized event
 
-use secp256k1::{schnorr, Keypair, Secp256k1, SecretKey, XOnlyPublicKey};
+use secp256k1::ecdh::shared_secret_point;
+use secp256k1::{schnorr, Keypair, Parity, PublicKey, Secp256k1, SecretKey, XOnlyPublicKey};
 use sha2::{Digest, Sha256};
 
-use crate::nostr::Event;
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+use crate::nostr::{Event, KIND_DM, KIND_ZAP_REQUEST};
+
+use aes::cipher::block_padding::Pkcs7;
+use aes::cipher::{BlockDecryptMut, BlockEncryptMut, KeyIvInit};
+use cbc::{Decryptor, Encryptor};
+type Aes256CbcEnc = Encryptor<aes::Aes256>;
+type Aes256CbcDec = Decryptor<aes::Aes256>;
 
 // ============================================================
 // Event ID Computation
@@ -383,6 +408,128 @@ pub fn create_signed_note(
     return Ok(event);
 }
 
+/// Create and sign a kind 7 (reaction) event. NIP-25: tags ["e", event_id], ["p", author_pubkey]; content = emoji (e.g. "❤️" or "+").
+pub fn create_signed_reaction(
+    event_id: &str,
+    author_pubkey: &str,
+    content: &str,
+    secret_key_hex: &str,
+) -> Result<Event, String> {
+    let pubkey = get_public_key_from_secret(secret_key_hex)?;
+    let created_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let tags = vec![
+        vec![String::from("e"), event_id.to_string()],
+        vec![String::from("p"), author_pubkey.to_string()],
+    ];
+    let mut event = Event {
+        id: String::new(),
+        pubkey,
+        created_at,
+        kind: 7,
+        tags,
+        content: content.to_string(),
+        sig: String::new(),
+    };
+    sign_event(&mut event, secret_key_hex)?;
+    Ok(event)
+}
+
+/// Create and sign a kind 6 (repost) event. NIP-18: tags ["e", event_id], ["p", author_pubkey]; content empty or stringified original event.
+pub fn create_signed_repost(
+    event_id: &str,
+    author_pubkey: &str,
+    content: &str,
+    secret_key_hex: &str,
+) -> Result<Event, String> {
+    let pubkey = get_public_key_from_secret(secret_key_hex)?;
+    let created_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let tags = vec![
+        vec![String::from("e"), event_id.to_string()],
+        vec![String::from("p"), author_pubkey.to_string()],
+    ];
+    let mut event = Event {
+        id: String::new(),
+        pubkey,
+        created_at,
+        kind: 6,
+        tags,
+        content: content.to_string(),
+        sig: String::new(),
+    };
+    sign_event(&mut event, secret_key_hex)?;
+    Ok(event)
+}
+
+/// Create and sign a kind 9734 (zap request) event. NIP-57.
+/// relay_urls: relays for the recipient to publish zap receipt; target_pubkey: recipient; event_id: optional note being zapped; amount_msats: millisatoshis; content: optional message.
+pub fn create_signed_zap_request(
+    relay_urls: &[String],
+    target_pubkey: &str,
+    event_id: Option<&str>,
+    amount_msats: u64,
+    content: &str,
+    secret_key_hex: &str,
+) -> Result<Event, String> {
+    let pubkey = get_public_key_from_secret(secret_key_hex)?;
+    let created_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let mut relay_tag = vec![String::from("relays")];
+    relay_tag.extend(relay_urls.iter().cloned());
+    let mut tags: Vec<Vec<String>> = vec![
+        vec![String::from("p"), target_pubkey.to_string()],
+        relay_tag,
+        vec![String::from("amount"), amount_msats.to_string()],
+    ];
+    if let Some(eid) = event_id {
+        if !eid.is_empty() {
+            tags.insert(1, vec![String::from("e"), eid.to_string()]);
+        }
+    }
+    let mut event = Event {
+        id: String::new(),
+        pubkey,
+        created_at,
+        kind: KIND_ZAP_REQUEST,
+        tags,
+        content: content.to_string(),
+        sig: String::new(),
+    };
+    sign_event(&mut event, secret_key_hex)?;
+    Ok(event)
+}
+
+/// Create and sign a kind 3 (contact list) event. Tags: ["p", pubkey] for each followed user; content empty.
+pub fn create_signed_contact_list(pubkeys: &[String], secret_key_hex: &str) -> Result<Event, String> {
+    let pubkey = get_public_key_from_secret(secret_key_hex)?;
+    let created_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let tags: Vec<Vec<String>> = pubkeys
+        .iter()
+        .map(|p| vec![String::from("p"), p.clone()])
+        .collect();
+    let mut event = Event {
+        id: String::new(),
+        pubkey,
+        created_at,
+        kind: 3,
+        tags,
+        content: String::new(),
+        sig: String::new(),
+    };
+    sign_event(&mut event, secret_key_hex)?;
+    Ok(event)
+}
+
 /// Create and sign a kind 0 (metadata) event.
 pub fn create_signed_metadata_event(content: &str, secret_key_hex: &str) -> Result<Event, String> {
     let pubkey = get_public_key_from_secret(secret_key_hex)?;
@@ -401,6 +548,106 @@ pub fn create_signed_metadata_event(content: &str, secret_key_hex: &str) -> Resu
     };
     sign_event(&mut event, secret_key_hex)?;
     Ok(event)
+}
+
+/// Create and sign a kind 4 (NIP-04) encrypted DM. Encrypts content for recipient, tags ["p", recipient_pubkey].
+pub fn create_signed_dm(
+    recipient_pubkey_hex: &str,
+    plaintext: &str,
+    secret_key_hex: &str,
+) -> Result<Event, String> {
+    let encrypted = nip04_encrypt(plaintext, secret_key_hex, recipient_pubkey_hex)?;
+    let pubkey = get_public_key_from_secret(secret_key_hex)?;
+    let created_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let tags = vec![vec![String::from("p"), recipient_pubkey_hex.to_string()]];
+    let mut event = Event {
+        id: String::new(),
+        pubkey,
+        created_at,
+        kind: KIND_DM,
+        tags,
+        content: encrypted,
+        sig: String::new(),
+    };
+    sign_event(&mut event, secret_key_hex)?;
+    Ok(event)
+}
+
+// ============================================================
+// NIP-04 Encrypted Direct Messages
+// ============================================================
+
+/// Derive the 32-byte shared secret (X coordinate of ECDH point) for NIP-04.
+/// our_secret_hex: our private key (hex); their_public_hex: other party's public key (32-byte hex).
+fn nip04_shared_secret(our_secret_hex: &str, their_public_hex: &str) -> Result<[u8; 32], String> {
+    let our_secret_bytes = hex_to_bytes(our_secret_hex)?;
+    if our_secret_bytes.len() != 32 {
+        return Err(String::from("Invalid secret key length"));
+    }
+    let their_pubkey_bytes = hex_to_bytes(their_public_hex)?;
+    if their_pubkey_bytes.len() != 32 {
+        return Err(String::from("Invalid public key length"));
+    }
+
+    let secret_key = SecretKey::from_slice(&our_secret_bytes)
+        .map_err(|e| format!("Invalid secret key: {}", e))?;
+    let xonly = XOnlyPublicKey::from_slice(&their_pubkey_bytes)
+        .map_err(|e| format!("Invalid public key: {}", e))?;
+
+    // Nostr uses x-only pubkeys; secp256k1 ECDH needs full PublicKey. Use even parity (standard).
+    let public_key = PublicKey::from_x_only_public_key(xonly, Parity::Even);
+
+    let point = shared_secret_point(&public_key, &secret_key);
+    let mut key = [0u8; 32];
+    key.copy_from_slice(&point[0..32]);
+    Ok(key)
+}
+
+/// NIP-04 encrypt: AES-256-CBC with random IV. Returns "base64(ciphertext)?iv=base64(iv)".
+pub fn nip04_encrypt(plaintext: &str, our_secret_hex: &str, their_public_hex: &str) -> Result<String, String> {
+    let key = nip04_shared_secret(our_secret_hex, their_public_hex)?;
+    let iv: [u8; 16] = rand::random();
+
+    let mut buf = vec![0u8; plaintext.len() + 16];
+    let len = plaintext.len();
+    buf[..len].copy_from_slice(plaintext.as_bytes());
+
+    let ciphertext = Aes256CbcEnc::new((&key).into(), (&iv).into())
+        .encrypt_padded_mut::<Pkcs7>(&mut buf, len)
+        .map_err(|_| String::from("Encryption failed"))?;
+
+    let ct_b64 = BASE64.encode(ciphertext);
+    let iv_b64 = BASE64.encode(iv);
+    Ok(format!("{}?iv={}", ct_b64, iv_b64))
+}
+
+/// NIP-04 decrypt. content is "base64(ciphertext)?iv=base64(iv)".
+pub fn nip04_decrypt(content: &str, our_secret_hex: &str, their_public_hex: &str) -> Result<String, String> {
+    let key = nip04_shared_secret(our_secret_hex, their_public_hex)?;
+
+    let parts: Vec<&str> = content.splitn(2, "?iv=").collect();
+    if parts.len() != 2 {
+        return Err(String::from("Invalid NIP-04 content format"));
+    }
+    let ct_b64 = parts[0].trim();
+    let iv_b64 = parts[1].trim();
+
+    let ciphertext = BASE64.decode(ct_b64).map_err(|e| format!("Invalid base64 ciphertext: {}", e))?;
+    let iv: [u8; 16] = BASE64
+        .decode(iv_b64)
+        .map_err(|e| format!("Invalid base64 IV: {}", e))?
+        .try_into()
+        .map_err(|_| String::from("IV must be 16 bytes"))?;
+
+    let mut buf = ciphertext.clone();
+    let decrypted = Aes256CbcDec::new((&key).into(), (&iv).into())
+        .decrypt_padded_mut::<Pkcs7>(&mut buf)
+        .map_err(|_| String::from("Decryption failed (wrong key or corrupted data)"))?;
+
+    String::from_utf8(decrypted.to_vec()).map_err(|e| format!("Invalid UTF-8: {}", e))
 }
 
 // ============================================================

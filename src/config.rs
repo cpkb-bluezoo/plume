@@ -1,5 +1,22 @@
-// Plume - Configuration Management
-// Handles reading and writing configuration from ~/.plume
+/*
+ * config.rs
+ * Copyright (C) 2026 Chris Burdess
+ *
+ * This file is part of Plume, a Nostr desktop client.
+ *
+ * Plume is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * Plume is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with Plume.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 use std::fs;
 use std::io;
@@ -28,6 +45,22 @@ pub struct Config {
 
     // Home feed mode: "follows" (notes from people you follow) or "firehose" (global)
     pub home_feed_mode: String,
+
+    // Media server URL for uploads (e.g. https://blossom.primal.net)
+    pub media_server_url: String,
+
+    // Muted pubkeys (hex)
+    pub muted_users: Vec<String>,
+    // Muted words (filter notes containing these)
+    pub muted_words: Vec<String>,
+    // Muted hashtags (without #)
+    pub muted_hashtags: Vec<String>,
+
+    // Bookmarked note event IDs (stored in config, shown on bookmarks page)
+    pub bookmarks: Vec<String>,
+
+    // Default zap amount in satoshis (for Lightning zaps)
+    pub default_zap_amount: u32,
 }
 
 // Create a default configuration for new users
@@ -45,6 +78,12 @@ impl Config {
             profile_picture: None,
             profile_metadata: None,
             home_feed_mode: String::from("firehose"),
+            media_server_url: String::from("https://blossom.primal.net"),
+            muted_users: Vec::new(),
+            muted_words: Vec::new(),
+            muted_hashtags: Vec::new(),
+            bookmarks: Vec::new(),
+            default_zap_amount: 42,
         }
     }
 }
@@ -121,7 +160,69 @@ pub fn config_to_json(config: &Config) -> String {
     // Add home_feed_mode field
     json.push_str("  \"home_feed_mode\": \"");
     json.push_str(&escape_json_string(&config.home_feed_mode));
-    json.push_str("\"\n");
+    json.push_str("\",\n");
+
+    // Add media_server_url
+    json.push_str("  \"media_server_url\": \"");
+    json.push_str(&escape_json_string(&config.media_server_url));
+    json.push_str("\",\n");
+
+    // Add muted_users array
+    json.push_str("  \"muted_users\": [\n");
+    for (index, s) in config.muted_users.iter().enumerate() {
+        json.push_str("    \"");
+        json.push_str(&escape_json_string(s));
+        json.push_str("\"");
+        if index < config.muted_users.len() - 1 {
+            json.push_str(",");
+        }
+        json.push_str("\n");
+    }
+    json.push_str("  ],\n");
+
+    // Add muted_words array
+    json.push_str("  \"muted_words\": [\n");
+    for (index, s) in config.muted_words.iter().enumerate() {
+        json.push_str("    \"");
+        json.push_str(&escape_json_string(s));
+        json.push_str("\"");
+        if index < config.muted_words.len() - 1 {
+            json.push_str(",");
+        }
+        json.push_str("\n");
+    }
+    json.push_str("  ],\n");
+
+    // Add muted_hashtags array
+    json.push_str("  \"muted_hashtags\": [\n");
+    for (index, s) in config.muted_hashtags.iter().enumerate() {
+        json.push_str("    \"");
+        json.push_str(&escape_json_string(s));
+        json.push_str("\"");
+        if index < config.muted_hashtags.len() - 1 {
+            json.push_str(",");
+        }
+        json.push_str("\n");
+    }
+    json.push_str("  ],\n");
+
+    // Add bookmarks array
+    json.push_str("  \"bookmarks\": [\n");
+    for (index, id) in config.bookmarks.iter().enumerate() {
+        json.push_str("    \"");
+        json.push_str(&escape_json_string(id));
+        json.push_str("\"");
+        if index < config.bookmarks.len() - 1 {
+            json.push_str(",");
+        }
+        json.push_str("\n");
+    }
+    json.push_str("  ],\n");
+
+    // Default zap amount (sats)
+    json.push_str("  \"default_zap_amount\": ");
+    json.push_str(&config.default_zap_amount.to_string());
+    json.push_str("\n");
 
     json.push_str("}");
     
@@ -190,6 +291,63 @@ pub fn json_to_config(json_str: &str) -> Result<Config, String> {
         home_feed_mode = String::from("firehose");
     }
 
+    // Extract media_server_url (string, default blossom.primal.net)
+    let media_server_url: String = if parsed["media_server_url"].is_string() {
+        parsed["media_server_url"].as_str().unwrap().to_string()
+    } else {
+        String::from("https://blossom.primal.net")
+    };
+
+    // Extract muted_users (array of pubkey strings)
+    let mut muted_users: Vec<String> = Vec::new();
+    if parsed["muted_users"].is_array() {
+        for item in parsed["muted_users"].members() {
+            if item.is_string() {
+                muted_users.push(item.as_str().unwrap().to_string());
+            }
+        }
+    }
+
+    // Extract muted_words (array of strings)
+    let mut muted_words: Vec<String> = Vec::new();
+    if parsed["muted_words"].is_array() {
+        for item in parsed["muted_words"].members() {
+            if item.is_string() {
+                muted_words.push(item.as_str().unwrap().to_string());
+            }
+        }
+    }
+
+    // Extract muted_hashtags (array of strings)
+    let mut muted_hashtags: Vec<String> = Vec::new();
+    if parsed["muted_hashtags"].is_array() {
+        for item in parsed["muted_hashtags"].members() {
+            if item.is_string() {
+                muted_hashtags.push(item.as_str().unwrap().to_string());
+            }
+        }
+    }
+
+    // Extract bookmarks (array of event ID strings)
+    let mut bookmarks: Vec<String> = Vec::new();
+    if parsed["bookmarks"].is_array() {
+        for item in parsed["bookmarks"].members() {
+            if item.is_string() {
+                bookmarks.push(item.as_str().unwrap().to_string());
+            }
+        }
+    }
+
+    // Extract default_zap_amount (number, default 42)
+    let default_zap_amount: u32 = match &parsed["default_zap_amount"] {
+        json::JsonValue::Number(n) => {
+            let f: f64 = n.clone().into();
+            let n = f as u32;
+            if n >= 1 && n <= 1_000_000 { n } else { 42 }
+        }
+        _ => 42,
+    };
+
     // Extract relays (array of strings)
     let mut relays: Vec<String> = Vec::new();
     if parsed["relays"].is_array() {
@@ -215,6 +373,12 @@ pub fn json_to_config(json_str: &str) -> Result<Config, String> {
         profile_picture: profile_picture,
         profile_metadata: profile_metadata,
         home_feed_mode: home_feed_mode,
+        media_server_url: media_server_url,
+        muted_users: muted_users,
+        muted_words: muted_words,
+        muted_hashtags: muted_hashtags,
+        bookmarks: bookmarks,
+        default_zap_amount: default_zap_amount,
     };
     
     return Ok(config);

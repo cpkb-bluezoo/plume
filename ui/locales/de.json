@@ -60,6 +60,7 @@
   "profile": {
     "editProfile": "Profil bearbeiten",
     "follow": "Folgen",
+    "unfollow": "Entfolgen",
     "message": "Nachricht",
     "mute": "Stummschalten",
     "following": "Folgt",
@@ -152,6 +153,8 @@
   "errors": {
     "failedToSaveSettings": "Einstellungen konnten nicht gespeichert werden",
     "failedToGenerateKeys": "Schlüsselpaar konnte nicht erstellt werden",
-    "initError": "Initialisierungsfehler"
+    "initError": "Initialisierungsfehler",
+    "loadFailed": "Lesezeichen konnten nicht geladen werden",
+    "failedToPublish": "Veröffentlichung fehlgeschlagen"
   }
 }

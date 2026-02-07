@@ -60,6 +60,7 @@
   "profile": {
     "editProfile": "Modifica profilo",
     "follow": "Segui",
+    "unfollow": "Smetti di seguire",
     "message": "Messaggio",
     "mute": "Silenzia",
     "following": "seguiti",
@@ -152,6 +153,8 @@
   "errors": {
     "failedToSaveSettings": "Salvataggio impostazioni fallito",
     "failedToGenerateKeys": "Generazione coppia di chiavi fallita",
-    "initError": "Errore di inizializzazione"
+    "initError": "Errore di inizializzazione",
+    "loadFailed": "Impossibile caricare i segnalibri",
+    "failedToPublish": "Pubblicazione non riuscita"
   }
 }

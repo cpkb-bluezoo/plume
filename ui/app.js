@@ -1,5 +1,24 @@
-// Plume - Nostr Client Frontend
-// JavaScript for the user interface
+/*
+ * app.js
+ * Copyright (C) 2026 Chris Burdess
+ *
+ * This file is part of Plume, a Nostr desktop client.
+ *
+ * Plume is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * Plume is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with Plume.  If not, see <http://www.gnu.org/licenses/>.
+ */
+
+console.log('[Plume] app.js script parsing/executing (first line)');
 
 // Debug logging - outputs to browser console (view with Cmd+Option+I)
 function debugLog(message) {
@@ -46,7 +65,22 @@ const state = {
     profileFeedStreamNoteIndex: 0,
     profileNotesForPubkey: null, // pubkey for which profileNotes was loaded (so tab switch can reuse)
     viewedProfileRelays: null,   // relay URLs for the currently displayed user (NIP-65); null = not loaded
-    viewedProfileRelaysForPubkey: null
+    viewedProfileRelaysForPubkey: null,
+    bookmarkNotes: [],  // Notes currently shown on bookmarks page (for repost/like lookup)
+    likedNoteIds: {},   // noteId -> true (notes we've liked this session; shows filled heart)
+    ownFollowingPubkeys: [],  // Hex pubkeys we follow (for Follow/Unfollow button state)
+    // Note detail page
+    noteDetailSubjectId: null,
+    noteDetailSubject: null,
+    noteDetailAncestors: [],
+    noteDetailReplies: [],   // [{ note, indent }, ...]
+    noteDetailPreviousView: 'feed',
+    // Unread DMs count for sidebar Messages icon (filled icon + badge). Set by DM sync when implemented.
+    unreadMessageCount: 0,
+    // Messages view
+    selectedConversation: null,   // other_pubkey (hex) or null
+    openConversationWith: null,   // when opening Messages from Profile "Message", set to that pubkey
+    dmStreamStarted: false
 };
 
 // ============================================================
@@ -98,7 +132,7 @@ async function publicKeyToHex(key) {
 // Convert hex to npub format
 async function hexToNpub(hexKey) {
     try {
-        return await invoke('convert_hex_to_npub', { hexKey: hexKey });
+        return await invoke('convert_hex_to_npub', { hex_key: hexKey });
     } catch (error) {
         console.error('Failed to convert to npub:', error);
         return null;
@@ -162,6 +196,7 @@ async function loadConfig() {
         const configJson = await invoke('load_config');
         if (configJson) {
             state.config = JSON.parse(configJson);
+            if (!Array.isArray(state.config.bookmarks)) state.config.bookmarks = [];
             console.log('Config loaded:', state.config);
             
             // Restore full profile from config so sidebar and profile page have it at launch
@@ -194,7 +229,13 @@ async function loadConfig() {
             relays: ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.nostr.band'],
             display_name: 'Anonymous',
             profile_picture: null,
-            profile_metadata: null
+            profile_metadata: null,
+            home_feed_mode: 'firehose',
+            media_server_url: 'https://blossom.primal.net',
+            muted_users: [],
+            muted_words: [],
+            muted_hashtags: [],
+            bookmarks: []
         };
         updateUIFromConfig();
     }
@@ -237,11 +278,171 @@ function updateSidebarAvatarFromConfig() {
     }
 }
 
+// Update Messages nav item: filled icon and unread badge when state.unreadMessageCount > 0.
+function updateMessagesNavUnread() {
+    const wrap = document.getElementById('messages-nav-icon-wrap');
+    const icon = document.getElementById('messages-nav-icon');
+    const badge = document.getElementById('messages-unread-badge');
+    if (!wrap || !icon || !badge) return;
+    const n = state.unreadMessageCount || 0;
+    if (n > 0) {
+        wrap.classList.add('has-unread');
+        icon.src = 'icons/envelope-filled.svg';
+        badge.textContent = n > 99 ? '99+' : String(n);
+        badge.setAttribute('aria-hidden', 'false');
+    } else {
+        wrap.classList.remove('has-unread');
+        icon.src = 'icons/envelope.svg';
+        badge.textContent = '';
+        badge.setAttribute('aria-hidden', 'true');
+    }
+}
+
+// ============================================================
+// Messages view (DMs)
+// ============================================================
+
+function shortenPubkey(pubkey) {
+    if (!pubkey || pubkey.length < 20) return pubkey || '';
+    return pubkey.slice(0, 8) + '…' + pubkey.slice(-8);
+}
+
+async function loadMessagesView() {
+    const listEl = document.querySelector('.messages-list');
+    const emptyEl = document.querySelector('.messages-chat-empty');
+    const paneEl = document.querySelector('.messages-chat-pane');
+    if (!listEl) return;
+
+    if (!state.config || !state.config.public_key) {
+        listEl.innerHTML = '<div class="placeholder-message"><p>' + escapeHtml((window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t('profile.noIdentityYet') : 'Configure keys in Settings.')) + '</p></div>';
+        return;
+    }
+
+    try {
+        const json = await invoke('get_conversations');
+        let conversations = json ? JSON.parse(json) : [];
+        const openWith = state.openConversationWith;
+        if (openWith && !conversations.some(function(c) { return (c.other_pubkey || '').toLowerCase() === (openWith || '').toLowerCase(); })) {
+            conversations = conversations.concat([{ other_pubkey: openWith, last_created_at: 0 }]);
+        }
+        state.conversationsList = conversations;
+
+        if (conversations.length === 0) {
+            listEl.innerHTML = '<div class="placeholder-message"><p data-i18n="messages.noConversations"></p></div>';
+        } else {
+            const t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
+            let html = '';
+            for (let i = 0; i < conversations.length; i++) {
+                const c = conversations[i];
+                const other = c.other_pubkey || '';
+                const name = (state.profileCache && state.profileCache[other] && state.profileCache[other].name) ? escapeHtml(state.profileCache[other].name) : shortenPubkey(other);
+                const ts = c.last_created_at ? new Date(c.last_created_at * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : '';
+                html += '<div class="conversation-item" role="button" tabindex="0" data-other-pubkey="' + escapeHtml(other) + '" title="' + escapeHtml(other) + '"><span class="conversation-item-name">' + name + '</span><span class="conversation-item-meta">' + escapeHtml(ts) + '</span></div>';
+            }
+            listEl.innerHTML = html;
+        }
+
+        if (!state.dmStreamStarted && state.config.relays && state.config.relays.length > 0) {
+            state.dmStreamStarted = true;
+            invoke('start_dm_stream').catch(function(e) { console.warn('start_dm_stream:', e); });
+        }
+
+        state.openConversationWith = null;
+        if (openWith) {
+            selectConversation(openWith);
+        }
+    } catch (e) {
+        console.error('get_conversations failed:', e);
+        listEl.innerHTML = '<div class="placeholder-message"><p>' + escapeHtml(String(e && e.message ? e.message : e)) + '</p></div>';
+    }
+}
+
+function selectConversation(otherPubkeyHex) {
+    state.selectedConversation = otherPubkeyHex;
+    const paneEl = document.querySelector('.messages-chat-pane');
+    const emptyEl = document.querySelector('.messages-chat-empty');
+    document.querySelectorAll('.conversation-item').forEach(function(el) {
+        el.classList.toggle('active', (el.getAttribute('data-other-pubkey') || '').toLowerCase() === (otherPubkeyHex || '').toLowerCase());
+    });
+    if (!otherPubkeyHex) {
+        if (paneEl) paneEl.style.display = 'none';
+        if (emptyEl) emptyEl.style.display = 'flex';
+        return;
+    }
+    if (emptyEl) emptyEl.style.display = 'none';
+    if (paneEl) paneEl.style.display = 'flex';
+    loadConversationMessages(otherPubkeyHex);
+}
+
+async function loadConversationMessages(otherPubkeyHex) {
+    const container = document.getElementById('messages-chat-messages');
+    if (!container) return;
+    container.innerHTML = '<p class="placeholder-message">' + (window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t('noteDetail.loading') : 'Loading…') + '</p>';
+    try {
+        const json = await invoke('get_messages', { otherPubkeyHex: otherPubkeyHex });
+        const messages = json ? JSON.parse(json) : [];
+        renderMessages(container, messages);
+    } catch (e) {
+        console.error('get_messages failed:', e);
+        container.innerHTML = '<p class="placeholder-message">' + escapeHtml(String(e && e.message ? e.message : e)) + '</p>';
+    }
+}
+
+function renderMessages(container, messages) {
+    if (!container) return;
+    const t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
+    if (messages.length === 0) {
+        container.innerHTML = '<p class="placeholder-message">' + (t('messages.selectOrStart') || 'No messages yet.') + '</p>';
+        return;
+    }
+    let html = '';
+    for (let i = 0; i < messages.length; i++) {
+        const m = messages[i];
+        const cls = m.is_outgoing ? 'message-bubble message-outgoing' : 'message-bubble message-incoming';
+        html += '<div class="' + cls + '" data-id="' + escapeHtml(m.id) + '"><div class="message-content">' + escapeHtml(m.content) + '</div><div class="message-meta">' + escapeHtml(new Date(m.created_at * 1000).toLocaleString()) + '</div></div>';
+    }
+    container.innerHTML = html;
+    container.scrollTop = container.scrollHeight;
+}
+
+async function sendMessage() {
+    const other = state.selectedConversation;
+    const input = document.getElementById('message-input');
+    if (!other || !input) return;
+    const text = (input.value || '').trim();
+    if (!text) return;
+    try {
+        await invoke('send_dm', { recipientPubkey: other, plaintext: text });
+        input.value = '';
+        const container = document.getElementById('messages-chat-messages');
+        if (container && container.querySelector('.message-bubble')) {
+            const m = { id: '', content: text, created_at: Math.floor(Date.now() / 1000), is_outgoing: true };
+            const t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
+            const html = '<div class="message-bubble message-outgoing" data-id=""><div class="message-content">' + escapeHtml(text) + '</div><div class="message-meta">' + escapeHtml(new Date().toLocaleString()) + '</div></div>';
+            container.insertAdjacentHTML('beforeend', html);
+            container.scrollTop = container.scrollHeight;
+        } else {
+            loadConversationMessages(other);
+        }
+    } catch (e) {
+        console.error('send_dm failed:', e);
+        alert(e && e.message ? e.message : String(e));
+    }
+}
+
 // Update UI elements from the current config
 function updateUIFromConfig() {
     if (!state.config) return;
 
     state.homeFeedMode = (state.config.home_feed_mode === 'follows') ? 'follows' : 'firehose';
+
+    if (state.profile && state.publicKeyHex) {
+        state.profileCache[state.publicKeyHex] = state.profileCache[state.publicKeyHex] || {};
+        state.profileCache[state.publicKeyHex].name = state.profile.name != null ? state.profile.name : state.profileCache[state.publicKeyHex].name;
+        state.profileCache[state.publicKeyHex].nip05 = state.profile.nip05 != null ? state.profile.nip05 : state.profileCache[state.publicKeyHex].nip05;
+        state.profileCache[state.publicKeyHex].picture = state.profile.picture != null ? state.profile.picture : state.profileCache[state.publicKeyHex].picture;
+        state.profileCache[state.publicKeyHex].lud16 = state.profile.lud16 != null ? state.profile.lud16 : (state.profileCache[state.publicKeyHex].lud16 || null);
+    }
 
     const nameEl = document.getElementById('input-display-name');
     const pubEl = document.getElementById('input-public-key');
@@ -251,6 +452,7 @@ function updateUIFromConfig() {
     if (privEl) privEl.value = state.config.private_key || '';
 
     updateSidebarAvatarFromConfig();
+    updateMessagesNavUnread();
     updateProfileDisplay();
     updateRelayList();
     updateFeedInitialState();
@@ -319,7 +521,7 @@ async function fetchProfile() {
         } else {
             const profileJson = await invoke('fetch_profile', {
                 pubkey: state.viewedProfilePubkey,
-                relayUrls: state.config.relays
+                relay_urls: state.config.relays
             });
             if (profileJson && profileJson !== '{}') {
                 state.viewedProfile = JSON.parse(profileJson);
@@ -328,18 +530,28 @@ async function fetchProfile() {
             }
         }
         updateProfileDisplay();
-        if (state.viewedProfile && state.viewedProfilePubkey) {
-            state.profileCache[state.viewedProfilePubkey] = {
-                name: state.viewedProfile.name || null,
-                nip05: state.viewedProfile.nip05 || null,
-                picture: state.viewedProfile.picture || null
-            };
+        if (state.viewedProfile) {
+            var cacheKey = viewingOwn ? state.publicKeyHex : state.viewedProfilePubkey;
+            if (cacheKey) {
+                state.profileCache[cacheKey] = {
+                    name: state.viewedProfile.name || null,
+                    nip05: state.viewedProfile.nip05 || null,
+                    picture: state.viewedProfile.picture || null,
+                    lud16: state.viewedProfile.lud16 || null
+                };
+            }
         }
         if (viewingOwn) {
             loadProfileFeed(); // load own notes/relays tabs
         } else if (state.viewedProfilePubkey) {
             fetchFollowingAndFollowersForUser(state.viewedProfilePubkey);
             loadProfileFeed(); // fire-and-forget: stream or fetch notes in background
+            // Know if we follow this user (for Follow/Unfollow button)
+            fetchFollowing().then(function(data) {
+                if (data && data.contacts) state.ownFollowingPubkeys = data.contacts.map(function(c) { return c.pubkey; });
+                else state.ownFollowingPubkeys = [];
+                updateFollowButtonState();
+            });
         }
     } catch (error) {
         console.error('Failed to fetch profile:', error);
@@ -475,23 +687,10 @@ function closeProfileQRModal() {
     if (modal) modal.classList.remove('active');
 }
 
-function openEditProfileModal() {
-    var modal = document.getElementById('edit-profile-modal');
-    if (!modal) return;
-    var profile = state.profile || state.viewedProfile || {};
-    document.getElementById('edit-profile-name').value = profile.name || state.config?.display_name || '';
-    document.getElementById('edit-profile-nip05').value = profile.nip05 || '';
-    document.getElementById('edit-profile-website').value = profile.website || '';
-    document.getElementById('edit-profile-about').value = profile.about || '';
-    document.getElementById('edit-profile-lud16').value = profile.lud16 || '';
-    document.getElementById('edit-profile-picture').value = profile.picture || '';
-    document.getElementById('edit-profile-banner').value = profile.banner || '';
-    modal.classList.add('active');
-}
-
-function closeEditProfileModal() {
-    var modal = document.getElementById('edit-profile-modal');
-    if (modal) modal.classList.remove('active');
+// Navigate to Settings with Profile panel open (replaces opening edit profile modal)
+function openEditProfileInSettings() {
+    state.settingsPanelRequested = 'profile';
+    switchView('settings');
 }
 
 function handleEditProfileSubmit(e) {
@@ -534,7 +733,6 @@ function handleEditProfileSubmit(e) {
                 if (picture) state.config.profile_picture = picture;
                 state.config.profile_metadata = profileJson;
             }
-            closeEditProfileModal();
             return fetchProfile();
         })
         .then(function() {
@@ -553,18 +751,19 @@ function handleEditProfileSubmit(e) {
 // Whether the note should be shown on the current profile tab (notes / replies / zaps).
 function profileNoteMatchesTab(note, tab) {
     if (tab === 'zaps') return false;
-    if (tab === 'notes') return true;
+    if (tab === 'notes') return note.kind === 1 || note.kind === 6;
     if (tab === 'replies') {
-        return note.tags && note.tags.some(function(tag) { return Array.isArray(tag) && tag[0] === 'e'; });
+        return note.kind === 1 && note.tags && note.tags.some(function(tag) { return Array.isArray(tag) && tag[0] === 'e'; });
     }
     return true;
 }
 
 // Append a single note to #profile-feed (streaming). Dedupes by id; inserts in sorted position. Returns true if appended.
 function appendProfileNoteCardSync(note) {
-    if (!note || note.kind !== 1) return false;
+    if (!note || (note.kind !== 1 && note.kind !== 6)) return false;
     var container = document.getElementById('profile-feed');
-    if (!container || !state.viewedProfilePubkey) return false;
+    var effectivePubkey = getEffectiveProfilePubkey();
+    if (!container || !effectivePubkey) return false;
     var tab = state.profileTab || 'notes';
     if (!profileNoteMatchesTab(note, tab)) return false;
     if (state.profileNotes.some(function(n) { return n.id === note.id; })) return false;
@@ -577,11 +776,14 @@ function appendProfileNoteCardSync(note) {
     if (placeholder) placeholder.remove();
 
     var noteIndex = state.profileFeedStreamNoteIndex++;
-    var replyToPubkey = getReplyToPubkey(note);
-    var card = createNoteCard(note, noteIndex, 'profile-', replyToPubkey);
-    var viewedPubkey = state.viewedProfilePubkey ? String(state.viewedProfilePubkey).toLowerCase() : '';
-    if (state.viewedProfile && viewedPubkey && String((note.pubkey || '')).toLowerCase() === viewedPubkey) {
-        setCardAvatar(card, state.viewedProfile.picture);
+    var card = note.kind === 6 ? createRepostCard(note, noteIndex, 'profile-') : (function() {
+        var replyToPubkey = getReplyToPubkey(note);
+        return createNoteCard(note, noteIndex, 'profile-', replyToPubkey);
+    })();
+    var viewedPubkey = effectivePubkey ? String(effectivePubkey).toLowerCase() : '';
+    if (viewedPubkey && String((note.pubkey || '')).toLowerCase() === viewedPubkey) {
+        var profileForAvatar = state.viewedProfile || (effectivePubkey === state.publicKeyHex ? state.profile : null);
+        if (profileForAvatar && profileForAvatar.picture) setCardAvatar(card, profileForAvatar.picture);
     }
     if (idx === 0) {
         container.insertBefore(card, container.firstChild);
@@ -590,7 +792,8 @@ function appendProfileNoteCardSync(note) {
     } else {
         container.insertBefore(card, container.children[idx]);
     }
-    verifyNote(note, noteIndex, 'profile-');
+    if (note.kind === 1) verifyNote(note, noteIndex, 'profile-');
+    if (note.kind === 6) verifyRepostOriginal(note, noteIndex, 'profile-');
     ensureProfilesForNotes([note]);
     return true;
 }
@@ -604,7 +807,7 @@ function getEffectiveProfilePubkey() {
 // Load content for the currently viewed profile into #profile-feed (notes/replies/zaps/relays by tab).
 // Non-blocking: shows loading state, then fetches/streams in background like home feed.
 // When viewing own profile, viewedProfilePubkey is null; we use state.publicKeyHex for notes and state.config.relays for Relays tab.
-function loadProfileFeed() {
+async function loadProfileFeed() {
     var container = document.getElementById('profile-feed');
     if (!container || !state.config) return;
     var t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
@@ -644,64 +847,62 @@ function loadProfileFeed() {
         state.profileNotesForPubkey = viewedPubkeyAtStart;
         state.profileFeedStreamNoteIndex = 0;
         var unlisten = { note: function() {}, eose: function() {} };
-        Promise.all([
-            window.__TAURI__.event.listen('profile-feed-note', function(event) {
-                var payload = event.payload;
-                var note = typeof payload === 'string' ? JSON.parse(payload) : payload;
-                if (getEffectiveProfilePubkey() !== viewedPubkeyAtStart) return;
-                if (note.kind !== 1 || (note.pubkey && String(note.pubkey).toLowerCase() !== String(viewedPubkeyAtStart).toLowerCase())) return;
-                appendProfileNoteCardSync(note);
-            }),
-            window.__TAURI__.event.listen('profile-feed-eose', function() {
-                if (getEffectiveProfilePubkey() !== viewedPubkeyAtStart) return;
-                unlisten.note();
-                unlisten.eose();
-                var c = document.getElementById('profile-feed');
-                if (c && c.querySelectorAll('.note-card').length === 0 && !c.querySelector('.placeholder-message')) {
-                    c.innerHTML = '<div class="placeholder-message"><p>' + escapeHtml(t('feed.noNotes')) + '</p></div>';
-                }
-            })
-        ]).then(function(listeners) {
+        try {
+            var listeners = await Promise.all([
+                window.__TAURI__.event.listen('profile-feed-note', function(event) {
+                    var payload = event.payload;
+                    var note = typeof payload === 'string' ? JSON.parse(payload) : payload;
+                    if (getEffectiveProfilePubkey() !== viewedPubkeyAtStart) return;
+                    if ((note.kind !== 1 && note.kind !== 6) || (note.pubkey && String(note.pubkey).toLowerCase() !== String(viewedPubkeyAtStart).toLowerCase())) return;
+                    appendProfileNoteCardSync(note);
+                }),
+                window.__TAURI__.event.listen('profile-feed-eose', function() {
+                    if (getEffectiveProfilePubkey() !== viewedPubkeyAtStart) return;
+                    unlisten.note();
+                    unlisten.eose();
+                    var c = document.getElementById('profile-feed');
+                    if (c && c.querySelectorAll('.note-card').length === 0 && !c.querySelector('.placeholder-message')) {
+                        c.innerHTML = '<div class="placeholder-message"><p>' + escapeHtml(t('feed.noNotes')) + '</p></div>';
+                    }
+                })
+            ]);
             unlisten.note = listeners[0];
             unlisten.eose = listeners[1];
-        }).catch(function(err) {
-            console.error('Profile stream listen failed:', err);
-            container.innerHTML = '<div class="placeholder-message"><p>' + escapeHtml(t('feed.feedFailed')) + '</p></div>';
-        });
-        invoke('start_feed_stream', {
-            relayUrls: state.config.relays,
-            limit: FEED_LIMIT,
-            authors: authors,
-            since: null,
-            stream_context: 'profile'
-        }).catch(function(err) {
-            console.error('Profile stream start failed:', err);
+            await invoke('start_feed_stream', {
+                relay_urls: state.config.relays,
+                limit: FEED_LIMIT,
+                authors: authors,
+                since: null,
+                stream_context: 'profile'
+            });
+        } catch (err) {
+            console.error('Profile stream failed:', err);
             if (getEffectiveProfilePubkey() === viewedPubkeyAtStart && container) {
                 container.innerHTML = '<div class="placeholder-message"><p>' + escapeHtml(t('feed.feedFailed')) + '</p></div>';
             }
             unlisten.note();
             unlisten.eose();
-        });
+        }
         return;
     }
 
-    // Batch fallback: fetch in background, then display (non-blocking)
+    // Batch fallback: fetch in background, then display (non-blocking). profile_feed=true so we get reposts (kind 6).
     state.profileNotesForPubkey = viewedPubkeyAtStart;
-    fetchFeedNotes(state.config.relays, authors, null).then(function(notes) {
+    fetchFeedNotes(state.config.relays, authors, null, true).then(function(notes) {
         if (getEffectiveProfilePubkey() !== viewedPubkeyAtStart) return;
-        var kind1 = notes ? notes.filter(function(n) { return n.kind === 1; }) : [];
-        state.profileNotes = kind1;
+        var feedNotes = notes ? notes.filter(function(n) { return n.kind === 1 || n.kind === 6; }) : [];
+        state.profileNotes = feedNotes;
         if (tab === 'notes') {
-            displayProfileNotes(kind1);
+            displayProfileNotes(feedNotes);
         } else if (tab === 'replies') {
-            var replies = kind1.filter(function(n) {
-                return n.tags && n.tags.some(function(tag) { return Array.isArray(tag) && tag[0] === 'e'; });
+            var replies = feedNotes.filter(function(n) {
+                return n.kind === 1 && n.tags && n.tags.some(function(tag) { return Array.isArray(tag) && tag[0] === 'e'; });
             });
             displayProfileNotes(replies);
         } else if (tab === 'zaps') {
             displayProfileNotes([]);
         } else {
-            displayProfileNotes(kind1);
+            displayProfileNotes(feedNotes);
         }
     }).catch(function(e) {
         console.error('Profile feed failed:', e);
@@ -785,20 +986,24 @@ function displayProfileNotes(notes) {
         container.innerHTML = '<div class="placeholder-message"><p>' + escapeHtml(t('feed.noNotes')) + '</p></div>';
         return;
     }
-    var viewedPubkey = state.viewedProfilePubkey ? String(state.viewedProfilePubkey).toLowerCase() : '';
-    var viewedProfile = state.viewedProfile;
+    var effectivePubkey = getEffectiveProfilePubkey();
+    var viewedPubkey = effectivePubkey ? String(effectivePubkey).toLowerCase() : '';
+    var viewedProfile = state.viewedProfile || (effectivePubkey === state.publicKeyHex ? state.profile : null);
     notes.sort(function(a, b) { return (b.created_at || 0) - (a.created_at || 0); });
     var noteIndex = 0;
     var prefix = 'profile-';
     notes.forEach(function(note) {
-        if (note.kind !== 1) return;
-        var replyToPubkey = getReplyToPubkey(note);
-        var card = createNoteCard(note, noteIndex, prefix, replyToPubkey);
+        if (note.kind !== 1 && note.kind !== 6) return;
+        var card = note.kind === 6 ? createRepostCard(note, noteIndex, prefix) : (function() {
+            var replyToPubkey = getReplyToPubkey(note);
+            return createNoteCard(note, noteIndex, prefix, replyToPubkey);
+        })();
         container.appendChild(card);
         if (viewedProfile && viewedPubkey && String((note.pubkey || '')).toLowerCase() === viewedPubkey) {
             setCardAvatar(card, viewedProfile.picture);
         }
-        verifyNote(note, noteIndex, prefix);
+        if (note.kind === 1) verifyNote(note, noteIndex, prefix);
+        if (note.kind === 6) verifyRepostOriginal(note, noteIndex, prefix);
         noteIndex++;
     });
     ensureProfilesForNotes(notes);
@@ -951,7 +1156,10 @@ function updateProfileDisplay() {
     if (editProfileBtn) editProfileBtn.style.display = viewingOwn ? 'block' : 'none';
     if (followBtn) followBtn.style.display = viewingOwn ? 'none' : 'block';
     if (messageUserBtn) messageUserBtn.style.display = viewingOwn ? 'none' : 'flex';
-    if (muteBtn) muteBtn.style.display = viewingOwn ? 'none' : 'block';
+    if (muteBtn) {
+        muteBtn.style.display = viewingOwn ? 'none' : 'block';
+        muteBtn.textContent = (state.viewedProfilePubkey && isUserMuted(state.viewedProfilePubkey)) ? t('profile.unmute') : t('profile.mute');
+    }
 
     if (sidebarAvatar && sidebarPlaceholder) {
         const pic = state.profile?.picture || state.config?.profile_picture;
@@ -1029,6 +1237,42 @@ async function fetchFollowing() {
         console.error('Failed to fetch following:', error);
     }
     return null;
+}
+
+// Update Follow/Unfollow button label and state when viewing another user's profile
+function updateFollowButtonState() {
+    const followBtn = document.getElementById('follow-btn');
+    if (!followBtn) return;
+    const viewingOwn = state.viewedProfilePubkey === null || state.viewedProfilePubkey === state.publicKeyHex;
+    if (viewingOwn) return;
+    const t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
+    const isFollowing = state.ownFollowingPubkeys && state.viewedProfilePubkey && state.ownFollowingPubkeys.indexOf(state.viewedProfilePubkey) !== -1;
+    followBtn.textContent = isFollowing ? (t('profile.unfollow') || 'Unfollow') : (t('profile.follow') || 'Follow');
+    followBtn.dataset.following = isFollowing ? '1' : '0';
+}
+
+// Follow or unfollow the currently viewed profile user
+async function handleFollowClick() {
+    if (!state.viewedProfilePubkey || state.viewedProfilePubkey === state.publicKeyHex) return;
+    const followBtn = document.getElementById('follow-btn');
+    const currentlyFollowing = followBtn && followBtn.dataset.following === '1';
+    const add = !currentlyFollowing;
+    followBtn && (followBtn.disabled = true);
+    try {
+        await invoke('update_contact_list', { add: add, targetPubkey: state.viewedProfilePubkey });
+        if (add) {
+            if (!state.ownFollowingPubkeys) state.ownFollowingPubkeys = [];
+            if (state.ownFollowingPubkeys.indexOf(state.viewedProfilePubkey) === -1) state.ownFollowingPubkeys.push(state.viewedProfilePubkey);
+        } else {
+            if (state.ownFollowingPubkeys) state.ownFollowingPubkeys = state.ownFollowingPubkeys.filter(function(p) { return p !== state.viewedProfilePubkey; });
+        }
+        updateFollowButtonState();
+    } catch (e) {
+        console.error('Follow/unfollow failed:', e);
+        alert((window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t('errors.failedToPublish') : 'Failed to update follow') + ': ' + e);
+    } finally {
+        if (followBtn) followBtn.disabled = false;
+    }
 }
 
 // Fetch followers (who follows you)
@@ -1122,10 +1366,209 @@ function switchFollowTab(tabName) {
 // View Management
 // ============================================================
 
+// Whether a note (by event id) is in the user's bookmarks
+function isNoteBookmarked(noteId) {
+    return !!(state.config && Array.isArray(state.config.bookmarks) && state.config.bookmarks.indexOf(noteId) !== -1);
+}
+
+// Load and render the bookmarks view (fetch events by ids from config)
+async function loadBookmarksView() {
+    const container = document.getElementById('bookmarks-container');
+    if (!container) return;
+    const t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
+    const ids = state.config && Array.isArray(state.config.bookmarks) ? state.config.bookmarks : [];
+    const relays = state.config && state.config.relays && state.config.relays.length ? state.config.relays : [];
+    if (ids.length === 0 || relays.length === 0) {
+        container.innerHTML = '<div class="placeholder-message"><p>' + escapeHtml(t('bookmarks.noBookmarks')) + '</p></div>';
+        return;
+    }
+    container.innerHTML = '<div class="placeholder-message"><p>' + escapeHtml(t('feed.notesHint') || 'Loading…') + '</p></div>';
+    try {
+        const resultJson = await invoke('fetch_events_by_ids', { relay_urls: relays, ids: ids });
+        const notes = resultJson ? JSON.parse(resultJson) : [];
+        container.innerHTML = '';
+        if (notes.length === 0) {
+            container.innerHTML = '<div class="placeholder-message"><p>' + escapeHtml(t('bookmarks.noBookmarks')) + '</p></div>';
+            return;
+        }
+        notes.forEach(function(note, i) {
+            var replyToPubkey = getReplyToPubkey(note);
+            var card = createNoteCard(note, i, 'bookmark-', replyToPubkey, true);
+            container.appendChild(card);
+        });
+        state.bookmarkNotes = notes;
+        notes.forEach(function(note, i) {
+            verifyNote(note, i, 'bookmark-');
+        });
+        await ensureProfilesForNotes(notes);
+        // Explicitly set avatars for bookmark cards (in case selector missed, or to use cache we already had)
+        notes.forEach(function(note, i) {
+            var profile = state.profileCache[note.pubkey];
+            if (profile && profile.picture) {
+                var cardEl = container.children[i];
+                if (cardEl) setCardAvatar(cardEl, profile.picture);
+            }
+        });
+    } catch (e) {
+        console.error('Failed to load bookmarks:', e);
+        state.bookmarkNotes = [];
+        const msg = t('errors.loadFailed') || 'Failed to load bookmarks';
+        const detail = (e && (e.message || String(e))) ? ': ' + (e.message || String(e)) : '';
+        container.innerHTML = '<div class="placeholder-message"><p>' + escapeHtml(msg + detail) + '</p></div>';
+    }
+}
+
+// Build threaded replies: map parent_id -> [children], then flatten with indent (BFS).
+function buildReplyThread(replies, subjectId) {
+    var byParent = {};
+    byParent[subjectId] = [];
+    replies.forEach(function(note) {
+        var pid = getParentEventId(note) || subjectId;
+        if (!byParent[pid]) byParent[pid] = [];
+        byParent[pid].push(note);
+    });
+    var out = [];
+    function addChildren(parentId, indent) {
+        var list = byParent[parentId];
+        if (!list) return;
+        list.sort(function(a, b) { return (a.created_at || 0) - (b.created_at || 0); });
+        list.forEach(function(note) {
+            out.push({ note: note, indent: indent });
+            addChildren(note.id, indent + 1);
+        });
+    }
+    addChildren(subjectId, 0);
+    return out;
+}
+
+// Open the note detail page for a note (by id or full note object). Fetches subject, ancestors, replies; then switches view and renders.
+async function openNoteDetail(noteIdOrNote) {
+    var noteId = typeof noteIdOrNote === 'string' ? noteIdOrNote : (noteIdOrNote && noteIdOrNote.id);
+    if (!noteId) return;
+    if (state.currentView === 'note-detail' && state.noteDetailSubjectId === noteId) return;
+    state.noteDetailPreviousView = state.currentView;
+    state.noteDetailSubjectId = noteId;
+    state.noteDetailSubject = null;
+    state.noteDetailAncestors = [];
+    state.noteDetailReplies = [];
+
+    var t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
+    var relays = state.config && state.config.relays ? state.config.relays : [];
+    if (!relays.length) {
+        state.currentView = 'note-detail';
+        switchView('note-detail');
+        renderNoteDetailPage();
+        return;
+    }
+
+    switchView('note-detail');
+    var ancestorsEl = document.getElementById('note-detail-ancestors');
+    var subjectWrap = document.getElementById('note-detail-subject-wrap');
+    var repliesEl = document.getElementById('note-detail-replies');
+    if (ancestorsEl) ancestorsEl.innerHTML = '<div class="placeholder-message"><p>' + escapeHtml(t('noteDetail.loading')) + '</p></div>';
+    if (subjectWrap) subjectWrap.innerHTML = '';
+    if (repliesEl) repliesEl.innerHTML = '';
+
+    var subject = typeof noteIdOrNote === 'object' && noteIdOrNote.id === noteId ? noteIdOrNote : null;
+    if (!subject) {
+        try {
+            var res = await invoke('fetch_events_by_ids', { relay_urls: relays, ids: [noteId] });
+            var arr = res ? JSON.parse(res) : [];
+            subject = arr.length ? arr[0] : null;
+        } catch (e) {
+            console.error('Failed to fetch subject note:', e);
+        }
+    }
+    if (!subject) {
+        if (ancestorsEl) ancestorsEl.innerHTML = '<div class="placeholder-message"><p>' + escapeHtml(t('feed.feedFailed')) + '</p></div>';
+        return;
+    }
+    state.noteDetailSubject = subject;
+
+    var ancestors = [];
+    var current = subject;
+    var seen = {};
+    while (current) {
+        var parentId = getParentEventId(current);
+        if (!parentId || seen[parentId]) break;
+        seen[parentId] = true;
+        try {
+            var r = await invoke('fetch_events_by_ids', { relay_urls: relays, ids: [parentId] });
+            var a = r ? JSON.parse(r) : [];
+            if (!a.length) break;
+            var parentNote = a[0];
+            ancestors.unshift(parentNote);
+            current = parentNote;
+        } catch (_) { break; }
+    }
+    state.noteDetailAncestors = ancestors;
+
+    var repliesRaw = [];
+    try {
+        var replyJson = await invoke('fetch_replies_to_event', { relay_urls: relays, event_id: noteId, limit: 500 });
+        repliesRaw = replyJson ? JSON.parse(replyJson) : [];
+    } catch (e) {
+        console.error('Failed to fetch replies:', e);
+    }
+    state.noteDetailReplies = buildReplyThread(repliesRaw, noteId);
+    renderNoteDetailPage();
+}
+
+function renderNoteDetailPage() {
+    var t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
+    var ancestorsEl = document.getElementById('note-detail-ancestors');
+    var subjectWrap = document.getElementById('note-detail-subject-wrap');
+    var repliesEl = document.getElementById('note-detail-replies');
+    var replyContent = document.getElementById('note-detail-reply-content');
+    if (!ancestorsEl || !subjectWrap || !repliesEl) return;
+
+    ancestorsEl.innerHTML = '';
+    if (state.noteDetailAncestors.length) {
+        state.noteDetailAncestors.forEach(function(note, i) {
+            var replyToPubkey = getReplyToPubkey(note);
+            var card = createNoteCard(note, 'ancestor-' + i, 'note-detail-ancestor-', replyToPubkey);
+            ancestorsEl.appendChild(card);
+        });
+        ensureProfilesForNotes(state.noteDetailAncestors);
+    }
+
+    subjectWrap.innerHTML = '';
+    if (state.noteDetailSubject) {
+        var sub = state.noteDetailSubject;
+        var replyToPubkey = getReplyToPubkey(sub);
+        var card = createNoteCard(sub, 0, 'note-detail-subject-', replyToPubkey);
+        card.classList.add('note-detail-subject-card');
+        subjectWrap.appendChild(card);
+        ensureProfilesForNotes([sub]);
+    }
+
+    if (replyContent) replyContent.value = '';
+
+    repliesEl.innerHTML = '';
+    if (state.noteDetailReplies.length) {
+        state.noteDetailReplies.forEach(function(item, i) {
+            var wrap = document.createElement('div');
+            wrap.className = 'note-detail-reply-item';
+            wrap.setAttribute('data-indent', Math.min(5, item.indent));
+            var replyToPubkey = getReplyToPubkey(item.note);
+            var card = createNoteCard(item.note, i, 'note-detail-reply-', replyToPubkey);
+            wrap.appendChild(card);
+            repliesEl.appendChild(wrap);
+        });
+        ensureProfilesForNotes(state.noteDetailReplies.map(function(x) { return x.note; }));
+    } else {
+        repliesEl.innerHTML = '<div class="placeholder-message"><p>' + escapeHtml(t('noteDetail.noReplies')) + '</p></div>';
+    }
+}
+
 // Switch to a different view
 function switchView(viewName) {
+    console.log('[Plume] switchView(' + viewName + ') called');
     const viewEl = document.getElementById('view-' + viewName);
-    if (!viewEl) return;
+    if (!viewEl) {
+        console.warn('[Plume] switchView: element #view-' + viewName + ' not found');
+        return;
+    }
 
     document.querySelectorAll('.nav-item').forEach(item => {
         item.classList.remove('active');
@@ -1157,6 +1600,19 @@ function switchView(viewName) {
             fetchFollowingAndFollowers();
         }
     }
+    if (viewName === 'messages') {
+        state.unreadMessageCount = 0;
+        updateMessagesNavUnread();
+        loadMessagesView();
+    }
+    if (viewName === 'bookmarks') {
+        loadBookmarksView();
+    }
+    if (viewName === 'settings') {
+        var panel = state.settingsPanelRequested || null;
+        state.settingsPanelRequested = null;
+        showSettingsPanel(panel);
+    }
     // When switching to Home (including clicking Home again while already on feed), request incremental updates only.
     if (viewName === 'feed' && state.initialFeedLoadDone) {
         if (state.homeFeedMode === 'firehose') {
@@ -1171,9 +1627,8 @@ function switchView(viewName) {
 // Modal Management
 // ============================================================
 
-// Open settings modal
+// Open settings modal (for Account/Keys – still used for keys)
 function openSettings() {
-    // Clear any previous validation errors
     clearValidationErrors();
     document.getElementById('settings-modal').classList.add('active');
 }
@@ -1181,6 +1636,231 @@ function openSettings() {
 // Close settings modal
 function closeSettings() {
     document.getElementById('settings-modal').classList.remove('active');
+}
+
+// Show a settings panel by key. key null = show default placeholder.
+function showSettingsPanel(key) {
+    var detail = document.getElementById('settings-detail');
+    if (!detail) return;
+    var panels = detail.querySelectorAll('.settings-panel');
+    var defaultEl = document.getElementById('settings-detail-default');
+    panels.forEach(function(panel) {
+        if (panel.id === 'settings-detail-default') {
+            panel.style.display = key ? 'none' : 'flex';
+        } else {
+            panel.style.display = (panel.id === 'settings-panel-' + key) ? 'block' : 'none';
+        }
+    });
+
+    document.querySelectorAll('.settings-menu-item').forEach(function(btn) {
+        btn.classList.toggle('active', btn.dataset.settings === key);
+    });
+
+    if (key === 'keys') {
+        populateKeysPanel();
+        return;
+    }
+
+    if (key === 'profile') {
+        var profile = state.profile || state.viewedProfile || {};
+        document.getElementById('edit-profile-name').value = profile.name || state.config?.display_name || '';
+        document.getElementById('edit-profile-nip05').value = profile.nip05 || '';
+        document.getElementById('edit-profile-website').value = profile.website || '';
+        document.getElementById('edit-profile-about').value = profile.about || '';
+        document.getElementById('edit-profile-lud16').value = profile.lud16 || '';
+        document.getElementById('edit-profile-picture').value = profile.picture || '';
+        document.getElementById('edit-profile-banner').value = profile.banner || '';
+    }
+    if (key === 'home-feed') {
+        var mode = (state.config && state.config.home_feed_mode === 'follows') ? 'follows' : 'firehose';
+        var firehoseRadio = document.getElementById('home-feed-firehose');
+        var followsRadio = document.getElementById('home-feed-follows');
+        if (firehoseRadio) firehoseRadio.checked = (mode === 'firehose');
+        if (followsRadio) followsRadio.checked = (mode === 'follows');
+    }
+    if (key === 'media') {
+        var urlEl = document.getElementById('settings-media-server-url');
+        if (urlEl) urlEl.value = (state.config && state.config.media_server_url) || 'https://blossom.primal.net';
+    }
+    if (key === 'muted') {
+        renderMutedPanels();
+    }
+    if (key === 'relays') {
+        updateRelayList();
+        bindRelayPanelHandlers();
+        runRelayTests();
+    }
+    if (key === 'zaps') {
+        var amountEl = document.getElementById('settings-zaps-default-amount');
+        if (amountEl) amountEl.value = (state.config && state.config.default_zap_amount != null) ? state.config.default_zap_amount : 42;
+    }
+}
+
+// Populate Keys panel with npub/nsec (from hex in config)
+async function populateKeysPanel() {
+    var npubEl = document.getElementById('settings-keys-npub');
+    var nsecEl = document.getElementById('settings-keys-nsec');
+    if (!npubEl || !nsecEl) return;
+    npubEl.value = '';
+    nsecEl.value = '';
+    var npubError = document.getElementById('settings-keys-npub-error');
+    var nsecError = document.getElementById('settings-keys-nsec-error');
+    if (npubError) npubError.textContent = '';
+    if (nsecError) nsecError.textContent = '';
+    if (!state.config) return;
+    if (state.config.public_key) {
+        try {
+            var npub = await hexToNpub(state.config.public_key);
+            npubEl.value = npub || state.config.public_key;
+        } catch (e) {
+            npubEl.value = state.config.public_key;
+        }
+    }
+    if (state.config.private_key) {
+        try {
+            var nsec = await invoke('convert_hex_to_nsec', { hex_key: state.config.private_key });
+            nsecEl.value = nsec || '';
+        } catch (e) {
+            nsecEl.value = state.config.private_key;
+        }
+    }
+}
+
+// Save Keys panel: validate npub/nsec, store hex, save config
+async function saveKeysPanel(event) {
+    if (event) event.preventDefault();
+    var npubEl = document.getElementById('settings-keys-npub');
+    var nsecEl = document.getElementById('settings-keys-nsec');
+    var npubError = document.getElementById('settings-keys-npub-error');
+    var nsecError = document.getElementById('settings-keys-nsec-error');
+    if (!npubEl || !state.config) return;
+    if (npubError) npubError.textContent = '';
+    if (nsecError) nsecError.textContent = '';
+    var publicKeyHex = null;
+    var privateKeyHex = null;
+    var npubRaw = (npubEl && npubEl.value) ? npubEl.value.trim() : '';
+    if (!npubRaw) {
+        if (npubError) npubError.textContent = 'Public key is required';
+        return;
+    }
+    var pubResult = await validatePublicKey(npubRaw);
+    if (!pubResult.valid) {
+        if (npubError) npubError.textContent = pubResult.error || 'Invalid public key';
+        return;
+    }
+    publicKeyHex = pubResult.hex;
+    if (nsecEl && nsecEl.value.trim()) {
+        var privResult = await validateSecretKey(nsecEl.value.trim());
+        if (!privResult.valid) {
+            if (nsecError) nsecError.textContent = privResult.error || 'Invalid private key';
+            return;
+        }
+        privateKeyHex = privResult.hex;
+    }
+    state.config.public_key = publicKeyHex;
+    state.config.private_key = privateKeyHex || state.config.private_key || null;
+    state.publicKeyHex = publicKeyHex;
+    state.publicKeyNpub = pubResult.npub || null;
+    await saveConfig();
+    updateUIFromConfig();
+}
+
+// Save Home feed mode from settings panel
+function saveHomeFeedModeFromPanel() {
+    var followsRadio = document.getElementById('home-feed-follows');
+    var mode = (followsRadio && followsRadio.checked) ? 'follows' : 'firehose';
+    if (!state.config) state.config = {};
+    state.config.home_feed_mode = mode;
+    state.homeFeedMode = mode;
+    saveConfig().then(function() {
+        if (state.currentView === 'feed') {
+            state.initialFeedLoadDone = false;
+            if (state.feedPollIntervalId) { clearInterval(state.feedPollIntervalId); state.feedPollIntervalId = null; }
+            updateFeedInitialState();
+            loadInitialFeed();
+        }
+    }).catch(function(err) { console.error('Failed to save home feed mode:', err); });
+}
+
+// Save Zaps default amount from settings panel
+function saveZapsFromPanel() {
+    var amountEl = document.getElementById('settings-zaps-default-amount');
+    if (!state.config || !amountEl) return;
+    var raw = parseInt(amountEl.value, 10);
+    var amount = isNaN(raw) ? 42 : Math.max(1, Math.min(1000000, raw));
+    state.config.default_zap_amount = amount;
+    amountEl.value = amount;
+    saveConfig().catch(function(err) { console.error('Failed to save zaps settings:', err); });
+}
+
+// Save media server URL from settings panel
+function saveMediaServerFromPanel() {
+    var urlEl = document.getElementById('settings-media-server-url');
+    if (!state.config || !urlEl) return;
+    state.config.media_server_url = (urlEl.value && urlEl.value.trim()) || 'https://blossom.primal.net';
+    saveConfig().catch(function(err) { console.error('Failed to save media server URL:', err); });
+}
+
+// Muted: ensure config arrays exist
+function ensureMutedConfig() {
+    if (!state.config) return;
+    if (!Array.isArray(state.config.muted_users)) state.config.muted_users = [];
+    if (!Array.isArray(state.config.muted_words)) state.config.muted_words = [];
+    if (!Array.isArray(state.config.muted_hashtags)) state.config.muted_hashtags = [];
+}
+
+function isUserMuted(pubkey) {
+    if (!pubkey || !state.config || !Array.isArray(state.config.muted_users)) return false;
+    var pk = String(pubkey).toLowerCase();
+    return state.config.muted_users.some(function(p) { return String(p).toLowerCase() === pk; });
+}
+
+function handleMuteClick() {
+    var pubkey = state.viewedProfilePubkey;
+    if (!pubkey || !state.config) return;
+    ensureMutedConfig();
+    var pk = String(pubkey).toLowerCase();
+    var idx = state.config.muted_users.findIndex(function(p) { return String(p).toLowerCase() === pk; });
+    if (idx === -1) {
+        state.config.muted_users.push(pubkey);
+    } else {
+        state.config.muted_users.splice(idx, 1);
+    }
+    saveConfig().then(function() {
+        updateProfileDisplay();
+    }).catch(function(err) { console.error('Failed to save mute:', err); });
+}
+
+function renderMutedPanels() {
+    ensureMutedConfig();
+    var users = state.config.muted_users || [];
+    var words = state.config.muted_words || [];
+    var hashtags = state.config.muted_hashtags || [];
+    var t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
+    var ulUsers = document.getElementById('muted-users-list');
+    var ulWords = document.getElementById('muted-words-list');
+    var ulHashtags = document.getElementById('muted-hashtags-list');
+    if (ulUsers) {
+        ulUsers.innerHTML = users.length ? users.map(function(pubkey) {
+            var name = (state.profileCache && state.profileCache[pubkey] && state.profileCache[pubkey].name) || shortenKey(pubkey);
+            return '<li data-pubkey="' + escapeHtml(pubkey) + '"><span>' + escapeHtml(name) + '</span><button type="button" class="muted-item-remove" data-i18n="profile.unmute">Unmute</button></li>';
+        }).join('') : '';
+    }
+    if (ulWords) {
+        ulWords.innerHTML = words.length ? words.map(function(w) {
+            return '<li data-word="' + escapeHtml(w) + '"><span>' + escapeHtml(w) + '</span><button type="button" class="muted-item-remove">' + escapeHtml(t('app.close') || 'Remove') + '</button></li>';
+        }).join('') : '';
+    }
+    if (ulHashtags) {
+        ulHashtags.innerHTML = hashtags.length ? hashtags.map(function(h) {
+            return '<li data-hashtag="' + escapeHtml(h) + '"><span>#' + escapeHtml(h) + '</span><button type="button" class="muted-item-remove">' + escapeHtml(t('app.close') || 'Remove') + '</button></li>';
+        }).join('') : '';
+    }
+}
+
+function saveMutedFromPanel() {
+    ensureMutedConfig();
+    saveConfig().catch(function(err) { console.error('Failed to save muted lists:', err); });
 }
 
 // Clear validation error displays
@@ -1212,38 +1892,114 @@ function showValidationError(inputId, message) {
 // Relay Management
 // ============================================================
 
-// Update the relay list in the UI
+// Update the relay list in the UI (with delete button per relay)
 function updateRelayList() {
     const t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
     const relayList = document.getElementById('relay-list');
+    if (!relayList) return;
     relayList.innerHTML = '';
-    
-    if (!state.config || !state.config.relays) return;
-    
-    const testLabel = t('relays.test');
-    const notTestedTitle = t('relays.notTested');
+
+    if (!state.config) state.config = {};
+    if (!Array.isArray(state.config.relays)) state.config.relays = [];
+
+    const deleteLabel = t('settings.relayDelete');
+    const unknownTitle = t('relays.statusUnknown');
     state.config.relays.forEach((relay, index) => {
         const li = document.createElement('li');
         li.className = 'relay-item';
+        li.dataset.index = String(index);
+        const esc = escapeHtml(relay);
         li.innerHTML = `
-            <span class="relay-url">${escapeHtml(relay)}</span>
-            <button class="btn btn-small" onclick="testRelay('${escapeHtml(relay)}')">${escapeHtml(testLabel)}</button>
-            <div class="relay-status" id="relay-status-${index}" title="${escapeHtml(notTestedTitle)}"></div>
+            <span class="relay-url">${esc}</span>
+            <div class="relay-status" id="relay-status-${index}" title="${escapeHtml(unknownTitle)}" aria-label="${escapeHtml(unknownTitle)}"></div>
+            <button type="button" class="btn btn-small btn-ghost relay-delete-btn" data-index="${index}" aria-label="${escapeHtml(deleteLabel)}">×</button>
         `;
         relayList.appendChild(li);
     });
 }
 
-// Test a relay connection
-async function testRelay(relayUrl) {
-    console.log('Testing relay:', relayUrl);
-    
-    try {
-        const result = await invoke('test_relay_connection', { relayUrl: relayUrl });
-        alert('✅ ' + result);
-    } catch (error) {
-        alert('❌ Connection failed: ' + error);
+// Bind relay panel: add, delete, save (so they work after updateRelayList)
+function bindRelayPanelHandlers() {
+    var list = document.getElementById('relay-list');
+    var addInput = document.getElementById('relay-add-input');
+    var addBtn = document.getElementById('relay-add-btn');
+    var saveBtn = document.getElementById('settings-relays-save');
+    if (!list) return;
+
+    list.removeEventListener('click', handleRelayListClick);
+    list.addEventListener('click', handleRelayListClick);
+
+    if (addBtn) {
+        addBtn.onclick = function() {
+            var url = addInput && addInput.value ? addInput.value.trim() : '';
+            if (!url) return;
+            if (!url.startsWith('ws://') && !url.startsWith('wss://')) url = 'wss://' + url;
+            if (!state.config) state.config = {};
+            if (!Array.isArray(state.config.relays)) state.config.relays = [];
+            if (state.config.relays.indexOf(url) !== -1) return;
+            state.config.relays.push(url);
+            updateRelayList();
+            bindRelayPanelHandlers();
+            runRelayTests();
+            if (addInput) addInput.value = '';
+        };
     }
+    if (addInput && addInput.addEventListener) {
+        addInput.onkeydown = function(e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                if (addBtn) addBtn.click();
+            }
+        };
+    }
+    if (saveBtn) {
+        saveBtn.onclick = function() {
+            saveConfig().catch(function(err) { console.error('Failed to save relays:', err); });
+        };
+    }
+}
+
+function handleRelayListClick(e) {
+    var target = e.target;
+    if (target.classList && target.classList.contains('relay-delete-btn')) {
+        var idx = parseInt(target.getAttribute('data-index'), 10);
+        if (!state.config || !Array.isArray(state.config.relays) || isNaN(idx) || idx < 0 || idx >= state.config.relays.length) return;
+        state.config.relays.splice(idx, 1);
+        updateRelayList();
+        bindRelayPanelHandlers();
+        runRelayTests();
+        return;
+    }
+}
+
+// Test all relays asynchronously when the relay list panel is visible; update status dots (grey=unknown, green=ok, red=failed)
+function runRelayTests() {
+    var t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
+    var connectedTitle = t('relays.statusConnected');
+    var failedTitle = t('relays.statusFailed');
+    if (!state.config || !Array.isArray(state.config.relays)) return;
+    state.config.relays.forEach(function(relayUrl, index) {
+        var el = document.getElementById('relay-status-' + index);
+        if (!el) return;
+        el.classList.remove('connected', 'failed');
+        el.title = t('relays.statusUnknown');
+        el.setAttribute('aria-label', t('relays.statusUnknown'));
+        invoke('test_relay_connection', { relayUrl: relayUrl })
+            .then(function(result) {
+                if (!el.parentNode) return;
+                el.classList.remove('failed');
+                el.classList.add('connected');
+                el.title = connectedTitle;
+                el.setAttribute('aria-label', connectedTitle);
+            })
+            .catch(function(err) {
+                if (!el.parentNode) return;
+                el.classList.remove('connected');
+                el.classList.add('failed');
+                el.title = failedTitle;
+                el.setAttribute('aria-label', failedTitle);
+            });
+    });
 }
 
 // ============================================================
@@ -1270,14 +2026,15 @@ async function getHomeFeedAuthors() {
     }
 }
 
-// Low-level fetch: relayUrls, optional authors (hex), optional since (unix ts).
-async function fetchFeedNotes(relayUrls, authors, since) {
+// Low-level fetch: relayUrls, optional authors (hex), optional since (unix ts). profileFeed true = include reposts (kind 6) for profile.
+async function fetchFeedNotes(relayUrls, authors, since, profileFeed) {
     if (!relayUrls || relayUrls.length === 0) return [];
     const notesJson = await invoke('fetch_notes_from_relays', {
-        relayUrls,
+        relay_urls: relayUrls,
         limit: FEED_LIMIT,
         authors: authors && authors.length ? authors : null,
-        since: since ?? null
+        since: since ?? null,
+        profile_feed: profileFeed === true ? true : null
     });
     if (!notesJson) return [];
     const notes = JSON.parse(notesJson);
@@ -1357,7 +2114,7 @@ async function startInitialFeedFetch() {
                 if (!authors || authors.length === 0) authors = null;
             }
             await invoke('start_feed_stream', {
-                relayUrls: state.config.relays,
+                relay_urls: state.config.relays,
                 limit: FEED_LIMIT,
                 authors: authors,
                 since: null
@@ -1524,6 +2281,12 @@ async function ensureProfilesForNotes(notes) {
     notes.forEach(function(n) {
         var p = getReplyToPubkey(n);
         if (p) pubkeys.push(p);
+        if (n.kind === 6 && n.content && n.content.trim()) {
+            try {
+                var parsed = JSON.parse(n.content);
+                if (parsed && parsed.pubkey) pubkeys.push(parsed.pubkey);
+            } catch (_) {}
+        }
     });
     const unique = [...new Set(pubkeys)];
     const toFetch = unique.filter(p => !state.profileCache[p]);
@@ -1531,13 +2294,14 @@ async function ensureProfilesForNotes(notes) {
     const relays = state.config.relays;
     await Promise.all(toFetch.map(async (pubkey) => {
         try {
-            const json = await invoke('fetch_profile', { pubkey, relayUrls: relays });
+            const json = await invoke('fetch_profile', { pubkey, relay_urls: relays });
             if (!json || json === '{}') return;
             const p = JSON.parse(json);
             state.profileCache[pubkey] = {
                 name: p.name || null,
                 nip05: p.nip05 || null,
-                picture: p.picture || null
+                picture: p.picture || null,
+                lud16: p.lud16 || null
             };
         } catch (_) { /* ignore */ }
     }));
@@ -1549,14 +2313,34 @@ async function ensureProfilesForNotes(notes) {
         var name = profile.name || t('profile.anonymous');
         var nip05 = profile.nip05 || '';
         document.querySelectorAll('.note-card[data-pubkey="' + escapeCssAttr(pubkey) + '"]').forEach(function(card) {
-            var nameEl = card.querySelector('.note-author-name');
-            var nip05El = card.querySelector('.note-author-nip05');
+            var isRepost = card.classList.contains('note-card-repost');
+            if (isRepost) {
+                var reposterNameEl = card.querySelector('.note-repost-header .note-reposter-name');
+                if (reposterNameEl) reposterNameEl.textContent = name;
+            } else {
+                var nameEl = card.querySelector('.note-head .note-author-name');
+                var nip05El = card.querySelector('.note-head .note-author-nip05');
+                if (nameEl) nameEl.textContent = name;
+                if (nip05El) {
+                    nip05El.textContent = nip05;
+                    nip05El.style.display = nip05 ? '' : 'none';
+                }
+                var avatar = card.querySelector('.note-avatar');
+                if (avatar && profile.picture) setCardAvatar(card, profile.picture);
+            }
+            var replyToLink = card.querySelector('.note-reply-to-link[data-pubkey="' + escapeCssAttr(pubkey) + '"]');
+            if (replyToLink) replyToLink.textContent = name;
+        });
+        updateZapButtons();
+        document.querySelectorAll('.note-card[data-original-pubkey="' + escapeCssAttr(pubkey) + '"]').forEach(function(card) {
+            var nameEl = card.querySelector('.note-original-row .note-author-name');
+            var nip05El = card.querySelector('.note-original-row .note-author-nip05');
             if (nameEl) nameEl.textContent = name;
             if (nip05El) {
                 nip05El.textContent = nip05;
                 nip05El.style.display = nip05 ? '' : 'none';
             }
-            var avatar = card.querySelector('.note-avatar');
+            var avatar = card.querySelector('.note-original-row .note-avatar');
             if (avatar && profile.picture) {
                 var fallback = avatar.querySelector('.avatar-fallback');
                 var img = avatar.querySelector('img');
@@ -1574,14 +2358,31 @@ async function ensureProfilesForNotes(notes) {
                     if (fallback) fallback.style.display = 'none';
                 }
             }
-            var replyToLink = card.querySelector('.note-reply-to-link[data-pubkey="' + escapeCssAttr(pubkey) + '"]');
-            if (replyToLink) replyToLink.textContent = name;
         });
     });
 }
 
 function escapeCssAttr(s) {
     return String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
+// NIP-10: get the direct parent event id from a note's "e" tags. Returns null if not a reply.
+function getParentEventId(note) {
+    if (!note.tags || !note.tags.length) return null;
+    for (var i = 0; i < note.tags.length; i++) {
+        var tag = note.tags[i];
+        if (Array.isArray(tag) && tag[0] === 'e' && tag[1]) {
+            var marker = tag[3] || '';
+            if (marker === 'reply') return tag[1];
+        }
+    }
+    // Some clients omit the marker; last "e" is often the reply target
+    var lastE = null;
+    for (var j = 0; j < note.tags.length; j++) {
+        var tagItem = note.tags[j];
+        if (Array.isArray(tagItem) && tagItem[0] === 'e' && tagItem[1]) lastE = tagItem[1];
+    }
+    return lastE;
 }
 
 // Get the pubkey of the user being replied to (first "p" tag) when note is a reply (has "e" tag). Returns null if not a reply.
@@ -1617,9 +2418,203 @@ function setCardAvatar(card, pictureUrl) {
     }
 }
 
-// Create HTML for a note card: name, tick, NIP-05, time; content; action bar. idPrefix avoids id clashes. replyToPubkey adds "Replying to [name]" when set.
-function createNoteCard(note, noteIndex, idPrefix, replyToPubkey) {
+// Default emoji for quick like (heart). Common social/media emojis for long-press picker.
+var DEFAULT_LIKE_EMOJI = '❤️';
+var LIKE_EMOJI_LIST = ['❤️','🤙','👍','😂','😢','😡','🎉','🔥','👀','💯','❤️‍🔥','😍','🤔','👏','🙏','😭','🤣','💀','✨','💪'];
+
+// Whether the current user has liked this note (we only know from this session).
+function isNoteLiked(noteId) {
+    return state.likedNoteIds && state.likedNoteIds[noteId];
+}
+
+// Whether the current user has a Lightning address (for sending/receiving zaps).
+function selfHasLud16() {
+    if (state.profile && state.profile.lud16 && state.profile.lud16.trim()) return true;
+    if (state.publicKeyHex && state.profileCache[state.publicKeyHex] && state.profileCache[state.publicKeyHex].lud16) return true;
+    return false;
+}
+
+// Whether the given pubkey's profile has a Lightning address (for zapping them).
+function targetHasLud16(pubkey) {
+    if (!pubkey || !state.profileCache) return false;
+    var p = state.profileCache[pubkey];
+    return !!(p && p.lud16 && p.lud16.trim());
+}
+
+// Update zap buttons: muted + disabled when self or target lack LUD16.
+function updateZapButtons() {
+    var selfOk = selfHasLud16();
+    document.querySelectorAll('.note-action[data-action="zap"]').forEach(function(btn) {
+        var targetPubkey = btn.getAttribute('data-zap-target-pubkey');
+        var targetOk = targetPubkey && targetHasLud16(targetPubkey);
+        if (selfOk && targetOk) {
+            btn.disabled = false;
+            btn.classList.remove('zap-muted');
+            btn.removeAttribute('title');
+        } else {
+            btn.disabled = true;
+            btn.classList.add('zap-muted');
+            btn.setAttribute('title', (window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t('note.zapNoWallet') : 'Zap requires you and the author to have a Lightning address'));
+        }
+    });
+}
+
+// Request a zap invoice and open it with the user's wallet (lightning: URL).
+function performZap(targetPubkey, eventId, zapBtn) {
+    if (!targetPubkey || !state.config || !state.profileCache) return;
+    var profile = state.profileCache[targetPubkey];
+    if (!profile || !profile.lud16 || !profile.lud16.trim()) return;
+    var amount = (state.config.default_zap_amount != null && state.config.default_zap_amount >= 1)
+        ? state.config.default_zap_amount
+        : 42;
+    if (zapBtn) zapBtn.disabled = true;
+    invoke('request_zap_invoice', {
+        target_lud16: profile.lud16.trim(),
+        amount_sats: amount,
+        event_id: eventId || '',
+        target_pubkey: targetPubkey
+    })
+        .then(function(result) {
+            var data = typeof result === 'string' ? JSON.parse(result) : result;
+            if (data && data.pr) {
+                var url = data.pr.indexOf('ln') === 0 ? 'lightning:' + data.pr : data.pr;
+                window.open(url, '_blank');
+            }
+        })
+        .catch(function(err) {
+            console.error('Zap failed:', err);
+            alert((window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t('errors.failedToPublish') : 'Failed to get zap invoice') + ': ' + err);
+        })
+        .finally(function() {
+            if (zapBtn) zapBtn.disabled = false;
+        });
+}
+
+// Perform a like (reaction) and update UI on success
+function performLike(noteId, pubkey, emoji, likeBtn) {
+    if (!noteId || !pubkey) return;
+    var btn = likeBtn;
+    if (btn) btn.disabled = true;
+    invoke('post_reaction', { eventId: noteId, authorPubkey: pubkey, emoji: emoji || DEFAULT_LIKE_EMOJI })
+        .then(function() {
+            if (!state.likedNoteIds) state.likedNoteIds = {};
+            state.likedNoteIds[noteId] = true;
+            if (btn) {
+                var img = btn.querySelector('img');
+                if (img) img.src = 'icons/heart-filled.svg';
+                btn.classList.add('liked');
+            }
+        })
+        .catch(function(err) {
+            console.error('Reaction failed:', err);
+            alert((window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t('errors.failedToPublish') : 'Failed to publish reaction') + ': ' + err);
+        })
+        .finally(function() { if (btn) btn.disabled = false; });
+}
+
+// Long-press state for like button (1s = show emoji modal)
+var likeLongPressTimer = null;
+var likeLongPressTriggered = false;
+var likeButtonMouseDown = null; // { noteId, pubkey, button }
+
+function openLikeEmojiModal(noteId, pubkey, likeBtn) {
+    state.pendingLikeNoteId = noteId;
+    state.pendingLikePubkey = pubkey;
+    state.pendingLikeBtn = likeBtn;
+    var list = document.getElementById('like-emoji-list');
+    if (list) {
+        list.innerHTML = '';
+        LIKE_EMOJI_LIST.forEach(function(emoji) {
+            var btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'like-emoji-btn';
+            btn.textContent = emoji;
+            btn.addEventListener('click', function() {
+                performLike(noteId, pubkey, emoji, likeBtn);
+                closeLikeEmojiModal();
+            });
+            list.appendChild(btn);
+        });
+    }
+    var modal = document.getElementById('like-emoji-modal');
+    if (modal) {
+        modal.classList.add('active');
+        modal.setAttribute('aria-hidden', 'false');
+    }
+    document.addEventListener('keydown', likeEmojiModalEscapeHandler);
+}
+
+function closeLikeEmojiModal() {
+    state.pendingLikeNoteId = null;
+    state.pendingLikePubkey = null;
+    state.pendingLikeBtn = null;
+    var modal = document.getElementById('like-emoji-modal');
+    if (modal) {
+        modal.classList.remove('active');
+        modal.setAttribute('aria-hidden', 'true');
+    }
+    document.removeEventListener('keydown', likeEmojiModalEscapeHandler);
+}
+
+function likeEmojiModalEscapeHandler(e) {
+    if (e.key === 'Escape') {
+        e.preventDefault();
+        closeLikeEmojiModal();
+    }
+}
+
+function handleLikeMouseDown(e) {
+    var likeBtn = e.target.closest('.note-action[data-action="like"]');
+    if (!likeBtn) return;
+    var noteId = likeBtn.dataset.noteId;
+    var pubkey = likeBtn.dataset.pubkey;
+    if (!noteId || !pubkey) return;
+    if (likeLongPressTimer) clearTimeout(likeLongPressTimer);
+    likeLongPressTimer = null;
+    likeLongPressTriggered = false;
+    likeButtonMouseDown = { noteId: noteId, pubkey: pubkey, button: likeBtn };
+    likeLongPressTimer = setTimeout(function() {
+        likeLongPressTimer = null;
+        likeLongPressTriggered = true;
+        openLikeEmojiModal(noteId, pubkey, likeBtn);
+        likeButtonMouseDown = null;
+    }, 1000);
+}
+
+function handleLikeMouseUp(e) {
+    if (likeLongPressTimer) {
+        clearTimeout(likeLongPressTimer);
+        likeLongPressTimer = null;
+    }
+    if (likeButtonMouseDown && !likeLongPressTriggered) {
+        var btn = likeButtonMouseDown.button;
+        var noteId = likeButtonMouseDown.noteId;
+        var pubkey = likeButtonMouseDown.pubkey;
+        var releaseInside = e.target && btn && btn.contains(e.target);
+        if (releaseInside) {
+            performLike(noteId, pubkey, DEFAULT_LIKE_EMOJI, btn);
+        }
+    }
+    likeButtonMouseDown = null;
+}
+
+function handleLikeMouseLeave(e) {
+    var likeBtn = e.target.closest('.note-action[data-action="like"]');
+    if (likeBtn && likeButtonMouseDown && likeButtonMouseDown.button === likeBtn) {
+        var related = e.relatedTarget;
+        if (!related || !likeBtn.contains(related)) {
+            if (likeLongPressTimer) clearTimeout(likeLongPressTimer);
+            likeLongPressTimer = null;
+            likeButtonMouseDown = null;
+        }
+    }
+}
+
+// Create HTML for a note card: name, tick, NIP-05, time; content; action bar. idPrefix avoids id clashes. replyToPubkey adds "Replying to [name]" when set. isBookmarked toggles bookmark icon.
+function createNoteCard(note, noteIndex, idPrefix, replyToPubkey, isBookmarked) {
     if (idPrefix === undefined) idPrefix = '';
+    if (isBookmarked === undefined) isBookmarked = isNoteBookmarked(note.id);
+    var liked = isNoteLiked(note.id);
     const t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
     const time = formatTimestamp(note.created_at);
     const { name: displayName, nip05 } = getAuthorDisplay(note.pubkey);
@@ -1660,12 +2655,87 @@ function createNoteCard(note, noteIndex, idPrefix, replyToPubkey) {
                 <div class="note-content">${processedContent}</div>
                 <div class="note-actions">
                     <button type="button" class="note-action" title="${escapeHtml(t('note.reply'))}" aria-label="${escapeHtml(t('note.reply'))}" data-action="reply" data-note-id="${safeId}" data-pubkey="${safePubkey}"><img src="icons/reply.svg" alt="${escapeHtml(t('note.reply'))}" class="icon-reply"></button>
-                    <button type="button" class="note-action" title="${escapeHtml(t('note.zap'))}" aria-label="${escapeHtml(t('note.zap'))}" data-action="zap"><img src="icons/zap.svg" alt="${escapeHtml(t('note.zap'))}" class="icon-zap"></button>
-                    <button type="button" class="note-action" title="${escapeHtml(t('note.like'))}" aria-label="${escapeHtml(t('note.like'))}" data-action="like"><img src="icons/heart.svg" alt="${escapeHtml(t('note.like'))}" class="icon-heart"></button>
-                    <button type="button" class="note-action" title="${escapeHtml(t('note.repost'))}" aria-label="${escapeHtml(t('note.repost'))}" data-action="repost"><img src="icons/repost.svg" alt="${escapeHtml(t('note.repost'))}" class="icon-repost"></button>
-                    <button type="button" class="note-action" title="${escapeHtml(t('note.bookmark'))}" aria-label="${escapeHtml(t('note.bookmark'))}" data-action="bookmark"><img src="icons/bookmark.svg" alt="${escapeHtml(t('note.bookmark'))}" class="icon-bookmark"></button>
+                    <button type="button" class="note-action zap-muted" title="${escapeHtml(t('note.zapNoWallet'))}" aria-label="${escapeHtml(t('note.zap'))}" data-action="zap" data-zap-target-pubkey="${safePubkey}" data-zap-event-id="${safeId}" disabled><img src="icons/zap.svg" alt="${escapeHtml(t('note.zap'))}" class="icon-zap"></button>
+                    <button type="button" class="note-action${liked ? ' liked' : ''}" title="${escapeHtml(t('note.like'))}" aria-label="${escapeHtml(t('note.like'))}" data-action="like" data-note-id="${safeId}" data-pubkey="${safePubkey}"><img src="icons/${liked ? 'heart-filled' : 'heart'}.svg" alt="${escapeHtml(t('note.like'))}" class="icon-heart"></button>
+                    <button type="button" class="note-action" title="${escapeHtml(t('note.repost'))}" aria-label="${escapeHtml(t('note.repost'))}" data-action="repost" data-note-id="${safeId}" data-pubkey="${safePubkey}"><img src="icons/repost.svg" alt="${escapeHtml(t('note.repost'))}" class="icon-repost"></button>
+                    <button type="button" class="note-action" title="${escapeHtml(t('note.bookmark'))}" aria-label="${escapeHtml(t('note.bookmark'))}" data-action="bookmark" data-note-id="${safeId}"><img src="icons/${isBookmarked ? 'bookmark-filled' : 'bookmark'}.svg" alt="${escapeHtml(t('note.bookmark'))}" class="icon-bookmark"></button>
                 </div>
             </div>
+        </div>
+    `;
+    return card;
+}
+
+// Create a card for a kind 6 repost event. Header: [icon] reposter reposted (muted). Body: original author avatar/name/tick/nip05/age + content.
+function createRepostCard(repostEvent, noteIndex, idPrefix) {
+    if (idPrefix === undefined) idPrefix = '';
+    const t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
+    const { name: reposterName } = getAuthorDisplay(repostEvent.pubkey);
+    const safePubkey = escapeHtml(repostEvent.pubkey || '');
+    const safeId = escapeHtml(repostEvent.id || '');
+    var parsed = null;
+    var innerContent = '';
+    if (repostEvent.content && repostEvent.content.trim()) {
+        try {
+            parsed = JSON.parse(repostEvent.content);
+            if (parsed && typeof parsed.content === 'string') innerContent = processNoteContent(parsed.content);
+            else innerContent = escapeHtml(t('note.repostedNote') || 'Reposted a note');
+        } catch (_) {
+            innerContent = escapeHtml(t('note.repostedNote') || 'Reposted a note');
+        }
+    } else {
+        innerContent = escapeHtml(t('note.repostedNote') || 'Reposted a note');
+    }
+    const viewProfile = t('note.viewProfile');
+    const repostedLabel = t('note.reposted');
+    var origBlock = '';
+    var safeOrigPubkey = '';
+    var origTime = '';
+    var origName = '…';
+    var origNip05 = '';
+    var dataOriginalPubkey = '';
+    if (parsed && parsed.pubkey) {
+        safeOrigPubkey = escapeHtml(parsed.pubkey);
+        dataOriginalPubkey = parsed.pubkey;
+        origTime = formatTimestamp(parsed.created_at || 0);
+        var origDisplay = getAuthorDisplay(parsed.pubkey);
+        origName = origDisplay.name || '…';
+        origNip05 = origDisplay.nip05 || '';
+        var verifyId = idPrefix + 'repost-orig-verify-' + noteIndex;
+        origBlock = `
+            <div class="note-original-row note-top-row">
+                <button type="button" class="note-avatar note-author-link" data-pubkey="${safeOrigPubkey}" title="${escapeHtml(viewProfile)}" aria-label="${escapeHtml(viewProfile)}"><span class="avatar-fallback">?</span></button>
+                <div class="note-head">
+                    <div class="note-head-line">
+                        <button type="button" class="note-author-name note-author-link" data-pubkey="${safeOrigPubkey}" title="${escapeHtml(viewProfile)}">${escapeHtml(origName)}</button>
+                        <span class="note-verification" id="${escapeHtml(verifyId)}" title=""><span class="verify-pending">·</span></span>
+                        <span class="note-author-nip05" ${origNip05 ? '' : 'style="display:none"'}>${escapeHtml(origNip05)}</span>
+                        <span class="note-time">${escapeHtml(origTime)}</span>
+                    </div>
+                </div>
+            </div>
+        `;
+    } else {
+        origBlock = '';
+    }
+    const card = document.createElement('div');
+    card.className = 'note-card note-card-repost';
+    card.dataset.noteIndex = noteIndex;
+    card.dataset.noteId = safeId;
+    card.dataset.pubkey = repostEvent.pubkey || '';
+    if (dataOriginalPubkey) card.dataset.originalPubkey = dataOriginalPubkey;
+    card.innerHTML = `
+        <div class="note-repost-header">
+            <img src="icons/repost.svg" alt="" class="note-repost-header-icon" aria-hidden="true">
+            <button type="button" class="note-author-name note-author-link note-reposter-name" data-pubkey="${safePubkey}" title="${escapeHtml(viewProfile)}">${escapeHtml(reposterName)}</button>
+            <span class="note-repost-header-text">${escapeHtml(repostedLabel)}</span>
+        </div>
+        ${origBlock}
+        <div class="note-content">${innerContent}</div>
+        <div class="note-actions">
+            <button type="button" class="note-action" title="${escapeHtml(t('note.reply'))}" aria-label="${escapeHtml(t('note.reply'))}" data-action="reply" data-note-id="${safeId}" data-pubkey="${safePubkey}"><img src="icons/reply.svg" alt="${escapeHtml(t('note.reply'))}" class="icon-reply"></button>
+            <button type="button" class="note-action zap-muted" title="${escapeHtml(t('note.zapNoWallet'))}" aria-label="${escapeHtml(t('note.zap'))}" data-action="zap" data-zap-target-pubkey="${safeOrigPubkey || ''}" data-zap-event-id="${parsed && parsed.id ? escapeHtml(parsed.id) : ''}" disabled><img src="icons/zap.svg" alt="${escapeHtml(t('note.zap'))}" class="icon-zap"></button>
+            <button type="button" class="note-action" title="${escapeHtml(t('note.repost'))}" aria-label="${escapeHtml(t('note.repost'))}" data-action="repost" data-note-id="${safeId}" data-pubkey="${safePubkey}"><img src="icons/repost.svg" alt="${escapeHtml(t('note.repost'))}" class="icon-repost"></button>
         </div>
     `;
     return card;
@@ -1688,10 +2758,11 @@ async function verifyNote(note, noteIndex, idPrefix) {
     }
 }
 
-// Update the verification badge for a note
-function updateVerificationBadge(noteIndex, result, idPrefix) {
+// Update the verification badge for a note (badgeSuffix optional, e.g. 'repost-orig-verify-' for repost embedded note)
+function updateVerificationBadge(noteIndex, result, idPrefix, badgeSuffix) {
     if (idPrefix === undefined) idPrefix = '';
-    const badgeEl = document.getElementById(idPrefix + 'verify-' + noteIndex);
+    var suffix = badgeSuffix !== undefined ? badgeSuffix : 'verify-';
+    const badgeEl = document.getElementById(idPrefix + suffix + noteIndex);
     if (!badgeEl) return;
     const t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
     if (result.valid) {
@@ -1703,6 +2774,22 @@ function updateVerificationBadge(noteIndex, result, idPrefix) {
         badgeEl.innerHTML = '<span class="verify-invalid" title="' + escapeHtml(errorMsg) + '">✗</span>';
         badgeEl.title = errorMsg;
     }
+}
+
+// Verify the embedded note inside a kind 6 repost and update the original-author verification badge
+async function verifyRepostOriginal(repostEvent, noteIndex, idPrefix) {
+    if (idPrefix === undefined) idPrefix = '';
+    if (!repostEvent.content || !repostEvent.content.trim()) return;
+    try {
+        var parsed = JSON.parse(repostEvent.content);
+        if (!parsed || !parsed.pubkey) return;
+        var noteJson = JSON.stringify(parsed);
+        var resultJson = await invoke('verify_event', { eventJson: noteJson });
+        if (resultJson) {
+            var result = JSON.parse(resultJson);
+            updateVerificationBadge(noteIndex, result, idPrefix, 'repost-orig-verify-');
+        }
+    } catch (_) {}
 }
 
 // Shorten a key for display
@@ -2062,27 +3149,35 @@ async function handleComposeSubmit(event) {
 // Initialize the application
 async function init() {
     try {
-        debugLog('Plume initializing...');
-        await (window.PlumeI18n && window.PlumeI18n.init ? window.PlumeI18n.init() : Promise.resolve());
-        
-        // Load configuration
-        await loadConfig();
-        
-        document.querySelector('.sidebar-logo')?.addEventListener('click', (e) => {
+        console.log('[Plume] init() entered');
+
+        // Wire the UI first with no awaits – so nothing can block before buttons work
+        try {
+            switchView('feed');
+            console.log('[Plume] switchView(feed) done');
+        } catch (e) {
+            console.error('[Plume] switchView(feed) failed:', e);
+        }
+        updateMessagesNavUnread();
+        var navItems = document.querySelectorAll('.nav-item[data-view]');
+        console.log('[Plume] nav items found: ' + navItems.length);
+        document.querySelector('.sidebar-logo')?.addEventListener('click', function(e) {
             e.preventDefault();
+            console.log('[Plume] sidebar logo clicked');
             switchView('feed');
         });
-
-        document.querySelectorAll('.nav-item[data-view]').forEach(item => {
-            item.addEventListener('click', (e) => {
+        navItems.forEach(function(item) {
+            item.addEventListener('click', function(e) {
                 e.preventDefault();
+                console.log('[Plume] nav clicked: ' + (item.dataset.view || '?'));
                 if (item.dataset.view === 'profile') {
                     state.viewedProfilePubkey = null;
-                    state.viewedProfile = state.profile; // show own profile immediately
+                    state.viewedProfile = state.profile;
                 }
                 if (item.dataset.view) switchView(item.dataset.view);
             });
         });
+        console.log('[Plume] nav + logo listeners attached');
 
         // Settings modal (Account) – open from Settings menu
         const closeSettingsBtn = document.getElementById('close-settings');
@@ -2094,17 +3189,110 @@ async function init() {
             });
         }
 
-        // Settings page menu – Account opens modal, Relays shows relay list
-        document.querySelectorAll('.settings-menu-item').forEach(btn => {
-            btn.addEventListener('click', () => {
-                const key = btn.dataset.settings;
-                const detailDefault = document.getElementById('settings-detail-default');
-                const relaysContainer = document.getElementById('relays-container');
-                if (detailDefault) detailDefault.style.display = key === 'relays' ? 'none' : 'block';
-                if (relaysContainer) relaysContainer.style.display = key === 'relays' ? 'block' : 'none';
-                if (key === 'account') openSettings();
-                if (key === 'relays') updateRelayList();
+        // Settings page menu – show corresponding panel on the right
+        var settingsMenuBtns = document.querySelectorAll('.settings-menu-item');
+        console.log('[Plume] settings menu items: ' + settingsMenuBtns.length);
+        settingsMenuBtns.forEach(function(btn) {
+            btn.addEventListener('click', function() {
+                console.log('[Plume] settings panel clicked: ' + (btn.dataset.settings || '?'));
+                showSettingsPanel(btn.dataset.settings);
             });
+        });
+
+        document.getElementById('home-feed-panel-save')?.addEventListener('click', saveHomeFeedModeFromPanel);
+        document.getElementById('settings-media-save')?.addEventListener('click', saveMediaServerFromPanel);
+        document.getElementById('settings-muted-save')?.addEventListener('click', saveMutedFromPanel);
+        document.getElementById('settings-zaps-save')?.addEventListener('click', saveZapsFromPanel);
+        var settingsKeysForm = document.getElementById('settings-keys-form');
+        if (settingsKeysForm) settingsKeysForm.addEventListener('submit', function(e) { e.preventDefault(); saveKeysPanel(e); });
+
+        // Messages view: conversation list, send button, Message from profile
+        var messagesListEl = document.querySelector('.messages-list');
+        if (messagesListEl) {
+            messagesListEl.addEventListener('click', function(e) {
+                var item = e.target.closest('.conversation-item');
+                if (item) {
+                    var other = item.getAttribute('data-other-pubkey');
+                    if (other) selectConversation(other);
+                }
+            });
+        }
+        document.getElementById('message-send-btn')?.addEventListener('click', sendMessage);
+        var messageInput = document.getElementById('message-input');
+        if (messageInput) {
+            messageInput.addEventListener('keydown', function(e) {
+                if (e.key === 'Enter') { e.preventDefault(); sendMessage(); }
+            });
+        }
+        document.getElementById('message-user-btn')?.addEventListener('click', function() {
+            var pk = state.viewedProfilePubkey;
+            if (pk) {
+                state.openConversationWith = pk;
+                switchView('messages');
+            }
+        });
+
+        if (window.__TAURI__ && window.__TAURI__.event && typeof window.__TAURI__.event.listen === 'function') {
+            window.__TAURI__.event.listen('dm-received', function(ev) {
+                var payload = ev.payload;
+                var otherPubkey = Array.isArray(payload) ? payload[0] : (payload && payload.other_pubkey);
+                if (!otherPubkey) return;
+                var norm = (state.selectedConversation || '').toLowerCase();
+                var otherNorm = (otherPubkey || '').toLowerCase();
+                if (state.currentView === 'messages' && norm === otherNorm) {
+                    loadConversationMessages(state.selectedConversation);
+                } else {
+                    state.unreadMessageCount = (state.unreadMessageCount || 0) + 1;
+                    updateMessagesNavUnread();
+                }
+            });
+        }
+
+        // Muted tabs
+        document.querySelectorAll('.muted-tab').forEach(function(tab) {
+            tab.addEventListener('click', function() {
+                var tabKey = this.dataset.mutedTab;
+                document.querySelectorAll('.muted-tab').forEach(function(x) { x.classList.remove('active'); });
+                document.querySelectorAll('.muted-tab-panel').forEach(function(x) { x.style.display = 'none'; });
+                var panel = document.getElementById('muted-tab-' + tabKey);
+                if (panel) panel.style.display = 'block';
+                this.classList.add('active');
+            });
+        });
+        document.getElementById('muted-word-add')?.addEventListener('click', function() {
+            var input = document.getElementById('muted-word-input');
+            if (!input || !state.config) return;
+            var w = (input.value && input.value.trim()) || '';
+            if (!w) return;
+            ensureMutedConfig();
+            if (state.config.muted_words.indexOf(w) === -1) state.config.muted_words.push(w);
+            input.value = '';
+            renderMutedPanels();
+        });
+        document.getElementById('muted-hashtag-add')?.addEventListener('click', function() {
+            var input = document.getElementById('muted-hashtag-input');
+            if (!input || !state.config) return;
+            var h = (input.value && input.value.trim()).replace(/^#/, '') || '';
+            if (!h) return;
+            ensureMutedConfig();
+            if (state.config.muted_hashtags.indexOf(h) === -1) state.config.muted_hashtags.push(h);
+            input.value = '';
+            renderMutedPanels();
+        });
+        document.getElementById('settings-detail')?.addEventListener('click', function(e) {
+            var remove = e.target.closest('.muted-item-remove');
+            if (!remove || !state.config) return;
+            var li = remove.closest('li');
+            if (!li) return;
+            ensureMutedConfig();
+            if (li.dataset.pubkey) {
+                state.config.muted_users = state.config.muted_users.filter(function(p) { return p !== li.dataset.pubkey; });
+            } else if (li.dataset.word) {
+                state.config.muted_words = state.config.muted_words.filter(function(w) { return w !== li.dataset.word; });
+            } else if (li.dataset.hashtag) {
+                state.config.muted_hashtags = state.config.muted_hashtags.filter(function(h) { return h !== li.dataset.hashtag; });
+            }
+            renderMutedPanels();
         });
         
         // Set up settings form
@@ -2116,7 +3304,7 @@ async function init() {
         const closeComposeBtn = document.getElementById('close-compose');
         const cancelComposeBtn = document.getElementById('cancel-compose');
         const composeModal = document.getElementById('compose-modal');
-        if (composeBtn) composeBtn.addEventListener('click', openCompose);
+        if (composeBtn) composeBtn.addEventListener('click', function() { console.log('[Plume] compose btn clicked'); openCompose(); });
         if (closeComposeBtn) closeComposeBtn.addEventListener('click', closeCompose);
         if (cancelComposeBtn) cancelComposeBtn.addEventListener('click', closeCompose);
         if (composeModal) {
@@ -2139,25 +3327,14 @@ async function init() {
         }
 
         var editProfileBtn = document.getElementById('edit-profile-btn');
-        var closeEditProfileBtn = document.getElementById('close-edit-profile');
-        var editProfileCancelBtn = document.getElementById('edit-profile-cancel');
-        var editProfileModal = document.getElementById('edit-profile-modal');
         var editProfileForm = document.getElementById('edit-profile-form');
-        if (editProfileBtn) editProfileBtn.addEventListener('click', openEditProfileModal);
-        if (closeEditProfileBtn) closeEditProfileBtn.addEventListener('click', closeEditProfileModal);
-        if (editProfileCancelBtn) editProfileCancelBtn.addEventListener('click', closeEditProfileModal);
-        if (editProfileModal) {
-            editProfileModal.addEventListener('click', function(e) {
-                if (e.target === e.currentTarget) closeEditProfileModal();
-            });
-        }
+        if (editProfileBtn) editProfileBtn.addEventListener('click', openEditProfileInSettings);
         if (editProfileForm) editProfileForm.addEventListener('submit', function(e) { e.preventDefault(); handleEditProfileSubmit(e); });
-        var editProfileOkBtn = document.getElementById('edit-profile-ok');
-        if (editProfileOkBtn) editProfileOkBtn.addEventListener('click', function(e) {
-            e.preventDefault();
-            e.stopPropagation();
-            handleEditProfileSubmit(e);
-        });
+
+        var followBtn = document.getElementById('follow-btn');
+        if (followBtn) followBtn.addEventListener('click', handleFollowClick);
+        var muteBtn = document.getElementById('mute-btn');
+        if (muteBtn) muteBtn.addEventListener('click', handleMuteClick);
         
         // Set up compose form
         const composeForm = document.getElementById('compose-form');
@@ -2179,9 +3356,9 @@ async function init() {
             debugLog('ERROR: Generate keys button not found in DOM!');
         }
         
-        document.querySelectorAll('.notif-tab').forEach(tab => {
-            tab.addEventListener('click', () => {
-                document.querySelectorAll('.notif-tab').forEach(t => t.classList.remove('active'));
+        document.querySelectorAll('.notif-tab').forEach(function(tab) {
+            tab.addEventListener('click', function() {
+                document.querySelectorAll('.notif-tab').forEach(function(el) { el.classList.remove('active'); });
                 tab.classList.add('active');
                 state.notifFilter = tab.dataset.filter;
                 // TODO: filter notifications by state.notifFilter
@@ -2209,34 +3386,195 @@ async function init() {
             if (replyBtn) {
                 e.preventDefault();
                 var card = replyBtn.closest('.note-card');
-                var name = card ? (card.querySelector('.note-author-name') && card.querySelector('.note-author-name').textContent.trim()) : '';
-                openCompose({
-                    id: replyBtn.dataset.noteId || '',
-                    pubkey: replyBtn.dataset.pubkey || '',
-                    name: name || '…'
-                });
+                var noteId = (replyBtn.dataset.noteId || (card && card.dataset.noteId)) || '';
+                if (!noteId) return;
+                var note = (state.notes && state.notes.find(function(n) { return n.id === noteId; })) ||
+                    (state.profileNotes && state.profileNotes.find(function(n) { return n.id === noteId; })) ||
+                    (state.bookmarkNotes && state.bookmarkNotes.find(function(n) { return n.id === noteId; }));
+                if (!note && state.noteDetailReplies) {
+                    var found = state.noteDetailReplies.find(function(x) { return x.note.id === noteId; });
+                    if (found) note = found.note;
+                }
+                if (!note && state.noteDetailAncestors) note = state.noteDetailAncestors.find(function(n) { return n.id === noteId; });
+                if (!note && state.noteDetailSubject && state.noteDetailSubject.id === noteId) note = state.noteDetailSubject;
+                openNoteDetail(note || noteId);
+                return;
+            }
+            var zapBtn = e.target.closest('.note-action[data-action="zap"]');
+            if (zapBtn && !zapBtn.disabled) {
+                e.preventDefault();
+                e.stopPropagation();
+                var targetPubkey = zapBtn.getAttribute('data-zap-target-pubkey');
+                var eventId = zapBtn.getAttribute('data-zap-event-id') || (zapBtn.closest('.note-card') && zapBtn.closest('.note-card').dataset.noteId);
+                if (targetPubkey) performZap(targetPubkey, eventId, zapBtn);
+                return;
+            }
+            var likeBtn = e.target.closest('.note-action[data-action="like"]');
+            if (likeBtn) {
+                e.preventDefault();
+                e.stopPropagation();
+                return;
+            }
+            var repostBtn = e.target.closest('.note-action[data-action="repost"]');
+            if (repostBtn) {
+                e.preventDefault();
+                var card = repostBtn.closest('.note-card');
+                var noteId = (repostBtn.dataset.noteId || (card && card.dataset.noteId)) || '';
+                var pubkey = (repostBtn.dataset.pubkey || (card && card.dataset.pubkey)) || '';
+                if (!noteId || !pubkey) return;
+                var note = (state.notes && state.notes.find(function(n) { return n.id === noteId; })) ||
+                    (state.profileNotes && state.profileNotes.find(function(n) { return n.id === noteId; })) ||
+                    (state.bookmarkNotes && state.bookmarkNotes.find(function(n) { return n.id === noteId; }));
+                var contentOpt = note ? JSON.stringify(note) : null;
+                repostBtn.disabled = true;
+                invoke('post_repost', { eventId: noteId, authorPubkey: pubkey, contentOptional: contentOpt })
+                    .then(function() {
+                        repostBtn.classList.add('reposted');
+                    })
+                    .catch(function(err) {
+                        console.error('Repost failed:', err);
+                        alert((window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t('errors.failedToPublish') : 'Failed to publish repost') + ': ' + err);
+                    })
+                    .finally(function() { repostBtn.disabled = false; });
+                return;
+            }
+            var bookmarkBtn = e.target.closest('.note-action[data-action="bookmark"]');
+            if (bookmarkBtn) {
+                e.preventDefault();
+                var noteId = bookmarkBtn.dataset.noteId || (bookmarkBtn.closest('.note-card') && bookmarkBtn.closest('.note-card').dataset.noteId);
+                if (!noteId || !state.config) return;
+                if (!Array.isArray(state.config.bookmarks)) state.config.bookmarks = [];
+                var idx = state.config.bookmarks.indexOf(noteId);
+                if (idx === -1) {
+                    state.config.bookmarks.push(noteId);
+                } else {
+                    state.config.bookmarks.splice(idx, 1);
+                }
+                saveConfig();
+                var img = bookmarkBtn.querySelector('img');
+                if (img) img.src = idx === -1 ? 'icons/bookmark-filled.svg' : 'icons/bookmark.svg';
+                if (idx !== -1 && state.currentView === 'bookmarks') {
+                    var card = bookmarkBtn.closest('.note-card');
+                    if (card) card.remove();
+                }
+                return;
             }
         }
         var notesContainer = document.getElementById('notes-container');
-        if (notesContainer) notesContainer.addEventListener('click', handleNoteCardClick);
+        if (notesContainer) {
+            notesContainer.addEventListener('click', handleNoteCardClick);
+            notesContainer.addEventListener('mousedown', handleLikeMouseDown);
+            notesContainer.addEventListener('mouseleave', handleLikeMouseLeave);
+        }
         var profileFeed = document.getElementById('profile-feed');
-        if (profileFeed) profileFeed.addEventListener('click', handleNoteCardClick);
+        if (profileFeed) {
+            profileFeed.addEventListener('click', handleNoteCardClick);
+            profileFeed.addEventListener('mousedown', handleLikeMouseDown);
+            profileFeed.addEventListener('mouseleave', handleLikeMouseLeave);
+        }
+        var bookmarksContainer = document.getElementById('bookmarks-container');
+        if (bookmarksContainer) {
+            bookmarksContainer.addEventListener('click', handleNoteCardClick);
+            bookmarksContainer.addEventListener('mousedown', handleLikeMouseDown);
+            bookmarksContainer.addEventListener('mouseleave', handleLikeMouseLeave);
+        }
+        document.addEventListener('mouseup', handleLikeMouseUp);
 
+        var noteDetailRepliesEl = document.getElementById('note-detail-replies');
+        if (noteDetailRepliesEl) {
+            noteDetailRepliesEl.addEventListener('click', handleNoteCardClick);
+            noteDetailRepliesEl.addEventListener('mousedown', handleLikeMouseDown);
+            noteDetailRepliesEl.addEventListener('mouseleave', handleLikeMouseLeave);
+        }
+        var noteDetailAncestorsEl = document.getElementById('note-detail-ancestors');
+        if (noteDetailAncestorsEl) {
+            noteDetailAncestorsEl.addEventListener('click', handleNoteCardClick);
+            noteDetailAncestorsEl.addEventListener('mousedown', handleLikeMouseDown);
+            noteDetailAncestorsEl.addEventListener('mouseleave', handleLikeMouseLeave);
+        }
+        var noteDetailSubjectWrap = document.getElementById('note-detail-subject-wrap');
+        if (noteDetailSubjectWrap) {
+            noteDetailSubjectWrap.addEventListener('click', handleNoteCardClick);
+            noteDetailSubjectWrap.addEventListener('mousedown', handleLikeMouseDown);
+            noteDetailSubjectWrap.addEventListener('mouseleave', handleLikeMouseLeave);
+        }
+
+        document.getElementById('close-like-emoji-modal')?.addEventListener('click', closeLikeEmojiModal);
+        var likeEmojiModal = document.getElementById('like-emoji-modal');
+        if (likeEmojiModal) {
+            likeEmojiModal.addEventListener('click', function(e) {
+                if (e.target === likeEmojiModal) closeLikeEmojiModal();
+            });
+        }
+
+        var noteDetailBack = document.getElementById('note-detail-back');
+        if (noteDetailBack) noteDetailBack.addEventListener('click', function() {
+            switchView(state.noteDetailPreviousView || 'feed');
+        });
+
+        console.log('[Plume] all sync listeners attached, about to await i18n...');
+        await (window.PlumeI18n && window.PlumeI18n.init ? window.PlumeI18n.init() : Promise.resolve());
+        console.log('[Plume] i18n done, about to await loadConfig...');
+        await loadConfig();
+        console.log('[Plume] loadConfig done');
+
+        var noteDetailReplyBtn = document.getElementById('note-detail-reply-btn');
+        var noteDetailReplyContent = document.getElementById('note-detail-reply-content');
+        if (noteDetailReplyBtn && noteDetailReplyContent) {
+            noteDetailReplyBtn.addEventListener('click', async function() {
+                var content = noteDetailReplyContent.value.trim();
+                if (!content) return;
+                if (!state.noteDetailSubject || !state.noteDetailSubjectId) return;
+                var sub = state.noteDetailSubject;
+                noteDetailReplyBtn.disabled = true;
+                try {
+                    var resultJson = await invoke('post_note', {
+                        content: content,
+                        replyToEventId: state.noteDetailSubjectId,
+                        replyToPubkey: sub.pubkey || null
+                    });
+                    var result = JSON.parse(resultJson);
+                    if (result.success_count > 0) {
+                        noteDetailReplyContent.value = '';
+                        var replyJson = await invoke('fetch_replies_to_event', {
+                            relay_urls: state.config.relays,
+                            event_id: state.noteDetailSubjectId,
+                            limit: 500
+                        });
+                        var repliesRaw = replyJson ? JSON.parse(replyJson) : [];
+                        state.noteDetailReplies = buildReplyThread(repliesRaw, state.noteDetailSubjectId);
+                        renderNoteDetailPage();
+                    } else {
+                        alert((window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t('composeModal.publishFailed') : 'Failed to publish'));
+                    }
+                } catch (e) {
+                    console.error('Reply failed:', e);
+                    alert((window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t('composeModal.postFailed') : 'Failed to post') + ': ' + e);
+                } finally {
+                    noteDetailReplyBtn.disabled = false;
+                }
+            });
+        }
+
+        console.log('[Plume] calling startInitialFeedFetch...');
         startInitialFeedFetch();
-        debugLog('Plume initialized successfully');
+        console.log('[Plume] init() completed successfully');
     } catch (error) {
-        debugLog('Init FAILED: ' + error.message);
-        alert((window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t('errors.initError') : 'Initialization error') + ': ' + error.message);
+        console.error('[Plume] init() FAILED:', error);
+        alert('Initialization error: ' + (error && error.message ? error.message : String(error)));
     }
 }
 
-// Run initialization when the page loads
-console.log('=== Setting up DOMContentLoaded listener ===');
-document.addEventListener('DOMContentLoaded', function() {
-    console.log('=== DOMContentLoaded fired ===');
-    // Debug area should exist now
-    debugLog('DOMContentLoaded fired');
-    debugLog('Starting init...');
+// Run initialization when the page is ready (DOMContentLoaded may have already fired when script runs at end of body)
+function runInit() {
+    console.log('[Plume] runInit() called, readyState=' + document.readyState);
     init();
-});
-console.log('=== app.js fully loaded ===');
+}
+console.log('[Plume] app.js loaded, readyState=' + document.readyState);
+if (document.readyState === 'loading') {
+    console.log('[Plume] Waiting for DOMContentLoaded...');
+    document.addEventListener('DOMContentLoaded', runInit);
+} else {
+    console.log('[Plume] Document already ready, calling runInit() now');
+    runInit();
+}

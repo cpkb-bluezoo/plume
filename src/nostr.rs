@@ -1,5 +1,22 @@
-// Plume - Nostr Protocol Handling
-// Basic structures and functions for working with Nostr
+/*
+ * nostr.rs
+ * Copyright (C) 2026 Chris Burdess
+ *
+ * This file is part of Plume, a Nostr desktop client.
+ *
+ * Plume is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * Plume is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with Plume.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 // A Nostr event - the fundamental data structure in Nostr
 // See: https://github.com/nostr-protocol/nips/blob/master/01.md
@@ -32,10 +49,13 @@ pub const KIND_TEXT_NOTE: u32 = 1;      // Short text note (like a tweet)
 #[allow(dead_code)]
 pub const KIND_RECOMMEND_RELAY: u32 = 2; // Relay recommendation
 pub const KIND_CONTACTS: u32 = 3;       // Contact list / follows
+/// NIP-04: Encrypted direct message
+pub const KIND_DM: u32 = 4;
 #[allow(dead_code)]
 pub const KIND_REPOST: u32 = 6;         // Repost/boost of another note
 #[allow(dead_code)]
 pub const KIND_REACTION: u32 = 7;       // Reaction (like, emoji)
+pub const KIND_ZAP_REQUEST: u32 = 9734; // NIP-57 Lightning zap request
 #[allow(dead_code)]
 pub const KIND_LONG_FORM: u32 = 30023;  // Long-form content (articles)
 /// NIP-65: Relay list metadata (tags: ["r", "relay_url"] or ["r", "url", "read"/"write"])
@@ -65,6 +85,9 @@ pub struct Filter {
     // Filter by "p" tags (pubkeys referenced in events)
     // This is used for finding followers (kind 3 events that tag a pubkey)
     pub p_tags: Option<Vec<String>>,
+
+    // Filter by "e" tags (event IDs referenced, e.g. replies to an event). NIP-01 #e.
+    pub e_tags: Option<Vec<String>>,
 }
 
 // Create a new empty filter
@@ -79,6 +102,7 @@ impl Filter {
             until: None,
             limit: None,
             p_tags: None,
+            e_tags: None,
         }
     }
 }
@@ -367,13 +391,26 @@ pub fn filter_to_json(filter: &Filter) -> String {
     // #p tags (for filtering by referenced pubkeys)
     if let Some(ref p_tags) = filter.p_tags {
         if !first { json.push_str(","); }
-        // first = false;  // Not needed, last field
+        first = false;
         json.push_str("\"#p\":[");
         for (i, pubkey) in p_tags.iter().enumerate() {
             json.push_str("\"");
             json.push_str(&escape_json_string(pubkey));
             json.push_str("\"");
             if i < p_tags.len() - 1 { json.push_str(","); }
+        }
+        json.push_str("]");
+    }
+
+    // #e tags (for filtering by referenced event IDs, e.g. replies)
+    if let Some(ref e_tags) = filter.e_tags {
+        if !first { json.push_str(","); }
+        json.push_str("\"#e\":[");
+        for (i, eid) in e_tags.iter().enumerate() {
+            json.push_str("\"");
+            json.push_str(&escape_json_string(eid));
+            json.push_str("\"");
+            if i < e_tags.len() - 1 { json.push_str(","); }
         }
         json.push_str("]");
     }
@@ -420,6 +457,21 @@ pub fn filter_notes_by_authors_since(authors: Vec<String>, limit: u32, since: Op
         until: None,
         limit: Some(limit),
         p_tags: None,
+        e_tags: None,
+    }
+}
+
+/// Profile feed: notes (kind 1) and reposts (kind 6) by authors. Used so reposts appear on profile.
+pub fn filter_profile_feed_by_authors_since(authors: Vec<String>, limit: u32, since: Option<u64>) -> Filter {
+    Filter {
+        ids: None,
+        authors: Some(authors),
+        kinds: Some(vec![KIND_TEXT_NOTE, KIND_REPOST]),
+        since,
+        until: None,
+        limit: Some(limit),
+        p_tags: None,
+        e_tags: None,
     }
 }
 
@@ -437,6 +489,90 @@ pub fn filter_recent_notes_since(limit: u32, since: Option<u64>) -> Filter {
         until: None,
         limit: Some(limit),
         p_tags: None,
+        e_tags: None,
+    }
+}
+
+/// Create a filter to fetch kind 1 notes that reference the given event ID in an "e" tag (replies).
+pub fn filter_replies_to_event(event_id: String, limit: u32) -> Filter {
+    Filter {
+        ids: None,
+        authors: None,
+        kinds: Some(vec![KIND_TEXT_NOTE]),
+        since: None,
+        until: None,
+        limit: Some(limit),
+        p_tags: None,
+        e_tags: Some(vec![event_id]),
+    }
+}
+
+/// Get the recipient pubkey (hex) from a kind 4 event's "p" tag. Returns None if missing or not kind 4.
+pub fn get_recipient_pubkey_from_kind4(event: &Event) -> Option<String> {
+    if event.kind != KIND_DM {
+        return None;
+    }
+    for tag in &event.tags {
+        if tag.len() >= 2 && tag[0] == "p" {
+            return Some(tag[1].clone());
+        }
+    }
+    None
+}
+
+/// For a kind 4 event, the "other" party (conversation partner) is the one that is not us.
+pub fn other_pubkey_in_dm(event: &Event, our_pubkey_hex: &str) -> Option<String> {
+    let our = our_pubkey_hex.to_lowercase();
+    let sender = event.pubkey.to_lowercase();
+    let recipient = get_recipient_pubkey_from_kind4(event)?.to_lowercase();
+    if sender == our {
+        Some(recipient)
+    } else if recipient == our {
+        Some(sender)
+    } else {
+        None
+    }
+}
+
+/// Filter for DMs we received: kind 4 with #p = our pubkey.
+pub fn filter_dms_received(our_pubkey_hex: &str, limit: u32, since: Option<u64>) -> Filter {
+    Filter {
+        ids: None,
+        authors: None,
+        kinds: Some(vec![KIND_DM]),
+        since,
+        until: None,
+        limit: Some(limit),
+        p_tags: Some(vec![our_pubkey_hex.to_string()]),
+        e_tags: None,
+    }
+}
+
+/// Filter for DMs we sent: kind 4 with authors = our pubkey.
+pub fn filter_dms_sent(our_pubkey_hex: &str, limit: u32, since: Option<u64>) -> Filter {
+    Filter {
+        ids: None,
+        authors: Some(vec![our_pubkey_hex.to_string()]),
+        kinds: Some(vec![KIND_DM]),
+        since,
+        until: None,
+        limit: Some(limit),
+        p_tags: None,
+        e_tags: None,
+    }
+}
+
+/// Create a filter to fetch events by their IDs (e.g. for bookmarks).
+pub fn filter_events_by_ids(ids: Vec<String>) -> Filter {
+    Filter {
+        ids: Some(ids),
+        authors: None,
+        kinds: Some(vec![KIND_TEXT_NOTE]),
+        since: None,
+        until: None,
+        limit: None,
+        p_tags: None,
+        e_tags: None,
     }
 }
 
@@ -450,6 +586,7 @@ pub fn filter_profile_by_author(author_pubkey: &str) -> Filter {
         until: None,
         limit: Some(1),  // Only need the most recent profile
         p_tags: None,
+        e_tags: None,
     }
 }
 
@@ -464,6 +601,7 @@ pub fn filter_profiles_by_authors(author_pubkeys: Vec<String>) -> Filter {
         until: None,
         limit: None,  // Get all matching profiles
         p_tags: None,
+        e_tags: None,
     }
 }
 
@@ -700,6 +838,7 @@ pub fn filter_contact_list_by_author(author_pubkey: &str) -> Filter {
         until: None,
         limit: Some(1),  // Only need the most recent contact list
         p_tags: None,
+        e_tags: None,
     }
 }
 
@@ -713,6 +852,7 @@ pub fn filter_followers_by_pubkey(target_pubkey: &str) -> Filter {
         until: None,
         limit: Some(500),  // Limit to avoid huge responses
         p_tags: Some(vec![target_pubkey.to_string()]),
+        e_tags: None,
     }
 }
 
@@ -726,6 +866,7 @@ pub fn filter_relay_list_by_author(author_pubkey: &str) -> Filter {
         until: None,
         limit: Some(1),
         p_tags: None,
+        e_tags: None,
     }
 }
 
