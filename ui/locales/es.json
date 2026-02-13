@@ -23,7 +23,8 @@
     "noTextNotes": "No se encontraron notas de texto",
     "tryRelays": "Prueba a conectar con otros relays",
     "noRelays": "No hay relays configurados. Añade relays en Ajustes.",
-    "feedFailed": "Error al cargar el feed. Comprueba los relays e inténtalo de nuevo."
+    "feedFailed": "Error al cargar el feed. Comprueba los relays e inténtalo de nuevo.",
+    "mutedContent": "Esta nota es de una cuenta silenciada o contiene contenido silenciado."
   },
   "messages": {
     "title": "Mensajes",
@@ -51,7 +52,22 @@
     "account": "Cuenta",
     "homeFeed": "Feed de inicio",
     "mediaUploads": "Subida de medios",
+    "follows": "Seguidos",
+    "followsSortBy": "Ordenar por:",
+    "followsSortName": "Nombre",
+    "followsSortNip05": "NIP-05",
+    "followsSortOrder": "Orden de lista",
+    "followsAddPlaceholder": "npub1… o hex para añadir",
+    "followsAdd": "Añadir",
+    "followsLoading": "Cargando…",
+    "followsEmpty": "Aún no sigues a nadie",
+    "followsSaved": "Lista de seguidos guardada y publicada.",
     "mutedContent": "Contenido silenciado",
+    "mutedUsersHint": "Desmarca para quitar de la lista; añade con npub/hex abajo. Guardar para aplicar.",
+    "mutedUsersEmpty": "Ningún usuario silenciado",
+    "mutedUserAddPlaceholder": "npub1… o hex para añadir",
+    "mutedUserAdd": "Añadir",
+    "mutedSaved": "Listas silenciadas guardadas.",
     "wallets": "Monederos",
     "relays": "Relays",
     "zaps": "Zaps",
@@ -80,7 +96,7 @@
     "generating": "Generando…",
     "newIdentityCreated": "¡Nueva identidad creada!",
     "saveNsecWarning": "IMPORTANTE: Guarda tu nsec en un lugar seguro. Lo necesitarás para recuperar tu identidad.",
-    "publicKeyQR": "Clave pública (código QR)",
+    "publicKeyQR": "Clave pública",
     "publicKeySelectToCopy": "Clave pública (seleccionar para copiar)"
   },
   "editProfileModal": {
@@ -140,6 +156,7 @@
     "like": "Me gusta",
     "repost": "Republicar",
     "bookmark": "Marcador",
+    "unbookmark": "Quitar marcador",
     "replyLabel": "(respuesta)",
     "replyingTo": "Respondiendo a"
   },

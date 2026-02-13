@@ -131,6 +131,7 @@
                             <li><button type="button" class="settings-menu-item" data-settings="keys" data-i18n="settings.keys"></button></li>
                             <li><button type="button" class="settings-menu-item" data-settings="home-feed" data-i18n="settings.homeFeed"></button></li>
                             <li><button type="button" class="settings-menu-item" data-settings="media" data-i18n="settings.mediaUploads"></button></li>
+                            <li><button type="button" class="settings-menu-item" data-settings="follows" data-i18n="settings.follows"></button></li>
                             <li><button type="button" class="settings-menu-item" data-settings="muted" data-i18n="settings.mutedContent"></button></li>
                             <li><button type="button" class="settings-menu-item" data-settings="relays" data-i18n="settings.relays"></button></li>
                             <li><button type="button" class="settings-menu-item" data-settings="zaps" data-i18n="settings.zaps"></button></li>
@@ -227,6 +228,23 @@
                                     <button type="button" id="settings-media-save" class="btn btn-primary" data-i18n="accountModal.save">Save</button>
                                 </div>
                             </div>
+                            <div id="settings-panel-follows" class="settings-panel" style="display: none;">
+                                <h3 class="settings-panel-title" data-i18n="settings.follows"></h3>
+                                <div class="follows-sort-row">
+                                    <span class="follows-sort-label" data-i18n="settings.followsSortBy"></span>
+                                    <button type="button" class="follows-sort-btn active" data-follows-sort="name" data-i18n="settings.followsSortName">Name</button>
+                                    <button type="button" class="follows-sort-btn" data-follows-sort="nip05" data-i18n="settings.followsSortNip05">NIP-05</button>
+                                    <button type="button" class="follows-sort-btn" data-follows-sort="order" data-i18n="settings.followsSortOrder">List order</button>
+                                </div>
+                                <ul id="follows-list" class="follows-list"></ul>
+                                <div class="follows-add-row">
+                                    <input type="text" id="follows-add-input" class="follows-add-input" data-i18n-placeholder="settings.followsAddPlaceholder" placeholder="npub1… or hex to add">
+                                    <button type="button" id="follows-add-btn" class="btn btn-primary" data-i18n="settings.followsAdd">Add</button>
+                                </div>
+                                <div class="form-actions form-actions-end">
+                                    <button type="button" id="settings-follows-save" class="btn btn-primary" data-i18n="accountModal.save">Save</button>
+                                </div>
+                            </div>
                             <div id="settings-panel-muted" class="settings-panel" style="display: none;">
                                 <h3 class="settings-panel-title" data-i18n="settings.mutedContent"></h3>
                                 <div class="muted-tabs">
@@ -235,7 +253,11 @@
                                     <button type="button" class="muted-tab" data-muted-tab="hashtags" data-i18n="settings.mutedHashtags"></button>
                                 </div>
                                 <div id="muted-tab-users" class="muted-tab-panel">
-                                    <ul id="muted-users-list" class="muted-list"></ul>
+                                    <ul id="muted-users-list" class="follows-list"></ul>
+                                    <div class="follows-add-row muted-users-add-row">
+                                        <input type="text" id="muted-user-add-input" class="follows-add-input" data-i18n-placeholder="settings.mutedUserAddPlaceholder" placeholder="npub1… or hex to add">
+                                        <button type="button" id="muted-user-add-btn" class="btn btn-primary" data-i18n="settings.mutedUserAdd">Add</button>
+                                    </div>
                                     <p class="form-hint" data-i18n="settings.mutedUsersHint"></p>
                                 </div>
                                 <div id="muted-tab-words" class="muted-tab-panel" style="display: none;">

@@ -80,7 +80,12 @@ const state = {
     // Messages view
     selectedConversation: null,   // other_pubkey (hex) or null
     openConversationWith: null,   // when opening Messages from Profile "Message", set to that pubkey
-    dmStreamStarted: false
+    dmStreamStarted: false,
+    // Follows settings panel: working copy [{ pubkey (hex), checked, listOrder }], sort key
+    followsPanelList: [],
+    followsPanelSort: 'name',
+    // Muted users panel: working copy [{ pubkey, checked }], no config change until Save
+    mutedUsersPanelList: []
 };
 
 // ============================================================
@@ -576,7 +581,9 @@ function getProfileNpub() {
     var viewingOwn = state.viewedProfilePubkey === null || state.viewedProfilePubkey === state.publicKeyHex;
     if (viewingOwn && state.publicKeyNpub) return Promise.resolve(state.publicKeyNpub);
     if (viewingOwn && state.config && state.config.public_key) {
-        return invoke('convert_hex_to_npub', { hex_key: state.config.public_key }).then(function(n) { return n || ''; });
+        return invoke('convert_hex_to_npub', { hex_key: state.config.public_key })
+            .then(function(n) { return n || state.config.public_key || ''; })
+            .catch(function() { return state.config.public_key || ''; });
     }
     if (!viewingOwn && state.viewedProfilePubkey) {
         var key = state.viewedProfilePubkey;
@@ -588,98 +595,55 @@ function getProfileNpub() {
     return Promise.resolve('');
 }
 
-// Generate QR code as SVG string from text (black modules on white).
-// Uses qrcode-generator (global: qrcode) or node-qrcode (QRCode) if available.
-function generateQRCodeSVG(text) {
-    var gen = (typeof qrcode !== 'undefined' && typeof qrcode === 'function') ? qrcode : (typeof window.qrcode !== 'undefined' && typeof window.qrcode === 'function' ? window.qrcode : null);
-    if (!gen) return null;
-    try {
-        var qr = gen(0, 'M');
-        qr.addData(text);
-        qr.make();
-        if (typeof qr.createSvgTag === 'function') {
-            return qr.createSvgTag(8, 4);
-        }
-        var n = qr.getModuleCount();
-        var padding = 4;
-        var cell = 8;
-        var size = n * cell + padding * 2;
-        var parts = [];
-        for (var row = 0; row < n; row++) {
-            for (var col = 0; col < n; col++) {
-                if (qr.isDark(row, col)) {
-                    parts.push('<rect x="' + (padding + col * cell) + '" y="' + (padding + row * cell) + '" width="' + cell + '" height="' + cell + '" fill="#000"/>');
-                }
-            }
-        }
-        return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + size + ' ' + size + '" width="256" height="256">' + parts.join('') + '</svg>';
-    } catch (e) {
-        return null;
-    }
-}
-
 function openProfileQRModal() {
     var modal = document.getElementById('profile-qr-modal');
     var wrap = document.getElementById('profile-qr-image-wrap');
     var npubInput = document.getElementById('profile-qr-npub-input');
     if (!modal || !wrap || !npubInput) return;
     wrap.innerHTML = '';
-    npubInput.value = '';
+    var viewingOwn = state.viewedProfilePubkey === null || state.viewedProfilePubkey === state.publicKeyHex;
     var openModal = function() { modal.classList.add('active'); };
 
     getProfileNpub().then(function(npub) {
-        if (!npub) {
-            openModal();
-            return;
-        }
-        npubInput.value = npub;
+        var raw = npub || (viewingOwn && (state.config && state.config.public_key) ? state.config.public_key : '') || '';
+        var setQRAndOpen = function() { openModal(); };
 
-        var setQRAndOpen = function() {
-            openModal();
-        };
-
-        var qrcodeLib = typeof QRCode !== 'undefined' ? QRCode : (typeof window.qrcode !== 'undefined' ? window.qrcode : null);
-
-        function tryCanvas() {
-            if (!qrcodeLib || typeof qrcodeLib.toCanvas !== 'function') return false;
-            var opts = { width: 256, margin: 2 };
-            var done = function() { setQRAndOpen(); };
-            var canvas = document.createElement('canvas');
-            qrcodeLib.toCanvas(canvas, npub, opts, function(err) {
-                if (!err) wrap.appendChild(canvas);
-                done();
-            });
-            return true;
-        }
-
-        function tryDataURL() {
-            if (!qrcodeLib || typeof qrcodeLib.toDataURL !== 'function') return false;
-            var opts = { width: 256, margin: 2 };
-            qrcodeLib.toDataURL(npub, opts, function(err, url) {
-                if (!err && url) {
-                    var img = document.createElement('img');
-                    img.src = url;
-                    img.alt = 'QR code';
-                    img.className = 'profile-qr-img';
-                    wrap.appendChild(img);
-                }
+        function showAndQR(npubString) {
+            npubInput.value = npubString;
+            if (!npubString) {
                 setQRAndOpen();
-            });
-            return true;
+                return;
+            }
+            invoke('generate_qr_svg', { data: npubString })
+                .then(function(svgString) {
+                    if (!svgString) { setQRAndOpen(); return; }
+                    var themed = svgString
+                        .replace(/fill="#000000"/g, 'fill="currentColor"')
+                        .replace(/fill="#000"/g, 'fill="currentColor"')
+                        .replace(/fill='#000'/g, 'fill="currentColor"')
+                        .replace(/fill="#ffffff"/g, 'fill="transparent"')
+                        .replace(/fill="#fff"/g, 'fill="transparent"')
+                        .replace(/fill='#fff'/g, 'fill="transparent"');
+                    wrap.innerHTML = themed;
+                    setQRAndOpen();
+                })
+                .catch(function(err) {
+                    console.warn('QR generation failed:', err);
+                    setQRAndOpen();
+                });
         }
 
-        var svgString = generateQRCodeSVG(npub);
-        if (svgString) {
-            wrap.innerHTML = svgString;
-            setQRAndOpen();
-            return;
+        if (raw.length === 64 && /^[a-fA-F0-9]+$/.test(raw)) {
+            invoke('convert_hex_to_npub', { hex_key: raw })
+                .then(function(n) { showAndQR(n || raw); })
+                .catch(function() { showAndQR(raw); });
+        } else {
+            showAndQR(raw);
         }
-
-        if (tryCanvas()) return;
-        if (tryDataURL()) return;
-
-        setQRAndOpen();
-    }).catch(function() { openModal(); });
+    }).catch(function() {
+        npubInput.value = viewingOwn && state.config && state.config.public_key ? state.config.public_key : '';
+        openModal();
+    });
 }
 
 function closeProfileQRModal() {
@@ -761,6 +725,7 @@ function profileNoteMatchesTab(note, tab) {
 // Append a single note to #profile-feed (streaming). Dedupes by id; inserts in sorted position. Returns true if appended.
 function appendProfileNoteCardSync(note) {
     if (!note || (note.kind !== 1 && note.kind !== 6)) return false;
+    if (isNoteMuted(note)) return false;
     var container = document.getElementById('profile-feed');
     var effectivePubkey = getEffectiveProfilePubkey();
     if (!container || !effectivePubkey) return false;
@@ -982,7 +947,8 @@ function displayProfileNotes(notes) {
     if (!container) return;
     var t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
     container.innerHTML = '';
-    if (!notes || notes.length === 0) {
+    notes = (notes || []).filter(function(n) { return !isNoteMuted(n); });
+    if (notes.length === 0) {
         container.innerHTML = '<div class="placeholder-message"><p>' + escapeHtml(t('feed.noNotes')) + '</p></div>';
         return;
     }
@@ -1246,12 +1212,13 @@ function updateFollowButtonState() {
     const viewingOwn = state.viewedProfilePubkey === null || state.viewedProfilePubkey === state.publicKeyHex;
     if (viewingOwn) return;
     const t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
-    const isFollowing = state.ownFollowingPubkeys && state.viewedProfilePubkey && state.ownFollowingPubkeys.indexOf(state.viewedProfilePubkey) !== -1;
+    const pk = (state.viewedProfilePubkey || '').toLowerCase();
+    const isFollowing = !!(state.ownFollowingPubkeys && pk && state.ownFollowingPubkeys.some(function(p) { return String(p).toLowerCase() === pk; }));
     followBtn.textContent = isFollowing ? (t('profile.unfollow') || 'Unfollow') : (t('profile.follow') || 'Follow');
     followBtn.dataset.following = isFollowing ? '1' : '0';
 }
 
-// Follow or unfollow the currently viewed profile user
+// Follow or unfollow the currently viewed profile user. Updates contact list and publishes to relays immediately.
 async function handleFollowClick() {
     if (!state.viewedProfilePubkey || state.viewedProfilePubkey === state.publicKeyHex) return;
     const followBtn = document.getElementById('follow-btn');
@@ -1260,11 +1227,16 @@ async function handleFollowClick() {
     followBtn && (followBtn.disabled = true);
     try {
         await invoke('update_contact_list', { add: add, targetPubkey: state.viewedProfilePubkey });
+        var pk = String(state.viewedProfilePubkey).toLowerCase();
         if (add) {
             if (!state.ownFollowingPubkeys) state.ownFollowingPubkeys = [];
-            if (state.ownFollowingPubkeys.indexOf(state.viewedProfilePubkey) === -1) state.ownFollowingPubkeys.push(state.viewedProfilePubkey);
+            if (!state.ownFollowingPubkeys.some(function(p) { return String(p).toLowerCase() === pk; })) {
+                state.ownFollowingPubkeys.push(state.viewedProfilePubkey);
+            }
         } else {
-            if (state.ownFollowingPubkeys) state.ownFollowingPubkeys = state.ownFollowingPubkeys.filter(function(p) { return p !== state.viewedProfilePubkey; });
+            if (state.ownFollowingPubkeys) {
+                state.ownFollowingPubkeys = state.ownFollowingPubkeys.filter(function(p) { return String(p).toLowerCase() !== pk; });
+            }
         }
         updateFollowButtonState();
     } catch (e) {
@@ -1385,7 +1357,8 @@ async function loadBookmarksView() {
     container.innerHTML = '<div class="placeholder-message"><p>' + escapeHtml(t('feed.notesHint') || 'Loading…') + '</p></div>';
     try {
         const resultJson = await invoke('fetch_events_by_ids', { relay_urls: relays, ids: ids });
-        const notes = resultJson ? JSON.parse(resultJson) : [];
+        var notes = resultJson ? JSON.parse(resultJson) : [];
+        notes = notes.filter(function(n) { return !isNoteMuted(n); });
         container.innerHTML = '';
         if (notes.length === 0) {
             container.innerHTML = '<div class="placeholder-message"><p>' + escapeHtml(t('bookmarks.noBookmarks')) + '</p></div>';
@@ -1510,7 +1483,7 @@ async function openNoteDetail(noteIdOrNote) {
     } catch (e) {
         console.error('Failed to fetch replies:', e);
     }
-    state.noteDetailReplies = buildReplyThread(repliesRaw, noteId);
+    state.noteDetailReplies = buildReplyThread(repliesRaw, noteId).filter(function(item) { return !isNoteMuted(item.note); });
     renderNoteDetailPage();
 }
 
@@ -1523,23 +1496,28 @@ function renderNoteDetailPage() {
     if (!ancestorsEl || !subjectWrap || !repliesEl) return;
 
     ancestorsEl.innerHTML = '';
-    if (state.noteDetailAncestors.length) {
-        state.noteDetailAncestors.forEach(function(note, i) {
+    var visibleAncestors = (state.noteDetailAncestors || []).filter(function(n) { return !isNoteMuted(n); });
+    if (visibleAncestors.length) {
+        visibleAncestors.forEach(function(note, i) {
             var replyToPubkey = getReplyToPubkey(note);
             var card = createNoteCard(note, 'ancestor-' + i, 'note-detail-ancestor-', replyToPubkey);
             ancestorsEl.appendChild(card);
         });
-        ensureProfilesForNotes(state.noteDetailAncestors);
+        ensureProfilesForNotes(visibleAncestors);
     }
 
     subjectWrap.innerHTML = '';
     if (state.noteDetailSubject) {
         var sub = state.noteDetailSubject;
-        var replyToPubkey = getReplyToPubkey(sub);
-        var card = createNoteCard(sub, 0, 'note-detail-subject-', replyToPubkey);
-        card.classList.add('note-detail-subject-card');
-        subjectWrap.appendChild(card);
-        ensureProfilesForNotes([sub]);
+        if (isNoteMuted(sub)) {
+            subjectWrap.innerHTML = '<div class="placeholder-message note-detail-muted"><p>' + escapeHtml(t('feed.mutedContent') || 'This note is from a muted account or contains muted content.') + '</p></div>';
+        } else {
+            var replyToPubkey = getReplyToPubkey(sub);
+            var card = createNoteCard(sub, 0, 'note-detail-subject-', replyToPubkey);
+            card.classList.add('note-detail-subject-card');
+            subjectWrap.appendChild(card);
+            ensureProfilesForNotes([sub]);
+        }
     }
 
     if (replyContent) replyContent.value = '';
@@ -1682,8 +1660,11 @@ function showSettingsPanel(key) {
         var urlEl = document.getElementById('settings-media-server-url');
         if (urlEl) urlEl.value = (state.config && state.config.media_server_url) || 'https://blossom.primal.net';
     }
+    if (key === 'follows') {
+        loadFollowsPanel();
+    }
     if (key === 'muted') {
-        renderMutedPanels();
+        loadMutedPanel();
     }
     if (key === 'relays') {
         updateRelayList();
@@ -1815,9 +1796,37 @@ function isUserMuted(pubkey) {
     return state.config.muted_users.some(function(p) { return String(p).toLowerCase() === pk; });
 }
 
+// True if the note should be hidden by mute filters (muted user, muted word in content, or muted hashtag in tags).
+function isNoteMuted(note) {
+    if (!note || !state.config) return false;
+    ensureMutedConfig();
+    var pubkey = (note.pubkey || '').toLowerCase();
+    if (state.config.muted_users.some(function(p) { return String(p).toLowerCase() === pubkey; })) return true;
+    if (note.kind === 1) {
+        var content = (note.content || '').toLowerCase();
+        var words = state.config.muted_words || [];
+        for (var w = 0; w < words.length; w++) {
+            if (content.indexOf(String(words[w]).toLowerCase()) !== -1) return true;
+        }
+        var tags = note.tags || [];
+        var mutedHashtags = (state.config.muted_hashtags || []).map(function(h) { return String(h).toLowerCase().replace(/^#/, ''); });
+        for (var t = 0; t < tags.length; t++) {
+            var tag = tags[t];
+            if (Array.isArray(tag) && tag[0] === 't' && tag[1]) {
+                var tagVal = String(tag[1]).toLowerCase().replace(/^#/, '');
+                if (mutedHashtags.indexOf(tagVal) !== -1) return true;
+            }
+        }
+    }
+    return false;
+}
+
+// Mute or unmute the currently viewed profile user. Updates local config immediately and saves to disk.
 function handleMuteClick() {
     var pubkey = state.viewedProfilePubkey;
     if (!pubkey || !state.config) return;
+    var muteBtn = document.getElementById('mute-btn');
+    if (muteBtn) muteBtn.disabled = true;
     ensureMutedConfig();
     var pk = String(pubkey).toLowerCase();
     var idx = state.config.muted_users.findIndex(function(p) { return String(p).toLowerCase() === pk; });
@@ -1826,26 +1835,80 @@ function handleMuteClick() {
     } else {
         state.config.muted_users.splice(idx, 1);
     }
-    saveConfig().then(function() {
-        updateProfileDisplay();
-    }).catch(function(err) { console.error('Failed to save mute:', err); });
+    saveConfig()
+        .then(function() {
+            updateProfileDisplay();
+        })
+        .catch(function(err) {
+            console.error('Failed to save mute:', err);
+            alert((window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t('errors.failedToSaveSettings') : 'Failed to save') + ': ' + err);
+        })
+        .finally(function() {
+            if (muteBtn) muteBtn.disabled = false;
+        });
+}
+
+async function loadMutedPanel() {
+    ensureMutedConfig();
+    var users = state.config.muted_users || [];
+    state.mutedUsersPanelList = users.map(function(pubkey) { return { pubkey: pubkey, checked: true }; });
+    var ulUsers = document.getElementById('muted-users-list');
+    if (ulUsers) {
+        ulUsers.innerHTML = '<li class="follows-list-placeholder">' + (window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t('settings.followsLoading') : 'Loading…') + '</li>';
+    }
+    if (users.length > 0) {
+        var notes = users.map(function(p) { return { pubkey: p }; });
+        await ensureProfilesForNotes(notes);
+    }
+    renderMutedPanels();
 }
 
 function renderMutedPanels() {
     ensureMutedConfig();
-    var users = state.config.muted_users || [];
     var words = state.config.muted_words || [];
     var hashtags = state.config.muted_hashtags || [];
     var t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
     var ulUsers = document.getElementById('muted-users-list');
     var ulWords = document.getElementById('muted-words-list');
     var ulHashtags = document.getElementById('muted-hashtags-list');
-    if (ulUsers) {
-        ulUsers.innerHTML = users.length ? users.map(function(pubkey) {
-            var name = (state.profileCache && state.profileCache[pubkey] && state.profileCache[pubkey].name) || shortenKey(pubkey);
-            return '<li data-pubkey="' + escapeHtml(pubkey) + '"><span>' + escapeHtml(name) + '</span><button type="button" class="muted-item-remove" data-i18n="profile.unmute">Unmute</button></li>';
-        }).join('') : '';
+
+    if (ulUsers && state.mutedUsersPanelList) {
+        var list = state.mutedUsersPanelList;
+        ulUsers.className = 'follows-list';
+        if (list.length === 0) {
+            ulUsers.innerHTML = '<li class="follows-list-placeholder">' + escapeHtml(t('settings.mutedUsersEmpty') || 'No muted users') + '</li>';
+        } else {
+            ulUsers.innerHTML = '';
+            list.forEach(function(item) {
+                var profile = state.profileCache[item.pubkey];
+                var name = (profile && profile.name) ? profile.name : shortenKey(item.pubkey);
+                var nip05 = (profile && profile.nip05) ? profile.nip05 : '';
+                var picture = (profile && profile.picture) ? profile.picture : null;
+                var li = document.createElement('li');
+                li.className = 'follows-list-item';
+                li.dataset.pubkey = item.pubkey;
+                var imgHtml = picture
+                    ? '<img src="' + escapeHtml(picture) + '" alt="" class="follows-item-avatar" onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'inline-flex\';">'
+                    : '';
+                li.innerHTML = '<label class="follows-item-row">' +
+                    '<input type="checkbox" class="follows-item-checkbox muted-user-checkbox" ' + (item.checked ? 'checked' : '') + ' data-pubkey="' + escapeHtml(item.pubkey) + '">' +
+                    '<span class="follows-item-avatar-wrap">' + imgHtml + '<span class="follows-item-avatar-fallback" style="' + (picture ? 'display:none' : '') + '">' + (name ? name.charAt(0).toUpperCase() : '?') + '</span></span>' +
+                    '<span class="follows-item-info">' +
+                    '<span class="follows-item-name">' + escapeHtml(name) + '</span>' +
+                    (nip05 ? '<span class="follows-item-nip05">' + escapeHtml(nip05) + '</span>' : '') +
+                    '</span></label>';
+                ulUsers.appendChild(li);
+            });
+        }
+        ulUsers.querySelectorAll('.muted-user-checkbox').forEach(function(cb) {
+            cb.addEventListener('change', function() {
+                var pubkey = cb.dataset.pubkey;
+                var item = state.mutedUsersPanelList.find(function(x) { return x.pubkey === pubkey; });
+                if (item) item.checked = cb.checked;
+            });
+        });
     }
+
     if (ulWords) {
         ulWords.innerHTML = words.length ? words.map(function(w) {
             return '<li data-word="' + escapeHtml(w) + '"><span>' + escapeHtml(w) + '</span><button type="button" class="muted-item-remove">' + escapeHtml(t('app.close') || 'Remove') + '</button></li>';
@@ -1860,7 +1923,120 @@ function renderMutedPanels() {
 
 function saveMutedFromPanel() {
     ensureMutedConfig();
-    saveConfig().catch(function(err) { console.error('Failed to save muted lists:', err); });
+    if (state.mutedUsersPanelList) {
+        state.config.muted_users = state.mutedUsersPanelList.filter(function(x) { return x.checked; }).map(function(x) { return x.pubkey; });
+    }
+    saveConfig().then(function() {
+        var t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
+        alert(t('settings.mutedSaved') || 'Muted lists saved.');
+    }).catch(function(err) { console.error('Failed to save muted lists:', err); });
+}
+
+// ============================================================
+// Follows settings panel
+// ============================================================
+
+async function loadFollowsPanel() {
+    var listEl = document.getElementById('follows-list');
+    var addInput = document.getElementById('follows-add-input');
+    if (!listEl) return;
+    listEl.innerHTML = '<li class="follows-list-placeholder">' + (window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t('settings.followsLoading') || 'Loading…' : 'Loading…') + '</li>';
+    if (addInput) addInput.value = '';
+    try {
+        var data = await fetchFollowing();
+        var contacts = (data && data.contacts) ? data.contacts : [];
+        var notes = contacts.map(function(c) { return { pubkey: c.pubkey }; });
+        await ensureProfilesForNotes(notes);
+        state.followsPanelList = contacts.map(function(c, i) {
+            return { pubkey: c.pubkey, checked: true, listOrder: i };
+        });
+        state.followsPanelSort = getFollowsPanelSort();
+        renderFollowsPanel();
+    } catch (e) {
+        console.error('Failed to load follows:', e);
+        listEl.innerHTML = '<li class="follows-list-placeholder">' + (window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t('errors.loadFailed') : 'Failed to load') + '</li>';
+    }
+}
+
+function renderFollowsPanel() {
+    var listEl = document.getElementById('follows-list');
+    if (!listEl) return;
+    var list = state.followsPanelList || [];
+    var sort = state.followsPanelSort || 'name';
+    var t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
+
+    var sorted = list.slice().sort(function(a, b) {
+        if (sort === 'order') return (a.listOrder !== undefined ? a.listOrder : 0) - (b.listOrder !== undefined ? b.listOrder : 0);
+        var ad = getAuthorDisplay(a.pubkey);
+        var bd = getAuthorDisplay(b.pubkey);
+        if (sort === 'name') {
+            var an = (ad.name || '').toLowerCase();
+            var bn = (bd.name || '').toLowerCase();
+            return an.localeCompare(bn);
+        }
+        if (sort === 'nip05') {
+            var anip = (ad.nip05 || '').toLowerCase();
+            var bnip = (bd.nip05 || '').toLowerCase();
+            return anip.localeCompare(bnip);
+        }
+        return 0;
+    });
+
+    if (sorted.length === 0) {
+        listEl.innerHTML = '<li class="follows-list-placeholder">' + escapeHtml(t('settings.followsEmpty') || 'No follows yet') + '</li>';
+        return;
+    }
+
+    listEl.innerHTML = '';
+    sorted.forEach(function(item) {
+        var profile = state.profileCache[item.pubkey];
+        var name = (profile && profile.name) ? profile.name : shortenKey(item.pubkey);
+        var nip05 = (profile && profile.nip05) ? profile.nip05 : '';
+        var picture = (profile && profile.picture) ? profile.picture : null;
+        var li = document.createElement('li');
+        li.className = 'follows-list-item';
+        li.dataset.pubkey = item.pubkey;
+        var imgHtml = picture
+            ? '<img src="' + escapeHtml(picture) + '" alt="" class="follows-item-avatar" onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'inline-flex\';">'
+            : '';
+        li.innerHTML = '<label class="follows-item-row">' +
+            '<input type="checkbox" class="follows-item-checkbox" ' + (item.checked ? 'checked' : '') + ' data-pubkey="' + escapeHtml(item.pubkey) + '">' +
+            '<span class="follows-item-avatar-wrap">' + imgHtml + '<span class="follows-item-avatar-fallback" style="' + (picture ? 'display:none' : '') + '">' + (name ? name.charAt(0).toUpperCase() : '?') + '</span></span>' +
+            '<span class="follows-item-info">' +
+            '<span class="follows-item-name">' + escapeHtml(name) + '</span>' +
+            (nip05 ? '<span class="follows-item-nip05">' + escapeHtml(nip05) + '</span>' : '') +
+            '</span></label>';
+        listEl.appendChild(li);
+    });
+
+    listEl.querySelectorAll('.follows-item-checkbox').forEach(function(cb) {
+        cb.addEventListener('change', function() {
+            var pubkey = cb.dataset.pubkey;
+            var item = state.followsPanelList.find(function(x) { return x.pubkey === pubkey; });
+            if (item) item.checked = cb.checked;
+        });
+    });
+}
+
+function getFollowsPanelSort() {
+    var btn = document.querySelector('.follows-sort-btn.active');
+    return (btn && btn.dataset.followsSort) ? btn.dataset.followsSort : 'name';
+}
+
+function saveFollowsPanel() {
+    var pubkeys = (state.followsPanelList || []).filter(function(x) { return x.checked; }).map(function(x) { return x.pubkey; });
+    var t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
+    invoke('set_contact_list', { pubkeys: pubkeys })
+        .then(function() {
+            state.ownFollowingPubkeys = pubkeys;
+            var msg = t('settings.followsSaved') || 'Follow list saved and published.';
+            alert(msg);
+            loadFollowsPanel();
+        })
+        .catch(function(err) {
+            console.error('Failed to save follows:', err);
+            alert((t('errors.failedToPublish') || 'Failed to publish') + ': ' + err);
+        });
 }
 
 // Clear validation error displays
@@ -2228,6 +2404,7 @@ function scheduleFeedNoteDrain() {
 // Returns the noteIndex used for the card, or -1 if skipped.
 function appendNoteCardToFeedSync(note) {
     if (!note || note.kind !== 1) return -1;
+    if (isNoteMuted(note)) return -1;
     if (state.notes.some(function(n) { return n.id === note.id; })) return -1;
 
     const container = document.getElementById('notes-container');
@@ -2658,7 +2835,7 @@ function createNoteCard(note, noteIndex, idPrefix, replyToPubkey, isBookmarked) 
                     <button type="button" class="note-action zap-muted" title="${escapeHtml(t('note.zapNoWallet'))}" aria-label="${escapeHtml(t('note.zap'))}" data-action="zap" data-zap-target-pubkey="${safePubkey}" data-zap-event-id="${safeId}" disabled><img src="icons/zap.svg" alt="${escapeHtml(t('note.zap'))}" class="icon-zap"></button>
                     <button type="button" class="note-action${liked ? ' liked' : ''}" title="${escapeHtml(t('note.like'))}" aria-label="${escapeHtml(t('note.like'))}" data-action="like" data-note-id="${safeId}" data-pubkey="${safePubkey}"><img src="icons/${liked ? 'heart-filled' : 'heart'}.svg" alt="${escapeHtml(t('note.like'))}" class="icon-heart"></button>
                     <button type="button" class="note-action" title="${escapeHtml(t('note.repost'))}" aria-label="${escapeHtml(t('note.repost'))}" data-action="repost" data-note-id="${safeId}" data-pubkey="${safePubkey}"><img src="icons/repost.svg" alt="${escapeHtml(t('note.repost'))}" class="icon-repost"></button>
-                    <button type="button" class="note-action" title="${escapeHtml(t('note.bookmark'))}" aria-label="${escapeHtml(t('note.bookmark'))}" data-action="bookmark" data-note-id="${safeId}"><img src="icons/${isBookmarked ? 'bookmark-filled' : 'bookmark'}.svg" alt="${escapeHtml(t('note.bookmark'))}" class="icon-bookmark"></button>
+                    <button type="button" class="note-action" title="${escapeHtml(isBookmarked ? (t('note.unbookmark') || 'Unbookmark') : t('note.bookmark'))}" aria-label="${escapeHtml(isBookmarked ? (t('note.unbookmark') || 'Unbookmark') : t('note.bookmark'))}" data-action="bookmark" data-note-id="${safeId}"><img src="icons/${isBookmarked ? 'bookmark-filled' : 'bookmark'}.svg" alt="${escapeHtml(isBookmarked ? (t('note.unbookmark') || 'Unbookmark') : t('note.bookmark'))}" class="icon-bookmark"></button>
                 </div>
             </div>
         </div>
@@ -2846,8 +3023,8 @@ function displayNotes(notes) {
     const t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
     const container = document.getElementById('notes-container');
     container.innerHTML = '';
-    
-    if (!notes || notes.length === 0) {
+    notes = (notes || []).filter(function(n) { return !isNoteMuted(n); });
+    if (notes.length === 0) {
         container.innerHTML = `
             <div class="placeholder-message">
                 <p>${escapeHtml(t('feed.noNotes'))}</p>
@@ -3202,6 +3379,7 @@ async function init() {
         document.getElementById('home-feed-panel-save')?.addEventListener('click', saveHomeFeedModeFromPanel);
         document.getElementById('settings-media-save')?.addEventListener('click', saveMediaServerFromPanel);
         document.getElementById('settings-muted-save')?.addEventListener('click', saveMutedFromPanel);
+        document.getElementById('settings-follows-save')?.addEventListener('click', saveFollowsPanel);
         document.getElementById('settings-zaps-save')?.addEventListener('click', saveZapsFromPanel);
         var settingsKeysForm = document.getElementById('settings-keys-form');
         if (settingsKeysForm) settingsKeysForm.addEventListener('submit', function(e) { e.preventDefault(); saveKeysPanel(e); });
@@ -3248,6 +3426,48 @@ async function init() {
             });
         }
 
+        // Follows panel: sort buttons, Add, Save (Save bound above)
+        document.querySelectorAll('.follows-sort-btn').forEach(function(btn) {
+            btn.addEventListener('click', function() {
+                document.querySelectorAll('.follows-sort-btn').forEach(function(b) { b.classList.remove('active'); });
+                this.classList.add('active');
+                state.followsPanelSort = this.dataset.followsSort || 'name';
+                renderFollowsPanel();
+            });
+        });
+        document.getElementById('follows-add-btn')?.addEventListener('click', function() {
+            var input = document.getElementById('follows-add-input');
+            if (!input) return;
+            var raw = (input.value || '').trim();
+            if (!raw) return;
+            validatePublicKey(raw).then(function(r) {
+                if (!r.valid || !r.hex) return;
+                var hex = r.hex;
+                if (!state.followsPanelList) state.followsPanelList = [];
+                var exists = state.followsPanelList.some(function(x) { return (x.pubkey || '').toLowerCase() === hex.toLowerCase(); });
+                if (exists) return;
+                state.followsPanelList.push({ pubkey: hex, checked: true, listOrder: state.followsPanelList.length });
+                input.value = '';
+                renderFollowsPanel();
+            });
+        });
+        document.getElementById('muted-user-add-btn')?.addEventListener('click', function() {
+            var input = document.getElementById('muted-user-add-input');
+            if (!input) return;
+            var raw = (input.value || '').trim();
+            if (!raw) return;
+            validatePublicKey(raw).then(function(r) {
+                if (!r.valid || !r.hex) return;
+                var hex = r.hex;
+                if (!state.mutedUsersPanelList) state.mutedUsersPanelList = [];
+                var exists = state.mutedUsersPanelList.some(function(x) { return (x.pubkey || '').toLowerCase() === hex.toLowerCase(); });
+                if (exists) return;
+                state.mutedUsersPanelList.push({ pubkey: hex, checked: true });
+                input.value = '';
+                renderMutedPanels();
+            });
+        });
+
         // Muted tabs
         document.querySelectorAll('.muted-tab').forEach(function(tab) {
             tab.addEventListener('click', function() {
@@ -3285,9 +3505,7 @@ async function init() {
             var li = remove.closest('li');
             if (!li) return;
             ensureMutedConfig();
-            if (li.dataset.pubkey) {
-                state.config.muted_users = state.config.muted_users.filter(function(p) { return p !== li.dataset.pubkey; });
-            } else if (li.dataset.word) {
+            if (li.dataset.word) {
                 state.config.muted_words = state.config.muted_words.filter(function(w) { return w !== li.dataset.word; });
             } else if (li.dataset.hashtag) {
                 state.config.muted_hashtags = state.config.muted_hashtags.filter(function(h) { return h !== li.dataset.hashtag; });
@@ -3452,11 +3670,14 @@ async function init() {
                 }
                 saveConfig();
                 var img = bookmarkBtn.querySelector('img');
-                if (img) img.src = idx === -1 ? 'icons/bookmark-filled.svg' : 'icons/bookmark.svg';
-                if (idx !== -1 && state.currentView === 'bookmarks') {
-                    var card = bookmarkBtn.closest('.note-card');
-                    if (card) card.remove();
-                }
+                var nowBookmarked = idx === -1;
+                if (img) img.src = nowBookmarked ? 'icons/bookmark-filled.svg' : 'icons/bookmark.svg';
+                var t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
+                var label = nowBookmarked ? (t('note.unbookmark') || 'Unbookmark') : (t('note.bookmark') || 'Bookmark');
+                bookmarkBtn.setAttribute('title', label);
+                bookmarkBtn.setAttribute('aria-label', label);
+                if (img) img.setAttribute('alt', label);
+                // In bookmarks view we do not remove the card on unbookmark; list refreshes when user leaves and returns.
                 return;
             }
         }

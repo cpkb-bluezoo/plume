@@ -23,7 +23,8 @@
     "noTextNotes": "Keine Textnotizen gefunden",
     "tryRelays": "Versuchen Sie, andere Relays zu verbinden",
     "noRelays": "Keine Relays konfiguriert. Fügen Sie Relays in den Einstellungen hinzu.",
-    "feedFailed": "Feed konnte nicht geladen werden. Bitte Relays prüfen und erneut versuchen."
+    "feedFailed": "Feed konnte nicht geladen werden. Bitte Relays prüfen und erneut versuchen.",
+    "mutedContent": "Diese Notiz stammt von einem stummgeschalteten Konto oder enthält stummgeschaltete Inhalte."
   },
   "messages": {
     "title": "Nachrichten",
@@ -51,7 +52,22 @@
     "account": "Konto",
     "homeFeed": "Start-Feed",
     "mediaUploads": "Medien-Uploads",
+    "follows": "Folgen",
+    "followsSortBy": "Sortieren nach:",
+    "followsSortName": "Name",
+    "followsSortNip05": "NIP-05",
+    "followsSortOrder": "Listenreihenfolge",
+    "followsAddPlaceholder": "npub1… oder Hex zum Hinzufügen",
+    "followsAdd": "Hinzufügen",
+    "followsLoading": "Laden…",
+    "followsEmpty": "Noch keine Folgen",
+    "followsSaved": "Folgen-Liste gespeichert und veröffentlicht.",
     "mutedContent": "Stummgeschaltete Inhalte",
+    "mutedUsersHint": "Abwählen zum Entfernen; unten npub/hex hinzufügen. Speichern zum Übernehmen.",
+    "mutedUsersEmpty": "Keine stummgeschalteten Nutzer",
+    "mutedUserAddPlaceholder": "npub1… oder Hex zum Hinzufügen",
+    "mutedUserAdd": "Hinzufügen",
+    "mutedSaved": "Stumm-Listen gespeichert.",
     "wallets": "Wallets",
     "relays": "Relays",
     "zaps": "Zaps",
@@ -80,7 +96,7 @@
     "generating": "Wird erstellt…",
     "newIdentityCreated": "Neue Identität erstellt!",
     "saveNsecWarning": "WICHTIG: Bewahren Sie Ihren nsec an einem sicheren Ort auf. Sie benötigen ihn zur Wiederherstellung Ihrer Identität!",
-    "publicKeyQR": "Öffentlicher Schlüssel (QR-Code)",
+    "publicKeyQR": "Öffentlicher Schlüssel",
     "publicKeySelectToCopy": "Öffentlicher Schlüssel (zum Kopieren markieren)"
   },
   "editProfileModal": {
@@ -140,6 +156,7 @@
     "like": "Gefällt mir",
     "repost": "Reposten",
     "bookmark": "Lesezeichen",
+    "unbookmark": "Lesezeichen entfernen",
     "replyLabel": "(Antwort)",
     "replyingTo": "Antwort an"
   },

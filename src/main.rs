@@ -32,6 +32,7 @@ mod relay;
 // Import what we need from external crates
 use tauri::{Emitter, Manager};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use qrcode::{QrCode, render::svg};
 
 // Application state that persists while the app is running
 struct AppState {
@@ -435,6 +436,14 @@ fn fetch_events_by_ids(relay_urls: Vec<String>, ids: Vec<String>) -> Result<Stri
     Ok(events_to_json_array(&unique))
 }
 
+// Tauri command: Generate a QR code as SVG from a string (no external web service).
+#[tauri::command(rename_all = "snake_case")]
+fn generate_qr_svg(data: String) -> Result<String, String> {
+    let code = QrCode::new(data.as_bytes()).map_err(|e| e.to_string())?;
+    let svg_xml = code.render::<svg::Color<'_>>().build();
+    Ok(svg_xml)
+}
+
 // Tauri command: Test connection to a relay
 #[tauri::command]
 fn test_relay_connection(relay_url: String) -> Result<String, String> {
@@ -669,6 +678,35 @@ fn update_contact_list(
         pubkeys.retain(|p| p != &target_hex);
     }
     let event = crypto::create_signed_contact_list(&pubkeys, secret_key)?;
+    let results = relay::publish_event_to_relays(&cfg.relays, &event, 10);
+    let success_count = results.iter().filter(|r| r.success).count();
+    if success_count == 0 {
+        return Err(String::from("Failed to publish contact list to any relay"));
+    }
+    Ok(relay::publish_results_to_json(&results))
+}
+
+// Tauri command: Replace contact list with the given pubkeys (hex or npub). Publishes kind 3 to relays.
+#[tauri::command(rename_all = "snake_case")]
+fn set_contact_list(state: tauri::State<AppState>, pubkeys: Vec<String>) -> Result<String, String> {
+    let config_dir = &state.config_dir;
+    let cfg = match config::load_config(config_dir) {
+        Ok(c) => c,
+        Err(e) => return Err(format!("Failed to load config: {}", e)),
+    };
+    let secret_key = match &cfg.private_key {
+        Some(k) => k.as_str(),
+        None => return Err(String::from("No private key configured. Add your nsec in Settings to follow users.")),
+    };
+    if cfg.public_key.is_empty() {
+        return Err(String::from("No public key configured"));
+    }
+    let mut hex_pubkeys: Vec<String> = Vec::with_capacity(pubkeys.len());
+    for p in &pubkeys {
+        let hex = keys::public_key_to_hex(p).map_err(|e| format!("Invalid pubkey {}: {}", p, e))?;
+        hex_pubkeys.push(hex);
+    }
+    let event = crypto::create_signed_contact_list(&hex_pubkeys, secret_key)?;
     let results = relay::publish_event_to_relays(&cfg.relays, &event, 10);
     let success_count = results.iter().filter(|r| r.success).count();
     if success_count == 0 {
@@ -1291,6 +1329,7 @@ fn main() {
             fetch_notes_from_relays,
             start_feed_stream,
             fetch_events_by_ids,
+            generate_qr_svg,
             fetch_replies_to_event,
             test_relay_connection,
             // Profile commands
@@ -1306,6 +1345,7 @@ fn main() {
             fetch_following,
             fetch_own_following,
             update_contact_list,
+            set_contact_list,
             fetch_followers,
             fetch_own_followers,
             fetch_relay_list,

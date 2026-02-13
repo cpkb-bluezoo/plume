@@ -1,11 +1,6 @@
 - media upload on compose
 - media upload on reply to (note details)
-- follow/unfollow
-- mute/unmute
 - follows note page
-- manage follows
-- bookmarks
-  - deleting bookmarks
 - config.json scope
   - keep all configuration and user-related data in config.json (profile, bookmarks, settings)
 - messages
@@ -14,5 +9,3 @@
 - zaps
   - zap amount on note card
   - zap item cards in profile
-- profile QR code
-  - implement GPL-compatible QR code generation for "Show QR code" (currently non-functional; no library in use)

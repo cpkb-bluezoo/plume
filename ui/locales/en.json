@@ -23,7 +23,8 @@
     "noTextNotes": "No text notes found",
     "tryRelays": "Try connecting to different relays",
     "noRelays": "No relays configured. Add relays in Settings.",
-    "feedFailed": "Failed to load feed. Check relays and try again."
+    "feedFailed": "Failed to load feed. Check relays and try again.",
+    "mutedContent": "This note is from a muted account or contains muted content."
   },
   "messages": {
     "title": "Messages",
@@ -59,11 +60,25 @@
     "mediaUploads": "Media uploads",
     "mediaServerHint": "A media server hosts images and files you upload. Some servers may restrict who can upload.",
     "mediaServerUrl": "Media server URL",
+    "follows": "Follows",
+    "followsSortBy": "Sort by:",
+    "followsSortName": "Name",
+    "followsSortNip05": "NIP-05",
+    "followsSortOrder": "List order",
+    "followsAddPlaceholder": "npub1… or hex to add",
+    "followsAdd": "Add",
+    "followsLoading": "Loading…",
+    "followsEmpty": "No follows yet",
+    "followsSaved": "Follow list saved and published.",
     "mutedContent": "Muted content",
     "mutedUsers": "Users",
     "mutedWords": "Words",
     "mutedHashtags": "Hashtags",
-    "mutedUsersHint": "Users you mute from their profile page appear here. Unmute there to remove.",
+    "mutedUsersHint": "Uncheck to remove from list; add with npub/hex below. Save to apply.",
+    "mutedUsersEmpty": "No muted users",
+    "mutedUserAddPlaceholder": "npub1… or hex to add",
+    "mutedUserAdd": "Add",
+    "mutedSaved": "Muted lists saved.",
     "mutedWordPlaceholder": "Add a word to mute…",
     "mutedHashtagPlaceholder": "Add a hashtag (without #)…",
     "comingSoon": "Coming soon.",
@@ -100,7 +115,7 @@
     "generating": "Generating...",
     "newIdentityCreated": "New identity created!",
     "saveNsecWarning": "IMPORTANT: Save your nsec in a safe place. You will need it to recover your identity!",
-    "publicKeyQR": "Public key (QR code)",
+    "publicKeyQR": "Public key",
     "publicKeySelectToCopy": "Public key (select to copy)"
   },
   "editProfileModal": {
@@ -166,6 +181,7 @@
     "reposted": "Reposted",
     "repostedNote": "Reposted a note",
     "bookmark": "Bookmark",
+    "unbookmark": "Unbookmark",
     "replyLabel": "(reply)",
     "replyingTo": "Replying to"
   },

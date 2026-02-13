@@ -23,7 +23,8 @@
     "noTextNotes": "Nessuna nota di testo trovata",
     "tryRelays": "Prova a connetterti ad altri relay",
     "noRelays": "Nessun relay configurato. Aggiungi relay in Impostazioni.",
-    "feedFailed": "Caricamento feed non riuscito. Controlla i relay e riprova."
+    "feedFailed": "Caricamento feed non riuscito. Controlla i relay e riprova.",
+    "mutedContent": "Questa nota proviene da un account silenziato o contiene contenuti silenziati."
   },
   "messages": {
     "title": "Messaggi",
@@ -51,7 +52,22 @@
     "account": "Account",
     "homeFeed": "Feed home",
     "mediaUploads": "Caricamenti media",
+    "follows": "Seguiti",
+    "followsSortBy": "Ordina per:",
+    "followsSortName": "Nome",
+    "followsSortNip05": "NIP-05",
+    "followsSortOrder": "Ordine lista",
+    "followsAddPlaceholder": "npub1… o hex da aggiungere",
+    "followsAdd": "Aggiungi",
+    "followsLoading": "Caricamento…",
+    "followsEmpty": "Nessun seguito ancora",
+    "followsSaved": "Lista seguiti salvata e pubblicata.",
     "mutedContent": "Contenuti silenziati",
+    "mutedUsersHint": "Deseleziona per rimuovere dall'elenco; aggiungi con npub/hex sotto. Salva per applicare.",
+    "mutedUsersEmpty": "Nessun utente silenziato",
+    "mutedUserAddPlaceholder": "npub1… o hex da aggiungere",
+    "mutedUserAdd": "Aggiungi",
+    "mutedSaved": "Elenchi silenziati salvati.",
     "wallets": "Portafogli",
     "relays": "Relay",
     "zaps": "Zap",
@@ -80,7 +96,7 @@
     "generating": "Generazione…",
     "newIdentityCreated": "Nuova identità creata!",
     "saveNsecWarning": "IMPORTANTE: Conserva il tuo nsec in un luogo sicuro. Ti servirà per recuperare la tua identità!",
-    "publicKeyQR": "Chiave pubblica (codice QR)",
+    "publicKeyQR": "Chiave pubblica",
     "publicKeySelectToCopy": "Chiave pubblica (seleziona per copiare)"
   },
   "editProfileModal": {
@@ -140,6 +156,7 @@
     "like": "Mi piace",
     "repost": "Ripubblica",
     "bookmark": "Segnalibro",
+    "unbookmark": "Rimuovi segnalibro",
     "replyLabel": "(risposta)",
     "replyingTo": "Risposta a"
   },

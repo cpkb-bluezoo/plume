@@ -23,7 +23,8 @@
     "noTextNotes": "Aucune note texte trouvée",
     "tryRelays": "Essayez de vous connecter à d'autres relais",
     "noRelays": "Aucun relais configuré. Ajoutez des relais dans Paramètres.",
-    "feedFailed": "Échec du chargement du fil. Vérifiez les relais et réessayez."
+    "feedFailed": "Échec du chargement du fil. Vérifiez les relais et réessayez.",
+    "mutedContent": "Cette note provient d'un compte masqué ou contient du contenu masqué."
   },
   "messages": {
     "title": "Messages",
@@ -51,7 +52,22 @@
     "account": "Compte",
     "homeFeed": "Fil d'accueil",
     "mediaUploads": "Téléversements média",
+    "follows": "Abonnements",
+    "followsSortBy": "Trier par :",
+    "followsSortName": "Nom",
+    "followsSortNip05": "NIP-05",
+    "followsSortOrder": "Ordre de la liste",
+    "followsAddPlaceholder": "npub1… ou hex à ajouter",
+    "followsAdd": "Ajouter",
+    "followsLoading": "Chargement…",
+    "followsEmpty": "Aucun abonnement",
+    "followsSaved": "Liste d'abonnements enregistrée et publiée.",
     "mutedContent": "Contenu masqué",
+    "mutedUsersHint": "Décocher pour retirer de la liste ; ajouter avec npub/hex ci-dessous. Enregistrer pour appliquer.",
+    "mutedUsersEmpty": "Aucun utilisateur masqué",
+    "mutedUserAddPlaceholder": "npub1… ou hex à ajouter",
+    "mutedUserAdd": "Ajouter",
+    "mutedSaved": "Listes masquées enregistrées.",
     "wallets": "Portefeuilles",
     "relays": "Relais",
     "zaps": "Zaps",
@@ -80,7 +96,7 @@
     "generating": "Génération…",
     "newIdentityCreated": "Nouvelle identité créée !",
     "saveNsecWarning": "IMPORTANT : Conservez votre nsec en lieu sûr. Vous en aurez besoin pour récupérer votre identité !",
-    "publicKeyQR": "Clé publique (code QR)",
+    "publicKeyQR": "Clé publique",
     "publicKeySelectToCopy": "Clé publique (sélectionner pour copier)"
   },
   "editProfileModal": {
@@ -140,6 +156,7 @@
     "like": "J'aime",
     "repost": "Republier",
     "bookmark": "Favori",
+    "unbookmark": "Retirer des favoris",
     "replyLabel": "(réponse)",
     "replyingTo": "En réponse à"
   },
