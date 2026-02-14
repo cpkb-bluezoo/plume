@@ -62,7 +62,8 @@ const state = {
         home_feed_mode: 'firehose',
         media_server_url: 'https://blossom.primal.net',
         following: [], muted_users: [], muted_words: [], muted_hashtags: [], bookmarks: [],
-        default_zap_amount: 42
+        default_zap_amount: 42,
+        hide_encrypted_notes: true
     },
     currentView: 'feed',
     notes: [],
@@ -142,7 +143,12 @@ function showConfirm(message) {
         }
         function onOk() { cleanup(); resolve(true); }
         function onCancel() { cleanup(); resolve(false); }
-        function onBackdrop(e) { if (e.target === modal) { cleanup(); resolve(false); } }
+        function onBackdrop(e) {
+            if (e.target === modal) {
+                cleanup();
+                resolve(false);
+            }
+        }
 
         okBtn.addEventListener('click', onOk);
         cancelBtn.addEventListener('click', onCancel);
@@ -264,7 +270,9 @@ async function loadConfig() {
         const configJson = await invoke('load_config');
         if (configJson) {
             state.config = JSON.parse(configJson);
-            if (!Array.isArray(state.config.bookmarks)) state.config.bookmarks = [];
+            if (!Array.isArray(state.config.bookmarks)) {
+                state.config.bookmarks = [];
+            }
             // Log config without private key to avoid leaking secrets in console
             var safeConfig = Object.assign({}, state.config, { private_key: state.config.private_key ? '[REDACTED]' : null });
             console.log('Config loaded:', safeConfig);
@@ -315,7 +323,8 @@ async function loadConfig() {
             muted_words: [],
             muted_hashtags: [],
             bookmarks: [],
-            default_zap_amount: 42
+            default_zap_amount: 42,
+            hide_encrypted_notes: true
         };
         updateUIFromConfig();
     }
@@ -326,7 +335,9 @@ async function saveConfig() {
     try {
         // Sync profile fields into config before saving
         if (state.profile) {
-            if (state.profile.name) state.config.name = state.profile.name;
+            if (state.profile.name) {
+                state.config.name = state.profile.name;
+            }
             state.config.about = state.profile.about || null;
             state.config.picture = state.profile.picture || null;
             state.config.nip05 = state.profile.nip05 || null;
@@ -345,7 +356,9 @@ async function saveConfig() {
 
 // Helper: set a button to a "saving" state (disabled + localised text), returns a restore function.
 function setSavingState(btn) {
-    if (!btn) return function() {};
+    if (!btn) {
+        return function() {};
+    }
     var t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
     var original = btn.textContent;
     btn.disabled = true;
@@ -361,7 +374,9 @@ function setSavingState(btn) {
 function updateSidebarAvatar() {
     var sidebarAvatar = document.getElementById('sidebar-avatar');
     var sidebarPlaceholder = document.getElementById('sidebar-avatar-placeholder');
-    if (!sidebarAvatar || !sidebarPlaceholder) return;
+    if (!sidebarAvatar || !sidebarPlaceholder) {
+        return;
+    }
     // Prefer profile picture (fetched from relays), fall back to config picture (local)
     var pic = (state.profile && state.profile.picture) || (state.config && state.config.picture) || null;
     if (pic) {
@@ -383,7 +398,9 @@ function updateMessagesNavUnread() {
     const wrap = document.getElementById('messages-nav-icon-wrap');
     const icon = document.getElementById('messages-nav-icon');
     const badge = document.getElementById('messages-unread-badge');
-    if (!wrap || !icon || !badge) return;
+    if (!wrap || !icon || !badge) {
+        return;
+    }
     const n = state.unreadMessageCount || 0;
     if (n > 0) {
         wrap.classList.add('has-unread');
@@ -403,7 +420,9 @@ function updateMessagesNavUnread() {
 // ============================================================
 
 function shortenPubkey(pubkey) {
-    if (!pubkey || pubkey.length < 20) return pubkey || '';
+    if (!pubkey || pubkey.length < 20) {
+        return pubkey || '';
+    }
     return pubkey.slice(0, 8) + '…' + pubkey.slice(-8);
 }
 
@@ -411,7 +430,9 @@ async function loadMessagesView() {
     const listEl = document.querySelector('.messages-list');
     const emptyEl = document.querySelector('.messages-chat-empty');
     const paneEl = document.querySelector('.messages-chat-pane');
-    if (!listEl) return;
+    if (!listEl) {
+        return;
+    }
 
     if (!state.config || !state.config.public_key) {
         listEl.innerHTML = '<div class="placeholder-message"><p>' + escapeHtml((window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t('profile.noIdentityYet') : 'Configure keys in Settings.')) + '</p></div>';
@@ -465,18 +486,28 @@ function selectConversation(otherPubkeyHex) {
         el.classList.toggle('active', (el.getAttribute('data-other-pubkey') || '').toLowerCase() === (otherPubkeyHex || '').toLowerCase());
     });
     if (!otherPubkeyHex) {
-        if (paneEl) paneEl.style.display = 'none';
-        if (emptyEl) emptyEl.style.display = 'flex';
+        if (paneEl) {
+            paneEl.style.display = 'none';
+        }
+        if (emptyEl) {
+            emptyEl.style.display = 'flex';
+        }
         return;
     }
-    if (emptyEl) emptyEl.style.display = 'none';
-    if (paneEl) paneEl.style.display = 'flex';
+    if (emptyEl) {
+        emptyEl.style.display = 'none';
+    }
+    if (paneEl) {
+        paneEl.style.display = 'flex';
+    }
     loadConversationMessages(otherPubkeyHex);
 }
 
 async function loadConversationMessages(otherPubkeyHex) {
     const container = document.getElementById('messages-chat-messages');
-    if (!container) return;
+    if (!container) {
+        return;
+    }
     container.innerHTML = '<p class="placeholder-message">' + (window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t('noteDetail.loading') : 'Loading…') + '</p>';
     try {
         const json = await invoke('get_messages', { otherPubkeyHex: otherPubkeyHex });
@@ -489,7 +520,9 @@ async function loadConversationMessages(otherPubkeyHex) {
 }
 
 function renderMessages(container, messages) {
-    if (!container) return;
+    if (!container) {
+        return;
+    }
     const t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
     if (messages.length === 0) {
         container.innerHTML = '<p class="placeholder-message">' + (t('messages.selectOrStart') || 'No messages yet.') + '</p>';
@@ -508,9 +541,13 @@ function renderMessages(container, messages) {
 async function sendMessage() {
     const other = state.selectedConversation;
     const input = document.getElementById('message-input');
-    if (!other || !input) return;
+    if (!other || !input) {
+        return;
+    }
     const text = (input.value || '').trim();
-    if (!text) return;
+    if (!text) {
+        return;
+    }
     try {
         await invoke('send_dm', { recipientPubkey: other, plaintext: text });
         input.value = '';
@@ -532,7 +569,9 @@ async function sendMessage() {
 
 // Update UI elements from the current config
 function updateUIFromConfig() {
-    if (!state.config) return;
+    if (!state.config) {
+        return;
+    }
 
     state.homeFeedMode = (state.config.home_feed_mode === 'follows') ? 'follows' : 'firehose';
 
@@ -546,8 +585,12 @@ function updateUIFromConfig() {
 
     const nameEl = document.getElementById('input-display-name');
     const pubEl = document.getElementById('input-public-key');
-    if (nameEl) nameEl.value = state.config.name || '';
-    if (pubEl) pubEl.value = state.config.public_key || '';
+    if (nameEl) {
+        nameEl.value = state.config.name || '';
+    }
+    if (pubEl) {
+        pubEl.value = state.config.public_key || '';
+    }
     // Private key is NEVER written to the DOM to prevent exfiltration by injected scripts.
     // The input-private-key field is write-only (user types a new key; it is not pre-populated).
 
@@ -562,7 +605,9 @@ function updateUIFromConfig() {
 function updateFeedInitialState() {
     const t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
     const container = document.getElementById('notes-container');
-    if (!container) return;
+    if (!container) {
+        return;
+    }
 
     const effectiveRelays = getEffectiveRelays();
     const hasRelays = effectiveRelays.length > 0;
@@ -600,7 +645,9 @@ function updateFeedInitialState() {
 
 // Fetch profile for the profile page (own or viewed user)
 async function fetchProfile() {
-    if (state.profileLoading) return;
+    if (state.profileLoading) {
+        return;
+    }
     const viewingOwn = state.viewedProfilePubkey === null || state.viewedProfilePubkey === state.publicKeyHex;
     if (viewingOwn && (!state.config || !state.config.public_key)) {
         state.viewedProfile = null;
@@ -665,8 +712,11 @@ async function fetchProfile() {
             loadProfileFeed(); // fire-and-forget: stream or fetch notes in background
             // Know if we follow this user (for Follow/Unfollow button)
             fetchFollowing().then(function(data) {
-                if (data && data.contacts) state.ownFollowingPubkeys = data.contacts.map(function(c) { return c.pubkey; });
-                else state.ownFollowingPubkeys = [];
+                if (data && data.contacts) {
+                    state.ownFollowingPubkeys = data.contacts.map(function(c) { return c.pubkey; });
+                } else {
+                    state.ownFollowingPubkeys = [];
+                }
                 updateFollowButtonState();
             });
         }
@@ -681,7 +731,9 @@ async function fetchProfile() {
 
 // Open profile page for a user (from note card avatar/name click)
 function openProfileForUser(pubkey) {
-    if (!pubkey) return;
+    if (!pubkey) {
+        return;
+    }
     state.viewedProfilePubkey = pubkey;
     state.viewedProfile = null;
     state.viewedProfileRelaysForPubkey = null; // so Relays tab fetches this user's list
@@ -691,7 +743,9 @@ function openProfileForUser(pubkey) {
 // Get the npub string for the currently viewed profile (for QR modal). Returns a Promise.
 function getProfileNpub() {
     var viewingOwn = state.viewedProfilePubkey === null || state.viewedProfilePubkey === state.publicKeyHex;
-    if (viewingOwn && state.publicKeyNpub) return Promise.resolve(state.publicKeyNpub);
+    if (viewingOwn && state.publicKeyNpub) {
+        return Promise.resolve(state.publicKeyNpub);
+    }
     if (viewingOwn && state.config && state.config.public_key) {
         return invoke('convert_hex_to_npub', { hex_key: state.config.public_key })
             .then(function(n) { return n || state.config.public_key || ''; })
@@ -700,7 +754,9 @@ function getProfileNpub() {
     if (!viewingOwn && state.viewedProfilePubkey) {
         var key = state.viewedProfilePubkey;
         if (key.length === 64 && /^[a-fA-F0-9]+$/.test(key)) {
-            return invoke('convert_hex_to_npub', { hex_key: key }).then(function(n) { return n || key; });
+            return invoke('convert_hex_to_npub', { hex_key: key })
+                .then(function(n) { return n || key; })
+                .catch(function() { return key; });
         }
         return Promise.resolve(key);
     }
@@ -711,7 +767,9 @@ function openProfileQRModal() {
     var modal = document.getElementById('profile-qr-modal');
     var wrap = document.getElementById('profile-qr-image-wrap');
     var npubInput = document.getElementById('profile-qr-npub-input');
-    if (!modal || !wrap || !npubInput) return;
+    if (!modal || !wrap || !npubInput) {
+        return;
+    }
     wrap.innerHTML = '';
     var viewingOwn = state.viewedProfilePubkey === null || state.viewedProfilePubkey === state.publicKeyHex;
     var openModal = function() { modal.classList.add('active'); };
@@ -728,7 +786,10 @@ function openProfileQRModal() {
             }
             invoke('generate_qr_svg', { data: npubString })
                 .then(function(svgString) {
-                    if (!svgString) { setQRAndOpen(); return; }
+                    if (!svgString) {
+                        setQRAndOpen();
+                        return;
+                    }
                     var themed = svgString
                         .replace(/fill="#000000"/g, 'fill="currentColor"')
                         .replace(/fill="#000"/g, 'fill="currentColor"')
@@ -753,14 +814,22 @@ function openProfileQRModal() {
             showAndQR(raw);
         }
     }).catch(function() {
-        npubInput.value = viewingOwn && state.config && state.config.public_key ? state.config.public_key : '';
+        var fallback = '';
+        if (viewingOwn && state.config && state.config.public_key) {
+            fallback = state.config.public_key;
+        } else if (state.viewedProfilePubkey) {
+            fallback = state.viewedProfilePubkey;
+        }
+        npubInput.value = fallback;
         openModal();
     });
 }
 
 function closeProfileQRModal() {
     var modal = document.getElementById('profile-qr-modal');
-    if (modal) modal.classList.remove('active');
+    if (modal) {
+        modal.classList.remove('active');
+    }
 }
 
 // Navigate to Settings with Profile panel open (replaces opening edit profile modal)
@@ -771,7 +840,9 @@ function openEditProfileInSettings() {
 }
 
 function handleEditProfileSubmit(e) {
-    if (e && e.preventDefault) e.preventDefault();
+    if (e && e.preventDefault) {
+        e.preventDefault();
+    }
     debugLog('Edit profile submit/OK clicked');
 
     // Show saving state on the button
@@ -800,24 +871,52 @@ function handleEditProfileSubmit(e) {
     lud16 = lud16.trim();
     picture = picture.trim();
     banner = banner.trim();
-    if (name) profile.name = name;
-    if (nip05) profile.nip05 = nip05;
-    if (website) profile.website = website;
-    if (about) profile.about = about;
-    if (lud16) profile.lud16 = lud16;
-    if (picture) profile.picture = picture;
-    if (banner) profile.banner = banner;
+    if (name) {
+        profile.name = name;
+    }
+    if (nip05) {
+        profile.nip05 = nip05;
+    }
+    if (website) {
+        profile.website = website;
+    }
+    if (about) {
+        profile.about = about;
+    }
+    if (lud16) {
+        profile.lud16 = lud16;
+    }
+    if (picture) {
+        profile.picture = picture;
+    }
+    if (banner) {
+        profile.banner = banner;
+    }
     var profileJson = JSON.stringify(profile);
     invoke('set_profile_metadata', { profileJson: profileJson })
         .then(function() {
             if (state.config) {
-                if (name) state.config.name = name;
-                if (about) state.config.about = about;
-                if (picture) state.config.picture = picture;
-                if (nip05) state.config.nip05 = nip05;
-                if (banner) state.config.banner = banner;
-                if (website) state.config.website = website;
-                if (lud16) state.config.lud16 = lud16;
+                if (name) {
+                    state.config.name = name;
+                }
+                if (about) {
+                    state.config.about = about;
+                }
+                if (picture) {
+                    state.config.picture = picture;
+                }
+                if (nip05) {
+                    state.config.nip05 = nip05;
+                }
+                if (banner) {
+                    state.config.banner = banner;
+                }
+                if (website) {
+                    state.config.website = website;
+                }
+                if (lud16) {
+                    state.config.lud16 = lud16;
+                }
             }
             return fetchProfile();
         })
@@ -849,8 +948,12 @@ function handleEditProfileSubmit(e) {
 
 // Whether the note should be shown on the current profile tab (notes / replies / zaps).
 function profileNoteMatchesTab(note, tab) {
-    if (tab === 'zaps') return false;
-    if (tab === 'notes') return note.kind === 1 || note.kind === 6;
+    if (tab === 'zaps') {
+        return false;
+    }
+    if (tab === 'notes') {
+        return note.kind === 1 || note.kind === 6;
+    }
     if (tab === 'replies') {
         return note.kind === 1 && note.tags && note.tags.some(function(tag) { return Array.isArray(tag) && tag[0] === 'e'; });
     }
@@ -859,21 +962,33 @@ function profileNoteMatchesTab(note, tab) {
 
 // Append a single note to #profile-feed (streaming). Dedupes by id; inserts in sorted position. Returns true if appended.
 function appendProfileNoteCardSync(note) {
-    if (!note || (note.kind !== 1 && note.kind !== 6)) return false;
-    if (isNoteMuted(note)) return false;
+    if (!note || (note.kind !== 1 && note.kind !== 6)) {
+        return false;
+    }
+    if (isNoteMuted(note)) {
+        return false;
+    }
     var container = document.getElementById('profile-feed');
     var effectivePubkey = getEffectiveProfilePubkey();
-    if (!container || !effectivePubkey) return false;
+    if (!container || !effectivePubkey) {
+        return false;
+    }
     var tab = state.profileTab || 'notes';
-    if (!profileNoteMatchesTab(note, tab)) return false;
-    if (state.profileNotes.some(function(n) { return n.id === note.id; })) return false;
+    if (!profileNoteMatchesTab(note, tab)) {
+        return false;
+    }
+    if (state.profileNotes.some(function(n) { return n.id === note.id; })) {
+        return false;
+    }
 
     state.profileNotes.push(note);
     state.profileNotes.sort(function(a, b) { return (b.created_at || 0) - (a.created_at || 0); });
     var idx = state.profileNotes.findIndex(function(n) { return n.id === note.id; });
 
     var placeholder = container.querySelector('.placeholder-message');
-    if (placeholder) placeholder.remove();
+    if (placeholder) {
+        placeholder.remove();
+    }
 
     var noteIndex = state.profileFeedStreamNoteIndex++;
     var card = note.kind === 6 ? createRepostCard(note, noteIndex, 'profile-') : (function() {
@@ -883,7 +998,9 @@ function appendProfileNoteCardSync(note) {
     var viewedPubkey = effectivePubkey ? String(effectivePubkey).toLowerCase() : '';
     if (viewedPubkey && String((note.pubkey || '')).toLowerCase() === viewedPubkey) {
         var profileForAvatar = state.viewedProfile || (effectivePubkey === state.publicKeyHex ? state.profile : null);
-        if (profileForAvatar && profileForAvatar.picture) setCardAvatar(card, profileForAvatar.picture);
+        if (profileForAvatar && profileForAvatar.picture) {
+            setCardAvatar(card, profileForAvatar.picture);
+        }
     }
     if (idx === 0) {
         container.insertBefore(card, container.firstChild);
@@ -892,8 +1009,12 @@ function appendProfileNoteCardSync(note) {
     } else {
         container.insertBefore(card, container.children[idx]);
     }
-    if (note.kind === 1) verifyNote(note, noteIndex, 'profile-');
-    if (note.kind === 6) verifyRepostOriginal(note, noteIndex, 'profile-');
+    if (note.kind === 1) {
+        verifyNote(note, noteIndex, 'profile-');
+    }
+    if (note.kind === 6) {
+        verifyRepostOriginal(note, noteIndex, 'profile-');
+    }
     ensureProfilesForNotes([note]);
     resolveNostrEmbeds(card);
     return true;
@@ -910,7 +1031,9 @@ function getEffectiveProfilePubkey() {
 // When viewing own profile, viewedProfilePubkey is null; we use state.publicKeyHex for notes and state.config.relays for Relays tab.
 async function loadProfileFeed() {
     var container = document.getElementById('profile-feed');
-    if (!container || !state.config) return;
+    if (!container || !state.config) {
+        return;
+    }
     var t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
     var tab = state.profileTab || 'notes';
     var viewingOwn = state.viewedProfilePubkey === null || state.viewedProfilePubkey === state.publicKeyHex;
@@ -954,12 +1077,18 @@ async function loadProfileFeed() {
                 window.__TAURI__.event.listen('profile-feed-note', function(event) {
                     var payload = event.payload;
                     var note = typeof payload === 'string' ? JSON.parse(payload) : payload;
-                    if (getEffectiveProfilePubkey() !== viewedPubkeyAtStart) return;
-                    if ((note.kind !== 1 && note.kind !== 6) || (note.pubkey && String(note.pubkey).toLowerCase() !== String(viewedPubkeyAtStart).toLowerCase())) return;
+                    if (getEffectiveProfilePubkey() !== viewedPubkeyAtStart) {
+                        return;
+                    }
+                    if ((note.kind !== 1 && note.kind !== 6) || (note.pubkey && String(note.pubkey).toLowerCase() !== String(viewedPubkeyAtStart).toLowerCase())) {
+                        return;
+                    }
                     appendProfileNoteCardSync(note);
                 }),
                 window.__TAURI__.event.listen('profile-feed-eose', function() {
-                    if (getEffectiveProfilePubkey() !== viewedPubkeyAtStart) return;
+                    if (getEffectiveProfilePubkey() !== viewedPubkeyAtStart) {
+                        return;
+                    }
                     unlisten.note();
                     unlisten.eose();
                     var c = document.getElementById('profile-feed');
@@ -991,7 +1120,9 @@ async function loadProfileFeed() {
     // Batch fallback: fetch in background, then display (non-blocking). profile_feed=true so we get reposts (kind 6).
     state.profileNotesForPubkey = viewedPubkeyAtStart;
     fetchFeedNotes(feedRelays, authors, null, true).then(function(notes) {
-        if (getEffectiveProfilePubkey() !== viewedPubkeyAtStart) return;
+        if (getEffectiveProfilePubkey() !== viewedPubkeyAtStart) {
+            return;
+        }
         var feedNotes = notes ? notes.filter(function(n) { return n.kind === 1 || n.kind === 6; }) : [];
         state.profileNotes = feedNotes;
         if (tab === 'notes') {
@@ -1017,7 +1148,9 @@ async function loadProfileFeed() {
 // Load relay list for the profile Relays tab: own = config.relays, other = fetch NIP-65 kind 10002.
 function loadProfileRelays() {
     var container = document.getElementById('profile-feed');
-    if (!container) return;
+    if (!container) {
+        return;
+    }
     var t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
     var viewingOwn = state.viewedProfilePubkey === null || state.viewedProfilePubkey === state.publicKeyHex;
 
@@ -1041,11 +1174,17 @@ function loadProfileRelays() {
     var pubkey = state.viewedProfilePubkey;
     invoke('fetch_relay_list', { pubkey: pubkey, relayUrls: fetchRelays })
         .then(function(json) {
-            if (state.viewedProfilePubkey !== pubkey) return;
+            if (state.viewedProfilePubkey !== pubkey) {
+                return;
+            }
             var relays = [];
             try {
-                if (json) relays = JSON.parse(json);
-                if (!Array.isArray(relays)) relays = [];
+                if (json) {
+                    relays = JSON.parse(json);
+                }
+                if (!Array.isArray(relays)) {
+                    relays = [];
+                }
             } catch (e) { relays = []; }
             state.viewedProfileRelays = relays;
             state.viewedProfileRelaysForPubkey = pubkey;
@@ -1061,7 +1200,9 @@ function loadProfileRelays() {
 
 function displayProfileRelays(relays) {
     var container = document.getElementById('profile-feed');
-    if (!container) return;
+    if (!container) {
+        return;
+    }
     var t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
     if (!relays || relays.length === 0) {
         container.innerHTML = '<div class="placeholder-message"><p>' + escapeHtml(t('feed.noRelays')) + '</p></div>';
@@ -1082,7 +1223,9 @@ function displayProfileRelays(relays) {
 // Render note cards into #profile-feed (uses id prefix 'profile-' for verification badges).
 function displayProfileNotes(notes) {
     var container = document.getElementById('profile-feed');
-    if (!container) return;
+    if (!container) {
+        return;
+    }
     var t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
     container.innerHTML = '';
     notes = (notes || []).filter(function(n) { return !isNoteMuted(n); });
@@ -1097,7 +1240,9 @@ function displayProfileNotes(notes) {
     var noteIndex = 0;
     var prefix = 'profile-';
     notes.forEach(function(note) {
-        if (note.kind !== 1 && note.kind !== 6) return;
+        if (note.kind !== 1 && note.kind !== 6) {
+            return;
+        }
         var card = note.kind === 6 ? createRepostCard(note, noteIndex, prefix) : (function() {
             var replyToPubkey = getReplyToPubkey(note);
             return createNoteCard(note, noteIndex, prefix, replyToPubkey);
@@ -1106,8 +1251,12 @@ function displayProfileNotes(notes) {
         if (viewedProfile && viewedPubkey && String((note.pubkey || '')).toLowerCase() === viewedPubkey) {
             setCardAvatar(card, viewedProfile.picture);
         }
-        if (note.kind === 1) verifyNote(note, noteIndex, prefix);
-        if (note.kind === 6) verifyRepostOriginal(note, noteIndex, prefix);
+        if (note.kind === 1) {
+            verifyNote(note, noteIndex, prefix);
+        }
+        if (note.kind === 6) {
+            verifyRepostOriginal(note, noteIndex, prefix);
+        }
         noteIndex++;
     });
     ensureProfilesForNotes(notes);
@@ -1184,8 +1333,12 @@ function updateProfileDisplay() {
 
     const t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
     if (profile) {
-        if (nameEl) nameEl.textContent = profile.name || (viewingOwn ? state.config?.name : null) || t('profile.anonymous');
-        if (aboutEl) aboutEl.textContent = profile.about || '';
+        if (nameEl) {
+            nameEl.textContent = profile.name || (viewingOwn ? state.config?.name : null) || t('profile.anonymous');
+        }
+        if (aboutEl) {
+            aboutEl.textContent = profile.about || '';
+        }
         if (pictureEl && placeholderEl) {
             if (profile.picture) {
                 pictureEl.src = profile.picture;
@@ -1233,25 +1386,42 @@ function updateProfileDisplay() {
         }
     } else {
         var displayName = viewingOwn ? (state.config?.name || t('profile.notConfigured')) : (cache && cache.name ? cache.name : '…');
-        if (nameEl) nameEl.textContent = displayName;
-        if (aboutEl) aboutEl.textContent = '';
+        if (nameEl) {
+            nameEl.textContent = displayName;
+        }
+        if (aboutEl) {
+            aboutEl.textContent = '';
+        }
         if (pictureEl && placeholderEl) {
             if (cache && cache.picture) {
                 pictureEl.src = cache.picture;
                 pictureEl.style.display = 'block';
                 placeholderEl.style.display = 'none';
-                pictureEl.onerror = function() { pictureEl.style.display = 'none'; placeholderEl.style.display = 'flex'; };
+                pictureEl.onerror = function() {
+                    pictureEl.style.display = 'none';
+                    placeholderEl.style.display = 'flex';
+                };
             } else {
                 pictureEl.style.display = 'none';
                 placeholderEl.style.display = 'flex';
             }
         }
-        if (bannerEl) bannerEl.style.backgroundImage = '';
-        if (nip05El) nip05El.style.display = 'none';
-        if (websiteEl) websiteEl.style.display = 'none';
-        if (lightningEl) lightningEl.style.display = 'none';
+        if (bannerEl) {
+            bannerEl.style.backgroundImage = '';
+        }
+        if (nip05El) {
+            nip05El.style.display = 'none';
+        }
+        if (websiteEl) {
+            websiteEl.style.display = 'none';
+        }
+        if (lightningEl) {
+            lightningEl.style.display = 'none';
+        }
         var joinedEl = document.getElementById('profile-joined');
-        if (joinedEl) joinedEl.textContent = '—';
+        if (joinedEl) {
+            joinedEl.textContent = '—';
+        }
     }
 
     var qrBtn = document.getElementById('profile-qr-btn');
@@ -1265,9 +1435,15 @@ function updateProfileDisplay() {
         noKeyNotice.classList.toggle('hidden', !viewingOwn || !!state.config?.public_key);
     }
 
-    if (editProfileBtn) editProfileBtn.style.display = viewingOwn ? 'block' : 'none';
-    if (followBtn) followBtn.style.display = viewingOwn ? 'none' : 'block';
-    if (messageUserBtn) messageUserBtn.style.display = viewingOwn ? 'none' : 'flex';
+    if (editProfileBtn) {
+        editProfileBtn.style.display = viewingOwn ? 'block' : 'none';
+    }
+    if (followBtn) {
+        followBtn.style.display = viewingOwn ? 'none' : 'block';
+    }
+    if (messageUserBtn) {
+        messageUserBtn.style.display = viewingOwn ? 'none' : 'flex';
+    }
     if (muteBtn) {
         muteBtn.style.display = viewingOwn ? 'none' : 'block';
         muteBtn.textContent = (state.viewedProfilePubkey && isUserMuted(state.viewedProfilePubkey)) ? t('profile.unmute') : t('profile.mute');
@@ -1296,18 +1472,26 @@ function updateProfileDisplay() {
 
 // Fetch following and followers (for own profile)
 async function fetchFollowingAndFollowers() {
-    if (!state.config || !state.config.public_key) return;
+    if (!state.config || !state.config.public_key) {
+        return;
+    }
     return fetchFollowingAndFollowersForUser(state.config.public_key);
 }
 
 // Fetch following and followers for any user (profile page counts). pubkey can be hex or npub.
 async function fetchFollowingAndFollowersForUser(pubkey) {
     var relays = getEffectiveRelays();
-    if (!relays.length || !pubkey) return;
+    if (!relays.length || !pubkey) {
+        return;
+    }
     var fc = document.getElementById('following-count');
     var fl = document.getElementById('followers-count');
-    if (fc) fc.textContent = '…';
-    if (fl) fl.textContent = '…';
+    if (fc) {
+        fc.textContent = '…';
+    }
+    if (fl) {
+        fl.textContent = '…';
+    }
 
     var followingResult = null;
     var followersResult = null;
@@ -1316,8 +1500,12 @@ async function fetchFollowingAndFollowersForUser(pubkey) {
         followersResult = await invoke('fetch_followers', { pubkey: pubkey, relayUrls: relays });
     } catch (e) {
         console.error('Failed to fetch following/followers:', e);
-        if (fc) fc.textContent = '0';
-        if (fl) fl.textContent = '0';
+        if (fc) {
+            fc.textContent = '0';
+        }
+        if (fl) {
+            fl.textContent = '0';
+        }
         return;
     }
     if (followingResult) {
@@ -1325,7 +1513,9 @@ async function fetchFollowingAndFollowersForUser(pubkey) {
             var data = JSON.parse(followingResult);
             displayFollowing(data);
         } catch (_) {
-            if (fc) fc.textContent = '0';
+            if (fc) {
+                fc.textContent = '0';
+            }
         }
     }
     if (followersResult) {
@@ -1333,7 +1523,9 @@ async function fetchFollowingAndFollowersForUser(pubkey) {
             var data = JSON.parse(followersResult);
             displayFollowers(data);
         } catch (_) {
-            if (fl) fl.textContent = '0';
+            if (fl) {
+                fl.textContent = '0';
+            }
         }
     }
 }
@@ -1354,9 +1546,13 @@ async function fetchFollowing() {
 // Update Follow/Unfollow button label and state when viewing another user's profile
 function updateFollowButtonState() {
     const followBtn = document.getElementById('follow-btn');
-    if (!followBtn) return;
+    if (!followBtn) {
+        return;
+    }
     const viewingOwn = state.viewedProfilePubkey === null || state.viewedProfilePubkey === state.publicKeyHex;
-    if (viewingOwn) return;
+    if (viewingOwn) {
+        return;
+    }
     const t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
     const pk = (state.viewedProfilePubkey || '').toLowerCase();
     const isFollowing = !!(state.ownFollowingPubkeys && pk && state.ownFollowingPubkeys.some(function(p) { return String(p).toLowerCase() === pk; }));
@@ -1366,7 +1562,9 @@ function updateFollowButtonState() {
 
 // Follow or unfollow the currently viewed profile user. Updates contact list and publishes to relays immediately.
 async function handleFollowClick() {
-    if (!state.viewedProfilePubkey || state.viewedProfilePubkey === state.publicKeyHex) return;
+    if (!state.viewedProfilePubkey || state.viewedProfilePubkey === state.publicKeyHex) {
+        return;
+    }
     const followBtn = document.getElementById('follow-btn');
     const currentlyFollowing = followBtn && followBtn.dataset.following === '1';
     const add = !currentlyFollowing;
@@ -1375,7 +1573,9 @@ async function handleFollowClick() {
         await invoke('update_contact_list', { add: add, targetPubkey: state.viewedProfilePubkey });
         var pk = String(state.viewedProfilePubkey).toLowerCase();
         if (add) {
-            if (!state.ownFollowingPubkeys) state.ownFollowingPubkeys = [];
+            if (!state.ownFollowingPubkeys) {
+                state.ownFollowingPubkeys = [];
+            }
             if (!state.ownFollowingPubkeys.some(function(p) { return String(p).toLowerCase() === pk; })) {
                 state.ownFollowingPubkeys.push(state.viewedProfilePubkey);
             }
@@ -1389,7 +1589,9 @@ async function handleFollowClick() {
         console.error('Follow/unfollow failed:', e);
         alert((window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t('errors.failedToPublish') : 'Failed to update follow') + ': ' + e);
     } finally {
-        if (followBtn) followBtn.disabled = false;
+        if (followBtn) {
+            followBtn.disabled = false;
+        }
     }
 }
 
@@ -1409,7 +1611,9 @@ async function fetchFollowers() {
 // Display following list (updates count on profile page)
 function displayFollowing(data) {
     const countEl = document.getElementById('following-count');
-    if (!countEl) return;
+    if (!countEl) {
+        return;
+    }
     const count = data.contacts ? data.contacts.length : 0;
     countEl.textContent = count.toString();
 }
@@ -1417,7 +1621,9 @@ function displayFollowing(data) {
 // Display followers list (updates count on profile page)
 function displayFollowers(data) {
     const countEl = document.getElementById('followers-count');
-    if (!countEl) return;
+    if (!countEl) {
+        return;
+    }
     const count = data.followers ? data.followers.length : 0;
     countEl.textContent = count.toString();
 }
@@ -1492,7 +1698,9 @@ function isNoteBookmarked(noteId) {
 // Load and render the bookmarks view (fetch events by ids from config)
 async function loadBookmarksView() {
     const container = document.getElementById('bookmarks-container');
-    if (!container) return;
+    if (!container) {
+        return;
+    }
     const t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
     const ids = state.config && Array.isArray(state.config.bookmarks) ? state.config.bookmarks : [];
     const relays = getEffectiveRelays();
@@ -1525,7 +1733,9 @@ async function loadBookmarksView() {
             var profile = state.profileCache[note.pubkey];
             if (profile && profile.picture) {
                 var cardEl = container.children[i];
-                if (cardEl) setCardAvatar(cardEl, profile.picture);
+                if (cardEl) {
+                    setCardAvatar(cardEl, profile.picture);
+                }
             }
         });
         resolveNostrEmbeds(container);
@@ -1544,13 +1754,17 @@ function buildReplyThread(replies, subjectId) {
     byParent[subjectId] = [];
     replies.forEach(function(note) {
         var pid = getParentEventId(note) || subjectId;
-        if (!byParent[pid]) byParent[pid] = [];
+        if (!byParent[pid]) {
+            byParent[pid] = [];
+        }
         byParent[pid].push(note);
     });
     var out = [];
     function addChildren(parentId, indent) {
         var list = byParent[parentId];
-        if (!list) return;
+        if (!list) {
+            return;
+        }
         list.sort(function(a, b) { return (a.created_at || 0) - (b.created_at || 0); });
         list.forEach(function(note) {
             out.push({ note: note, indent: indent });
@@ -1564,8 +1778,12 @@ function buildReplyThread(replies, subjectId) {
 // Open the note detail page for a note (by id or full note object). Fetches subject, ancestors, replies; then switches view and renders.
 async function openNoteDetail(noteIdOrNote) {
     var noteId = typeof noteIdOrNote === 'string' ? noteIdOrNote : (noteIdOrNote && noteIdOrNote.id);
-    if (!noteId) return;
-    if (state.currentView === 'note-detail' && state.noteDetailSubjectId === noteId) return;
+    if (!noteId) {
+        return;
+    }
+    if (state.currentView === 'note-detail' && state.noteDetailSubjectId === noteId) {
+        return;
+    }
     state.noteDetailPreviousView = state.currentView;
     state.noteDetailSubjectId = noteId;
     state.noteDetailSubject = null;
@@ -1585,9 +1803,15 @@ async function openNoteDetail(noteIdOrNote) {
     var ancestorsEl = document.getElementById('note-detail-ancestors');
     var subjectWrap = document.getElementById('note-detail-subject-wrap');
     var repliesEl = document.getElementById('note-detail-replies');
-    if (ancestorsEl) ancestorsEl.innerHTML = '<div class="placeholder-message"><p>' + escapeHtml(t('noteDetail.loading')) + '</p></div>';
-    if (subjectWrap) subjectWrap.innerHTML = '';
-    if (repliesEl) repliesEl.innerHTML = '';
+    if (ancestorsEl) {
+        ancestorsEl.innerHTML = '<div class="placeholder-message"><p>' + escapeHtml(t('noteDetail.loading')) + '</p></div>';
+    }
+    if (subjectWrap) {
+        subjectWrap.innerHTML = '';
+    }
+    if (repliesEl) {
+        repliesEl.innerHTML = '';
+    }
 
     var subject = typeof noteIdOrNote === 'object' && noteIdOrNote.id === noteId ? noteIdOrNote : null;
     if (!subject) {
@@ -1600,7 +1824,9 @@ async function openNoteDetail(noteIdOrNote) {
         }
     }
     if (!subject) {
-        if (ancestorsEl) ancestorsEl.innerHTML = '<div class="placeholder-message"><p>' + escapeHtml(t('feed.feedFailed')) + '</p></div>';
+        if (ancestorsEl) {
+            ancestorsEl.innerHTML = '<div class="placeholder-message"><p>' + escapeHtml(t('feed.feedFailed')) + '</p></div>';
+        }
         return;
     }
     state.noteDetailSubject = subject;
@@ -1610,12 +1836,16 @@ async function openNoteDetail(noteIdOrNote) {
     var seen = {};
     while (current) {
         var parentId = getParentEventId(current);
-        if (!parentId || seen[parentId]) break;
+        if (!parentId || seen[parentId]) {
+            break;
+        }
         seen[parentId] = true;
         try {
             var r = await invoke('fetch_events_by_ids', { relay_urls: relays, ids: [parentId] });
             var a = r ? JSON.parse(r) : [];
-            if (!a.length) break;
+            if (!a.length) {
+                break;
+            }
             var parentNote = a[0];
             ancestors.unshift(parentNote);
             current = parentNote;
@@ -1640,7 +1870,9 @@ function renderNoteDetailPage() {
     var subjectWrap = document.getElementById('note-detail-subject-wrap');
     var repliesEl = document.getElementById('note-detail-replies');
     var replyContent = document.getElementById('note-detail-reply-content');
-    if (!ancestorsEl || !subjectWrap || !repliesEl) return;
+    if (!ancestorsEl || !subjectWrap || !repliesEl) {
+        return;
+    }
 
     ancestorsEl.innerHTML = '';
     var visibleAncestors = (state.noteDetailAncestors || []).filter(function(n) { return !isNoteMuted(n); });
@@ -1669,7 +1901,9 @@ function renderNoteDetailPage() {
         }
     }
 
-    if (replyContent) replyContent.value = '';
+    if (replyContent) {
+        replyContent.value = '';
+    }
 
     repliesEl.innerHTML = '';
     if (state.noteDetailReplies.length) {
@@ -1788,24 +2022,40 @@ function populateProfilePanel() {
     var profile = state.profile || {};
     var el;
     el = document.getElementById('edit-profile-name');
-    if (el) el.value = profile.name || cfg.name || '';
+    if (el) {
+        el.value = profile.name || cfg.name || '';
+    }
     el = document.getElementById('edit-profile-nip05');
-    if (el) el.value = profile.nip05 || cfg.nip05 || '';
+    if (el) {
+        el.value = profile.nip05 || cfg.nip05 || '';
+    }
     el = document.getElementById('edit-profile-website');
-    if (el) el.value = profile.website || cfg.website || '';
+    if (el) {
+        el.value = profile.website || cfg.website || '';
+    }
     el = document.getElementById('edit-profile-about');
-    if (el) el.value = profile.about || cfg.about || '';
+    if (el) {
+        el.value = profile.about || cfg.about || '';
+    }
     el = document.getElementById('edit-profile-lud16');
-    if (el) el.value = profile.lud16 || cfg.lud16 || '';
+    if (el) {
+        el.value = profile.lud16 || cfg.lud16 || '';
+    }
     el = document.getElementById('edit-profile-picture');
-    if (el) el.value = profile.picture || cfg.picture || '';
+    if (el) {
+        el.value = profile.picture || cfg.picture || '';
+    }
     el = document.getElementById('edit-profile-banner');
-    if (el) el.value = profile.banner || cfg.banner || '';
+    if (el) {
+        el.value = profile.banner || cfg.banner || '';
+    }
 }
 
 function showSettingsPanel(key) {
     var detail = document.getElementById('settings-detail');
-    if (!detail) return;
+    if (!detail) {
+        return;
+    }
     var panels = detail.querySelectorAll('.settings-panel');
     var defaultEl = document.getElementById('settings-detail-default');
     panels.forEach(function(panel) {
@@ -1836,12 +2086,22 @@ function showSettingsPanel(key) {
         var mode = (state.config && state.config.home_feed_mode === 'follows') ? 'follows' : 'firehose';
         var firehoseRadio = document.getElementById('home-feed-firehose');
         var followsRadio = document.getElementById('home-feed-follows');
-        if (firehoseRadio) firehoseRadio.checked = (mode === 'firehose');
-        if (followsRadio) followsRadio.checked = (mode === 'follows');
+        if (firehoseRadio) {
+            firehoseRadio.checked = (mode === 'firehose');
+        }
+        if (followsRadio) {
+            followsRadio.checked = (mode === 'follows');
+        }
+        var hideEncryptedCb = document.getElementById('home-feed-hide-encrypted');
+        if (hideEncryptedCb) {
+            hideEncryptedCb.checked = !state.config || state.config.hide_encrypted_notes !== false;
+        }
     }
     if (key === 'media') {
         var urlEl = document.getElementById('settings-media-server-url');
-        if (urlEl) urlEl.value = (state.config && state.config.media_server_url) || 'https://blossom.primal.net';
+        if (urlEl) {
+            urlEl.value = (state.config && state.config.media_server_url) || 'https://blossom.primal.net';
+        }
     }
     if (key === 'follows') {
         loadFollowsPanel();
@@ -1856,7 +2116,9 @@ function showSettingsPanel(key) {
     }
     if (key === 'zaps') {
         var amountEl = document.getElementById('settings-zaps-default-amount');
-        if (amountEl) amountEl.value = (state.config && state.config.default_zap_amount != null) ? state.config.default_zap_amount : 42;
+        if (amountEl) {
+            amountEl.value = (state.config && state.config.default_zap_amount != null) ? state.config.default_zap_amount : 42;
+        }
     }
 }
 
@@ -1864,7 +2126,9 @@ function showSettingsPanel(key) {
 async function populateKeysPanel() {
     var npubEl = document.getElementById('settings-keys-npub');
     var nsecEl = document.getElementById('settings-keys-nsec');
-    if (!npubEl || !nsecEl) return;
+    if (!npubEl || !nsecEl) {
+        return;
+    }
     npubEl.value = '';
     nsecEl.value = '';
     nsecEl.placeholder = state.config && state.config.private_key
@@ -1872,12 +2136,20 @@ async function populateKeysPanel() {
         : (window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t('accountModal.privateKeyPlaceholder') || 'nsec1... or hex (optional)' : 'nsec1... or hex (optional)');
     var npubError = document.getElementById('settings-keys-npub-error');
     var nsecError = document.getElementById('settings-keys-nsec-error');
-    if (npubError) npubError.textContent = '';
-    if (nsecError) nsecError.textContent = '';
+    if (npubError) {
+        npubError.textContent = '';
+    }
+    if (nsecError) {
+        nsecError.textContent = '';
+    }
     // Show/hide copy nsec button based on whether key exists
     var copyNsecBtn = document.getElementById('settings-keys-copy-nsec');
-    if (copyNsecBtn) copyNsecBtn.style.display = (state.config && state.config.private_key) ? 'inline-block' : 'none';
-    if (!state.config) return;
+    if (copyNsecBtn) {
+        copyNsecBtn.style.display = (state.config && state.config.private_key) ? 'inline-block' : 'none';
+    }
+    if (!state.config) {
+        return;
+    }
     if (state.config.public_key) {
         try {
             var npub = await hexToNpub(state.config.public_key);
@@ -1891,7 +2163,9 @@ async function populateKeysPanel() {
 
 // Copy nsec to clipboard without ever placing it in the DOM
 async function copyNsecToClipboard() {
-    if (!state.config || !state.config.private_key) return;
+    if (!state.config || !state.config.private_key) {
+        return;
+    }
     try {
         var nsec = await invoke('convert_hex_to_nsec', { hex_key: state.config.private_key });
         if (nsec && navigator.clipboard) {
@@ -1907,31 +2181,45 @@ async function copyNsecToClipboard() {
 
 // Save Keys panel: validate npub/nsec, store hex, save config
 async function saveKeysPanel(event) {
-    if (event) event.preventDefault();
+    if (event) {
+        event.preventDefault();
+    }
     var npubEl = document.getElementById('settings-keys-npub');
     var nsecEl = document.getElementById('settings-keys-nsec');
     var npubError = document.getElementById('settings-keys-npub-error');
     var nsecError = document.getElementById('settings-keys-nsec-error');
-    if (!npubEl || !state.config) return;
-    if (npubError) npubError.textContent = '';
-    if (nsecError) nsecError.textContent = '';
+    if (!npubEl || !state.config) {
+        return;
+    }
+    if (npubError) {
+        npubError.textContent = '';
+    }
+    if (nsecError) {
+        nsecError.textContent = '';
+    }
     var publicKeyHex = null;
     var privateKeyHex = null;
     var npubRaw = (npubEl && npubEl.value) ? npubEl.value.trim() : '';
     if (!npubRaw) {
-        if (npubError) npubError.textContent = 'Public key is required';
+        if (npubError) {
+            npubError.textContent = 'Public key is required';
+        }
         return;
     }
     var pubResult = await validatePublicKey(npubRaw);
     if (!pubResult.valid) {
-        if (npubError) npubError.textContent = pubResult.error || 'Invalid public key';
+        if (npubError) {
+            npubError.textContent = pubResult.error || 'Invalid public key';
+        }
         return;
     }
     publicKeyHex = pubResult.hex;
     if (nsecEl && nsecEl.value.trim()) {
         var privResult = await validateSecretKey(nsecEl.value.trim());
         if (!privResult.valid) {
-            if (nsecError) nsecError.textContent = privResult.error || 'Invalid private key';
+            if (nsecError) {
+                nsecError.textContent = privResult.error || 'Invalid private key';
+            }
             return;
         }
         privateKeyHex = privResult.hex;
@@ -1954,15 +2242,22 @@ async function saveKeysPanel(event) {
 function saveHomeFeedModeFromPanel() {
     var followsRadio = document.getElementById('home-feed-follows');
     var mode = (followsRadio && followsRadio.checked) ? 'follows' : 'firehose';
-    if (!state.config) state.config = {};
+    if (!state.config) {
+        state.config = {};
+    }
     state.config.home_feed_mode = mode;
     state.homeFeedMode = mode;
+    var hideEncryptedCb = document.getElementById('home-feed-hide-encrypted');
+    state.config.hide_encrypted_notes = hideEncryptedCb ? hideEncryptedCb.checked : true;
     var restoreBtn = setSavingState(document.getElementById('home-feed-panel-save'));
     saveConfig().then(function() {
         // Clear existing feed state so the next visit to feed reloads with the new mode
         state.initialFeedLoadDone = false;
         state.notes = [];
-        if (state.feedPollIntervalId) { clearInterval(state.feedPollIntervalId); state.feedPollIntervalId = null; }
+        if (state.feedPollIntervalId) {
+            clearInterval(state.feedPollIntervalId);
+            state.feedPollIntervalId = null;
+        }
         if (state.currentView === 'feed') {
             updateFeedInitialState();
             startInitialFeedFetch();
@@ -1976,7 +2271,9 @@ function saveHomeFeedModeFromPanel() {
 // Save Zaps default amount from settings panel
 function saveZapsFromPanel() {
     var amountEl = document.getElementById('settings-zaps-default-amount');
-    if (!state.config || !amountEl) return;
+    if (!state.config || !amountEl) {
+        return;
+    }
     var raw = parseInt(amountEl.value, 10);
     var amount = isNaN(raw) ? 42 : Math.max(1, Math.min(1000000, raw));
     state.config.default_zap_amount = amount;
@@ -1990,7 +2287,9 @@ function saveZapsFromPanel() {
 // Save media server URL from settings panel
 function saveMediaServerFromPanel() {
     var urlEl = document.getElementById('settings-media-server-url');
-    if (!state.config || !urlEl) return;
+    if (!state.config || !urlEl) {
+        return;
+    }
     state.config.media_server_url = (urlEl.value && urlEl.value.trim()) || 'https://blossom.primal.net';
     var restoreBtn = setSavingState(document.getElementById('settings-media-save'));
     saveConfig()
@@ -2000,29 +2299,45 @@ function saveMediaServerFromPanel() {
 
 // Muted: ensure config arrays exist
 function ensureMutedConfig() {
-    if (!state.config) return;
-    if (!Array.isArray(state.config.muted_users)) state.config.muted_users = [];
-    if (!Array.isArray(state.config.muted_words)) state.config.muted_words = [];
-    if (!Array.isArray(state.config.muted_hashtags)) state.config.muted_hashtags = [];
+    if (!state.config) {
+        return;
+    }
+    if (!Array.isArray(state.config.muted_users)) {
+        state.config.muted_users = [];
+    }
+    if (!Array.isArray(state.config.muted_words)) {
+        state.config.muted_words = [];
+    }
+    if (!Array.isArray(state.config.muted_hashtags)) {
+        state.config.muted_hashtags = [];
+    }
 }
 
 function isUserMuted(pubkey) {
-    if (!pubkey || !state.config || !Array.isArray(state.config.muted_users)) return false;
+    if (!pubkey || !state.config || !Array.isArray(state.config.muted_users)) {
+        return false;
+    }
     var pk = String(pubkey).toLowerCase();
     return state.config.muted_users.some(function(p) { return String(p).toLowerCase() === pk; });
 }
 
 // True if the note should be hidden by mute filters (muted user, muted word in content, or muted hashtag in tags).
 function isNoteMuted(note) {
-    if (!note || !state.config) return false;
+    if (!note || !state.config) {
+        return false;
+    }
     ensureMutedConfig();
     var pubkey = (note.pubkey || '').toLowerCase();
-    if (state.config.muted_users.some(function(p) { return String(p).toLowerCase() === pubkey; })) return true;
+    if (state.config.muted_users.some(function(p) { return String(p).toLowerCase() === pubkey; })) {
+        return true;
+    }
     if (note.kind === 1) {
         var content = (note.content || '').toLowerCase();
         var words = state.config.muted_words || [];
         for (var w = 0; w < words.length; w++) {
-            if (content.indexOf(String(words[w]).toLowerCase()) !== -1) return true;
+            if (content.indexOf(String(words[w]).toLowerCase()) !== -1) {
+                return true;
+            }
         }
         var tags = note.tags || [];
         var mutedHashtags = (state.config.muted_hashtags || []).map(function(h) { return String(h).toLowerCase().replace(/^#/, ''); });
@@ -2030,9 +2345,25 @@ function isNoteMuted(note) {
             var tag = tags[t];
             if (Array.isArray(tag) && tag[0] === 't' && tag[1]) {
                 var tagVal = String(tag[1]).toLowerCase().replace(/^#/, '');
-                if (mutedHashtags.indexOf(tagVal) !== -1) return true;
+                if (mutedHashtags.indexOf(tagVal) !== -1) {
+                    return true;
+                }
             }
         }
+    }
+    return false;
+}
+
+// Detect notes whose content is unreadable encrypted data (base64 blobs).
+// These are kind 1 notes with encrypted payloads not intended for public display.
+function isContentUnreadable(content) {
+    if (!content || content.length < 20) {
+        return false;
+    }
+    var trimmed = content.trim();
+    // Pure base64 blob: only base64 characters with no spaces or readable structure
+    if (/^[A-Za-z0-9+\/]+=*$/.test(trimmed)) {
+        return true;
     }
     return false;
 }
@@ -2040,9 +2371,13 @@ function isNoteMuted(note) {
 // Mute or unmute the currently viewed profile user. Updates local config immediately and saves to disk.
 function handleMuteClick() {
     var pubkey = state.viewedProfilePubkey;
-    if (!pubkey || !state.config) return;
+    if (!pubkey || !state.config) {
+        return;
+    }
     var muteBtn = document.getElementById('mute-btn');
-    if (muteBtn) muteBtn.disabled = true;
+    if (muteBtn) {
+        muteBtn.disabled = true;
+    }
     ensureMutedConfig();
     var pk = String(pubkey).toLowerCase();
     var idx = state.config.muted_users.findIndex(function(p) { return String(p).toLowerCase() === pk; });
@@ -2060,7 +2395,9 @@ function handleMuteClick() {
             alert((window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t('errors.failedToSaveSettings') : 'Failed to save') + ': ' + err);
         })
         .finally(function() {
-            if (muteBtn) muteBtn.disabled = false;
+            if (muteBtn) {
+                muteBtn.disabled = false;
+            }
         });
 }
 
@@ -2115,7 +2452,12 @@ function renderMutedPanels() {
                     '</span></label>';
                 // Attach image error handler without inline JS (CSP-safe)
                 var img = li.querySelector('.follows-item-avatar');
-                if (img) img.addEventListener('error', function() { this.style.display = 'none'; this.nextElementSibling.style.display = 'inline-flex'; });
+                if (img) {
+                    img.addEventListener('error', function() {
+                        this.style.display = 'none';
+                        this.nextElementSibling.style.display = 'inline-flex';
+                    });
+                }
                 ulUsers.appendChild(li);
             });
         }
@@ -2123,7 +2465,9 @@ function renderMutedPanels() {
             cb.addEventListener('change', function() {
                 var pubkey = cb.dataset.pubkey;
                 var item = state.mutedUsersPanelList.find(function(x) { return x.pubkey === pubkey; });
-                if (item) item.checked = cb.checked;
+                if (item) {
+                    item.checked = cb.checked;
+                }
             });
         });
     }
@@ -2160,10 +2504,14 @@ function saveMutedFromPanel() {
 async function loadFollowsPanel() {
     var listEl = document.getElementById('follows-list');
     var addInput = document.getElementById('follows-add-input');
-    if (!listEl) return;
+    if (!listEl) {
+        return;
+    }
     state.followsPanelLoading = true;
     listEl.innerHTML = '<li class="follows-list-placeholder">' + (window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t('settings.followsLoading') || 'Loading…' : 'Loading…') + '</li>';
-    if (addInput) addInput.value = '';
+    if (addInput) {
+        addInput.value = '';
+    }
     try {
         var data = await fetchFollowing();
         var contacts = (data && data.contacts) ? data.contacts : [];
@@ -2184,13 +2532,17 @@ async function loadFollowsPanel() {
 
 function renderFollowsPanel() {
     var listEl = document.getElementById('follows-list');
-    if (!listEl) return;
+    if (!listEl) {
+        return;
+    }
     var list = state.followsPanelList || [];
     var sort = state.followsPanelSort || 'name';
     var t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
 
     var sorted = list.slice().sort(function(a, b) {
-        if (sort === 'order') return (a.listOrder !== undefined ? a.listOrder : 0) - (b.listOrder !== undefined ? b.listOrder : 0);
+        if (sort === 'order') {
+            return (a.listOrder !== undefined ? a.listOrder : 0) - (b.listOrder !== undefined ? b.listOrder : 0);
+        }
         var ad = getAuthorDisplay(a.pubkey);
         var bd = getAuthorDisplay(b.pubkey);
         if (sort === 'name') {
@@ -2233,14 +2585,21 @@ function renderFollowsPanel() {
         listEl.appendChild(li);
         // Attach image error handler without inline JS (CSP-safe)
         var img = li.querySelector('.follows-item-avatar');
-        if (img) img.addEventListener('error', function() { this.style.display = 'none'; this.nextElementSibling.style.display = 'inline-flex'; });
+        if (img) {
+            img.addEventListener('error', function() {
+                this.style.display = 'none';
+                this.nextElementSibling.style.display = 'inline-flex';
+            });
+        }
     });
 
     listEl.querySelectorAll('.follows-item-checkbox').forEach(function(cb) {
         cb.addEventListener('change', function() {
             var pubkey = cb.dataset.pubkey;
             var item = state.followsPanelList.find(function(x) { return x.pubkey === pubkey; });
-            if (item) item.checked = cb.checked;
+            if (item) {
+                item.checked = cb.checked;
+            }
         });
     });
 }
@@ -2258,7 +2617,9 @@ function saveFollowsPanel() {
         .then(function() {
             state.ownFollowingPubkeys = pubkeys;
             // Keep local config in sync so follows-mode feed works immediately
-            if (state.config) state.config.following = pubkeys.slice();
+            if (state.config) {
+                state.config.following = pubkeys.slice();
+            }
             var msg = t('settings.followsSaved') || 'Follow list saved and published.';
             alert(msg);
             loadFollowsPanel();
@@ -2303,11 +2664,17 @@ function showValidationError(inputId, message) {
 function updateRelayList() {
     const t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
     const relayList = document.getElementById('relay-list');
-    if (!relayList) return;
+    if (!relayList) {
+        return;
+    }
     relayList.innerHTML = '';
 
-    if (!state.config) state.config = {};
-    if (!Array.isArray(state.config.relays)) state.config.relays = [];
+    if (!state.config) {
+        state.config = {};
+    }
+    if (!Array.isArray(state.config.relays)) {
+        state.config.relays = [];
+    }
 
     const deleteLabel = t('settings.relayDelete');
     const unknownTitle = t('relays.statusUnknown');
@@ -2331,7 +2698,9 @@ function bindRelayPanelHandlers() {
     var addInput = document.getElementById('relay-add-input');
     var addBtn = document.getElementById('relay-add-btn');
     var saveBtn = document.getElementById('settings-relays-save');
-    if (!list) return;
+    if (!list) {
+        return;
+    }
 
     list.removeEventListener('click', handleRelayListClick);
     list.addEventListener('click', handleRelayListClick);
@@ -2339,23 +2708,37 @@ function bindRelayPanelHandlers() {
     if (addBtn) {
         addBtn.onclick = function() {
             var url = addInput && addInput.value ? addInput.value.trim() : '';
-            if (!url) return;
-            if (!url.startsWith('ws://') && !url.startsWith('wss://')) url = 'wss://' + url;
-            if (!state.config) state.config = {};
-            if (!Array.isArray(state.config.relays)) state.config.relays = [];
-            if (state.config.relays.indexOf(url) !== -1) return;
+            if (!url) {
+                return;
+            }
+            if (!url.startsWith('ws://') && !url.startsWith('wss://')) {
+                url = 'wss://' + url;
+            }
+            if (!state.config) {
+                state.config = {};
+            }
+            if (!Array.isArray(state.config.relays)) {
+                state.config.relays = [];
+            }
+            if (state.config.relays.indexOf(url) !== -1) {
+                return;
+            }
             state.config.relays.push(url);
             updateRelayList();
             bindRelayPanelHandlers();
             runRelayTests();
-            if (addInput) addInput.value = '';
+            if (addInput) {
+                addInput.value = '';
+            }
         };
     }
     if (addInput && addInput.addEventListener) {
         addInput.onkeydown = function(e) {
             if (e.key === 'Enter') {
                 e.preventDefault();
-                if (addBtn) addBtn.click();
+                if (addBtn) {
+                    addBtn.click();
+                }
             }
         };
     }
@@ -2370,7 +2753,9 @@ function handleRelayListClick(e) {
     var target = e.target;
     if (target.classList && target.classList.contains('relay-delete-btn')) {
         var idx = parseInt(target.getAttribute('data-index'), 10);
-        if (!state.config || !Array.isArray(state.config.relays) || isNaN(idx) || idx < 0 || idx >= state.config.relays.length) return;
+        if (!state.config || !Array.isArray(state.config.relays) || isNaN(idx) || idx < 0 || idx >= state.config.relays.length) {
+            return;
+        }
         state.config.relays.splice(idx, 1);
         updateRelayList();
         bindRelayPanelHandlers();
@@ -2384,23 +2769,31 @@ function runRelayTests() {
     var t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
     var connectedTitle = t('relays.statusConnected');
     var failedTitle = t('relays.statusFailed');
-    if (!state.config || !Array.isArray(state.config.relays)) return;
+    if (!state.config || !Array.isArray(state.config.relays)) {
+        return;
+    }
     state.config.relays.forEach(function(relayUrl, index) {
         var el = document.getElementById('relay-status-' + index);
-        if (!el) return;
+        if (!el) {
+            return;
+        }
         el.classList.remove('connected', 'failed');
         el.title = t('relays.statusUnknown');
         el.setAttribute('aria-label', t('relays.statusUnknown'));
         invoke('test_relay_connection', { relayUrl: relayUrl })
             .then(function(result) {
-                if (!el.parentNode) return;
+                if (!el.parentNode) {
+                    return;
+                }
                 el.classList.remove('failed');
                 el.classList.add('connected');
                 el.title = connectedTitle;
                 el.setAttribute('aria-label', connectedTitle);
             })
             .catch(function(err) {
-                if (!el.parentNode) return;
+                if (!el.parentNode) {
+                    return;
+                }
                 el.classList.remove('connected');
                 el.classList.add('failed');
                 el.title = failedTitle;
@@ -2420,8 +2813,12 @@ const POLL_INTERVAL_MS = 45000;
 // Uses the locally cached following list from config first for instant results,
 // then falls back to fetching from relays (which also updates the local cache).
 async function getHomeFeedAuthors() {
-    if (state.homeFeedMode !== 'follows') return null;
-    if (!state.config || !state.config.public_key) return null;
+    if (state.homeFeedMode !== 'follows') {
+        return null;
+    }
+    if (!state.config || !state.config.public_key) {
+        return null;
+    }
     // Use locally cached following list if available
     if (state.config.following && state.config.following.length > 0) {
         return state.config.following.slice();
@@ -2429,10 +2826,14 @@ async function getHomeFeedAuthors() {
     // Fall back to fetching from relays (also caches locally via backend)
     try {
         const json = await invoke('fetch_own_following');
-        if (!json) return null;
+        if (!json) {
+            return null;
+        }
         const data = JSON.parse(json);
         const contacts = data.contacts || [];
-        if (contacts.length === 0) return null;
+        if (contacts.length === 0) {
+            return null;
+        }
         const pubkeys = contacts.map(c => c.pubkey).filter(Boolean);
         // Update local state so subsequent calls are instant
         if (pubkeys.length > 0) {
@@ -2447,7 +2848,9 @@ async function getHomeFeedAuthors() {
 
 // Low-level fetch: relayUrls, optional authors (hex), optional since (unix ts). profileFeed true = include reposts (kind 6) for profile.
 async function fetchFeedNotes(relayUrls, authors, since, profileFeed) {
-    if (!relayUrls || relayUrls.length === 0) return [];
+    if (!relayUrls || relayUrls.length === 0) {
+        return [];
+    }
     const notesJson = await invoke('fetch_notes_from_relays', {
         relay_urls: relayUrls,
         limit: FEED_LIMIT,
@@ -2455,14 +2858,18 @@ async function fetchFeedNotes(relayUrls, authors, since, profileFeed) {
         since: since ?? null,
         profile_feed: profileFeed === true ? true : null
     });
-    if (!notesJson) return [];
+    if (!notesJson) {
+        return [];
+    }
     const notes = JSON.parse(notesJson);
     return Array.isArray(notes) ? notes : [];
 }
 
 // Merge new notes into state.notes. isIncremental: true = append new ones below the fold; false = replace and sort.
 function mergeNotesIntoState(newNotes, isIncremental) {
-    if (!newNotes || newNotes.length === 0 && !isIncremental) return;
+    if (!newNotes || newNotes.length === 0 && !isIncremental) {
+        return;
+    }
     const seen = new Set(state.notes.map(n => n.id));
     if (!isIncremental) {
         state.notes = newNotes.slice();
@@ -2470,7 +2877,9 @@ function mergeNotesIntoState(newNotes, isIncremental) {
         return;
     }
     const added = newNotes.filter(n => n.id && !seen.has(n.id));
-    if (added.length === 0) return;
+    if (added.length === 0) {
+        return;
+    }
     added.sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
     state.notes = state.notes.concat(added);
 }
@@ -2505,7 +2914,9 @@ async function startInitialFeedFetch() {
                 state.loading = false;
                 state.initialFeedLoadDone = true;
                 // Start periodic polling for new notes (both firehose and follows modes)
-                if (state.feedPollIntervalId) clearInterval(state.feedPollIntervalId);
+                if (state.feedPollIntervalId) {
+                    clearInterval(state.feedPollIntervalId);
+                }
                 if (state.homeFeedMode === 'follows') {
                     getHomeFeedAuthors().then(function(authors) {
                         if (authors && authors.length > 0) {
@@ -2534,7 +2945,9 @@ async function startInitialFeedFetch() {
             let authors = null;
             if (state.homeFeedMode === 'follows') {
                 authors = await getHomeFeedAuthors();
-                if (!authors || authors.length === 0) authors = null;
+                if (!authors || authors.length === 0) {
+                    authors = null;
+                }
             }
             await invoke('start_feed_stream', {
                 relay_urls: effectiveRelays,
@@ -2558,14 +2971,18 @@ async function startInitialFeedFetch() {
         let authors = null;
         if (state.homeFeedMode === 'follows') {
             authors = await getHomeFeedAuthors();
-            if (!authors || authors.length === 0) authors = null;
+            if (!authors || authors.length === 0) {
+                authors = null;
+            }
         }
         const notes = await fetchFeedNotes(effectiveRelays, authors, null);
         mergeNotesIntoState(notes, false);
         displayNotes(state.notes);
         state.initialFeedLoadDone = true;
         // Start periodic polling for new notes (both firehose and follows modes)
-        if (state.feedPollIntervalId) clearInterval(state.feedPollIntervalId);
+        if (state.feedPollIntervalId) {
+            clearInterval(state.feedPollIntervalId);
+        }
         if (state.homeFeedMode === 'follows' && authors && authors.length > 0) {
             state.feedPollIntervalId = setInterval(pollForNewNotes, POLL_INTERVAL_MS);
         } else if (state.homeFeedMode === 'firehose') {
@@ -2582,15 +2999,21 @@ async function startInitialFeedFetch() {
 // Incremental poll (follows mode only). Fetches notes since latest we have; appends below the fold.
 async function pollForNewNotes() {
     const relays = getEffectiveRelays();
-    if (!relays.length || state.loading) return;
+    if (!relays.length || state.loading) {
+        return;
+    }
     const authors = await getHomeFeedAuthors();
-    if (!authors || authors.length === 0) return;
+    if (!authors || authors.length === 0) {
+        return;
+    }
     const since = state.notes.length
         ? Math.max(...state.notes.map(n => n.created_at || 0))
         : 0;
     try {
         const notes = await fetchFeedNotes(relays, authors, since);
-        if (notes.length === 0) return;
+        if (notes.length === 0) {
+            return;
+        }
         mergeNotesIntoState(notes, true);
         displayNotes(state.notes);
     } catch (e) {
@@ -2601,7 +3024,9 @@ async function pollForNewNotes() {
 // Firehose: fetch new notes when user opens Home (no auto-poll).
 async function fetchNotesFirehoseOnHomeClick() {
     const relays = getEffectiveRelays();
-    if (!relays.length || state.loading) return;
+    if (!relays.length || state.loading) {
+        return;
+    }
     const since = state.notes.length
         ? Math.max(...state.notes.map(n => n.created_at || 0))
         : 0;
@@ -2637,38 +3062,59 @@ var feedNoteQueue = [];
 var feedNoteDrainScheduled = false;
 
 function scheduleFeedNoteDrain() {
-    if (feedNoteDrainScheduled) return;
+    if (feedNoteDrainScheduled) {
+        return;
+    }
     feedNoteDrainScheduled = true;
     requestAnimationFrame(function drainFeedNoteQueue() {
         feedNoteDrainScheduled = false;
-        if (feedNoteQueue.length === 0) return;
+        if (feedNoteQueue.length === 0) {
+            return;
+        }
         var note = feedNoteQueue.shift();
         var result = appendNoteCardToFeedSync(note);
         if (result.index !== -1) {
             ensureProfilesForNotes([note]);
             verifyNote(note, result.index);
-            if (result.card) resolveNostrEmbeds(result.card);
+            if (result.card) {
+                resolveNostrEmbeds(result.card);
+            }
         }
-        if (feedNoteQueue.length > 0) scheduleFeedNoteDrain();
+        if (feedNoteQueue.length > 0) {
+            scheduleFeedNoteDrain();
+        }
     });
 }
 
 // Append a single note card to the feed (streaming). Dedupes by id; inserts in sorted position.
 // Returns { index, card } where index is -1 if skipped.
 function appendNoteCardToFeedSync(note) {
-    if (!note || note.kind !== 1) return { index: -1, card: null };
-    if (isNoteMuted(note)) return { index: -1, card: null };
-    if (state.notes.some(function(n) { return n.id === note.id; })) return { index: -1, card: null };
+    if (!note || note.kind !== 1) {
+        return { index: -1, card: null };
+    }
+    if (isNoteMuted(note)) {
+        return { index: -1, card: null };
+    }
+    if ((!state.config || state.config.hide_encrypted_notes !== false) && isContentUnreadable(note.content)) {
+        return { index: -1, card: null };
+    }
+    if (state.notes.some(function(n) { return n.id === note.id; })) {
+        return { index: -1, card: null };
+    }
 
     const container = document.getElementById('notes-container');
-    if (!container) return { index: -1, card: null };
+    if (!container) {
+        return { index: -1, card: null };
+    }
 
     state.notes.push(note);
     state.notes.sort(function(a, b) { return (b.created_at || 0) - (a.created_at || 0); });
     const idx = state.notes.findIndex(function(n) { return n.id === note.id; });
 
     const placeholder = document.getElementById('feed-loading') || document.getElementById('feed-welcome');
-    if (placeholder) placeholder.remove();
+    if (placeholder) {
+        placeholder.remove();
+    }
 
     const noteIndex = feedStreamNoteIndex++;
     const replyToPubkey = getReplyToPubkey(note);
@@ -2684,8 +3130,15 @@ function appendNoteCardToFeedSync(note) {
 }
 
 function appendNoteCardToFeed(note) {
-    if (!note || note.kind !== 1) return;
-    if (state.notes.some(function(n) { return n.id === note.id; })) return;
+    if (!note || note.kind !== 1) {
+        return;
+    }
+    if ((!state.config || state.config.hide_encrypted_notes !== false) && isContentUnreadable(note.content)) {
+        return;
+    }
+    if (state.notes.some(function(n) { return n.id === note.id; })) {
+        return;
+    }
     feedNoteQueue.push(note);
     scheduleFeedNoteDrain();
 }
@@ -2707,25 +3160,35 @@ function getAuthorDisplay(pubkey) {
 // Fetch profiles for note authors (and reply-to targets) and update cache + DOM.
 async function ensureProfilesForNotes(notes) {
     const relays = getEffectiveRelays();
-    if (relays.length === 0) return;
+    if (relays.length === 0) {
+        return;
+    }
     var pubkeys = notes.map(n => n.pubkey).filter(Boolean);
     notes.forEach(function(n) {
         var p = getReplyToPubkey(n);
-        if (p) pubkeys.push(p);
+        if (p) {
+            pubkeys.push(p);
+        }
         if (n.kind === 6 && n.content && n.content.trim()) {
             try {
                 var parsed = JSON.parse(n.content);
-                if (parsed && parsed.pubkey) pubkeys.push(parsed.pubkey);
+                if (parsed && parsed.pubkey) {
+                    pubkeys.push(parsed.pubkey);
+                }
             } catch (_) {}
         }
     });
     const unique = [...new Set(pubkeys)];
     const toFetch = unique.filter(p => !state.profileCache[p]);
-    if (toFetch.length === 0) return;
+    if (toFetch.length === 0) {
+        return;
+    }
     await Promise.all(toFetch.map(async (pubkey) => {
         try {
             const json = await invoke('fetch_profile', { pubkey, relay_urls: relays });
-            if (!json || json === '{}') return;
+            if (!json || json === '{}') {
+                return;
+            }
             const p = JSON.parse(json);
             state.profileCache[pubkey] = {
                 name: p.name || null,
@@ -2738,7 +3201,9 @@ async function ensureProfilesForNotes(notes) {
     // Update cards for all authors that we have in cache (including just-seeded viewed profile)
     unique.forEach(function(pubkey) {
         var profile = state.profileCache[pubkey];
-        if (!profile) return;
+        if (!profile) {
+            return;
+        }
         var t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
         var name = profile.name || t('profile.anonymous');
         var nip05 = profile.nip05 || '';
@@ -2746,26 +3211,36 @@ async function ensureProfilesForNotes(notes) {
             var isRepost = card.classList.contains('note-card-repost');
             if (isRepost) {
                 var reposterNameEl = card.querySelector('.note-repost-header .note-reposter-name');
-                if (reposterNameEl) reposterNameEl.textContent = name;
+                if (reposterNameEl) {
+                    reposterNameEl.textContent = name;
+                }
             } else {
                 var nameEl = card.querySelector('.note-head .note-author-name');
                 var nip05El = card.querySelector('.note-head .note-author-nip05');
-                if (nameEl) nameEl.textContent = name;
+                if (nameEl) {
+                    nameEl.textContent = name;
+                }
                 if (nip05El) {
                     nip05El.textContent = nip05;
                     nip05El.style.display = nip05 ? '' : 'none';
                 }
                 var avatar = card.querySelector('.note-avatar');
-                if (avatar && profile.picture) setCardAvatar(card, profile.picture);
+                if (avatar && profile.picture) {
+                    setCardAvatar(card, profile.picture);
+                }
             }
             var replyToLink = card.querySelector('.note-reply-to-link[data-pubkey="' + escapeCssAttr(pubkey) + '"]');
-            if (replyToLink) replyToLink.textContent = name;
+            if (replyToLink) {
+                replyToLink.textContent = name;
+            }
         });
         updateZapButtons();
         document.querySelectorAll('.note-card[data-original-pubkey="' + escapeCssAttr(pubkey) + '"]').forEach(function(card) {
             var nameEl = card.querySelector('.note-original-row .note-author-name');
             var nip05El = card.querySelector('.note-original-row .note-author-nip05');
-            if (nameEl) nameEl.textContent = name;
+            if (nameEl) {
+                nameEl.textContent = name;
+            }
             if (nip05El) {
                 nip05El.textContent = nip05;
                 nip05El.style.display = nip05 ? '' : 'none';
@@ -2778,14 +3253,22 @@ async function ensureProfilesForNotes(notes) {
                     img.src = profile.picture;
                     img.alt = '';
                     img.style.display = '';
-                    if (fallback) fallback.style.display = 'none';
+                    if (fallback) {
+                        fallback.style.display = 'none';
+                    }
                 } else {
                     var newImg = document.createElement('img');
                     newImg.src = profile.picture;
                     newImg.alt = '';
-                    newImg.onerror = function() { if (fallback) fallback.style.display = 'flex'; };
+                    newImg.onerror = function() {
+                        if (fallback) {
+                            fallback.style.display = 'flex';
+                        }
+                    };
                     avatar.insertBefore(newImg, avatar.firstChild);
-                    if (fallback) fallback.style.display = 'none';
+                    if (fallback) {
+                        fallback.style.display = 'none';
+                    }
                 }
             }
         });
@@ -2798,53 +3281,77 @@ function escapeCssAttr(s) {
 
 // NIP-10: get the direct parent event id from a note's "e" tags. Returns null if not a reply.
 function getParentEventId(note) {
-    if (!note.tags || !note.tags.length) return null;
+    if (!note.tags || !note.tags.length) {
+        return null;
+    }
     for (var i = 0; i < note.tags.length; i++) {
         var tag = note.tags[i];
         if (Array.isArray(tag) && tag[0] === 'e' && tag[1]) {
             var marker = tag[3] || '';
-            if (marker === 'reply') return tag[1];
+            if (marker === 'reply') {
+                return tag[1];
+            }
         }
     }
     // Some clients omit the marker; last "e" is often the reply target
     var lastE = null;
     for (var j = 0; j < note.tags.length; j++) {
         var tagItem = note.tags[j];
-        if (Array.isArray(tagItem) && tagItem[0] === 'e' && tagItem[1]) lastE = tagItem[1];
+        if (Array.isArray(tagItem) && tagItem[0] === 'e' && tagItem[1]) {
+            lastE = tagItem[1];
+        }
     }
     return lastE;
 }
 
 // Get the pubkey of the user being replied to (first "p" tag) when note is a reply (has "e" tag). Returns null if not a reply.
 function getReplyToPubkey(note) {
-    if (!note.tags || !note.tags.length) return null;
+    if (!note.tags || !note.tags.length) {
+        return null;
+    }
     var hasE = note.tags.some(function(tag) { return Array.isArray(tag) && tag[0] === 'e'; });
-    if (!hasE) return null;
+    if (!hasE) {
+        return null;
+    }
     for (var i = 0; i < note.tags.length; i++) {
         var tag = note.tags[i];
-        if (Array.isArray(tag) && tag[0] === 'p' && tag[1]) return tag[1];
+        if (Array.isArray(tag) && tag[0] === 'p' && tag[1]) {
+            return tag[1];
+        }
     }
     return null;
 }
 
 function setCardAvatar(card, pictureUrl) {
-    if (!card || !pictureUrl) return;
+    if (!card || !pictureUrl) {
+        return;
+    }
     var avatar = card.querySelector('.note-avatar');
-    if (!avatar) return;
+    if (!avatar) {
+        return;
+    }
     var fallback = avatar.querySelector('.avatar-fallback');
     var img = avatar.querySelector('img');
     if (img) {
         img.src = pictureUrl;
         img.alt = '';
         img.style.display = '';
-        if (fallback) fallback.style.display = 'none';
+        if (fallback) {
+            fallback.style.display = 'none';
+        }
     } else {
         img = document.createElement('img');
         img.src = pictureUrl;
         img.alt = '';
-        img.onerror = function() { if (fallback) fallback.style.display = 'flex'; };
+        img.onerror = function() {
+            if (fallback) {
+                fallback.style.display = 'flex';
+            }
+        };
         avatar.insertBefore(img, avatar.firstChild);
-        if (fallback) fallback.style.display = 'none';
+        if (fallback) {
+            fallback.style.display = 'none';
+        }
     }
 }
 
@@ -2859,14 +3366,20 @@ function isNoteLiked(noteId) {
 
 // Whether the current user has a Lightning address (for sending/receiving zaps).
 function selfHasLud16() {
-    if (state.profile && state.profile.lud16 && state.profile.lud16.trim()) return true;
-    if (state.publicKeyHex && state.profileCache[state.publicKeyHex] && state.profileCache[state.publicKeyHex].lud16) return true;
+    if (state.profile && state.profile.lud16 && state.profile.lud16.trim()) {
+        return true;
+    }
+    if (state.publicKeyHex && state.profileCache[state.publicKeyHex] && state.profileCache[state.publicKeyHex].lud16) {
+        return true;
+    }
     return false;
 }
 
 // Whether the given pubkey's profile has a Lightning address (for zapping them).
 function targetHasLud16(pubkey) {
-    if (!pubkey || !state.profileCache) return false;
+    if (!pubkey || !state.profileCache) {
+        return false;
+    }
     var p = state.profileCache[pubkey];
     return !!(p && p.lud16 && p.lud16.trim());
 }
@@ -2891,13 +3404,19 @@ function updateZapButtons() {
 
 // Request a zap invoice and open it with the user's wallet (lightning: URL).
 function performZap(targetPubkey, eventId, zapBtn) {
-    if (!targetPubkey || !state.config || !state.profileCache) return;
+    if (!targetPubkey || !state.config || !state.profileCache) {
+        return;
+    }
     var profile = state.profileCache[targetPubkey];
-    if (!profile || !profile.lud16 || !profile.lud16.trim()) return;
+    if (!profile || !profile.lud16 || !profile.lud16.trim()) {
+        return;
+    }
     var amount = (state.config.default_zap_amount != null && state.config.default_zap_amount >= 1)
         ? state.config.default_zap_amount
         : 42;
-    if (zapBtn) zapBtn.disabled = true;
+    if (zapBtn) {
+        zapBtn.disabled = true;
+    }
     invoke('request_zap_invoice', {
         target_lud16: profile.lud16.trim(),
         amount_sats: amount,
@@ -2916,22 +3435,32 @@ function performZap(targetPubkey, eventId, zapBtn) {
             alert((window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t('errors.failedToPublish') : 'Failed to get zap invoice') + ': ' + err);
         })
         .finally(function() {
-            if (zapBtn) zapBtn.disabled = false;
+            if (zapBtn) {
+                zapBtn.disabled = false;
+            }
         });
 }
 
 // Perform a like (reaction) and update UI on success
 function performLike(noteId, pubkey, emoji, likeBtn) {
-    if (!noteId || !pubkey) return;
+    if (!noteId || !pubkey) {
+        return;
+    }
     var btn = likeBtn;
-    if (btn) btn.disabled = true;
+    if (btn) {
+        btn.disabled = true;
+    }
     invoke('post_reaction', { eventId: noteId, authorPubkey: pubkey, emoji: emoji || DEFAULT_LIKE_EMOJI })
         .then(function() {
-            if (!state.likedNoteIds) state.likedNoteIds = {};
+            if (!state.likedNoteIds) {
+                state.likedNoteIds = {};
+            }
             state.likedNoteIds[noteId] = true;
             if (btn) {
                 var img = btn.querySelector('img');
-                if (img) img.src = 'icons/heart-filled.svg';
+                if (img) {
+                    img.src = 'icons/heart-filled.svg';
+                }
                 btn.classList.add('liked');
             }
         })
@@ -2939,7 +3468,11 @@ function performLike(noteId, pubkey, emoji, likeBtn) {
             console.error('Reaction failed:', err);
             alert((window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t('errors.failedToPublish') : 'Failed to publish reaction') + ': ' + err);
         })
-        .finally(function() { if (btn) btn.disabled = false; });
+        .finally(function() {
+            if (btn) {
+                btn.disabled = false;
+            }
+        });
 }
 
 // Long-press state for like button (1s = show emoji modal)
@@ -2995,11 +3528,17 @@ function likeEmojiModalEscapeHandler(e) {
 
 function handleLikeMouseDown(e) {
     var likeBtn = e.target.closest('.note-action[data-action="like"]');
-    if (!likeBtn) return;
+    if (!likeBtn) {
+        return;
+    }
     var noteId = likeBtn.dataset.noteId;
     var pubkey = likeBtn.dataset.pubkey;
-    if (!noteId || !pubkey) return;
-    if (likeLongPressTimer) clearTimeout(likeLongPressTimer);
+    if (!noteId || !pubkey) {
+        return;
+    }
+    if (likeLongPressTimer) {
+        clearTimeout(likeLongPressTimer);
+    }
     likeLongPressTimer = null;
     likeLongPressTriggered = false;
     likeButtonMouseDown = { noteId: noteId, pubkey: pubkey, button: likeBtn };
@@ -3033,7 +3572,9 @@ function handleLikeMouseLeave(e) {
     if (likeBtn && likeButtonMouseDown && likeButtonMouseDown.button === likeBtn) {
         var related = e.relatedTarget;
         if (!related || !likeBtn.contains(related)) {
-            if (likeLongPressTimer) clearTimeout(likeLongPressTimer);
+            if (likeLongPressTimer) {
+                clearTimeout(likeLongPressTimer);
+            }
             likeLongPressTimer = null;
             likeButtonMouseDown = null;
         }
@@ -3042,8 +3583,12 @@ function handleLikeMouseLeave(e) {
 
 // Create HTML for a note card: name, tick, NIP-05, time; content; action bar. idPrefix avoids id clashes. replyToPubkey adds "Replying to [name]" when set. isBookmarked toggles bookmark icon.
 function createNoteCard(note, noteIndex, idPrefix, replyToPubkey, isBookmarked) {
-    if (idPrefix === undefined) idPrefix = '';
-    if (isBookmarked === undefined) isBookmarked = isNoteBookmarked(note.id);
+    if (idPrefix === undefined) {
+        idPrefix = '';
+    }
+    if (isBookmarked === undefined) {
+        isBookmarked = isNoteBookmarked(note.id);
+    }
     var liked = isNoteLiked(note.id);
     const t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
     const time = formatTimestamp(note.created_at);
@@ -3098,7 +3643,9 @@ function createNoteCard(note, noteIndex, idPrefix, replyToPubkey, isBookmarked) 
 
 // Create a card for a kind 6 repost event. Header: [icon] reposter reposted (muted). Body: original author avatar/name/tick/nip05/age + content.
 function createRepostCard(repostEvent, noteIndex, idPrefix) {
-    if (idPrefix === undefined) idPrefix = '';
+    if (idPrefix === undefined) {
+        idPrefix = '';
+    }
     const t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
     const { name: reposterName } = getAuthorDisplay(repostEvent.pubkey);
     const safePubkey = escapeHtml(repostEvent.pubkey || '');
@@ -3108,8 +3655,11 @@ function createRepostCard(repostEvent, noteIndex, idPrefix) {
     if (repostEvent.content && repostEvent.content.trim()) {
         try {
             parsed = JSON.parse(repostEvent.content);
-            if (parsed && typeof parsed.content === 'string') innerContent = processNoteContent(parsed.content);
-            else innerContent = escapeHtml(t('note.repostedNote') || 'Reposted a note');
+            if (parsed && typeof parsed.content === 'string') {
+                innerContent = processNoteContent(parsed.content);
+            } else {
+                innerContent = escapeHtml(t('note.repostedNote') || 'Reposted a note');
+            }
         } catch (_) {
             innerContent = escapeHtml(t('note.repostedNote') || 'Reposted a note');
         }
@@ -3153,7 +3703,9 @@ function createRepostCard(repostEvent, noteIndex, idPrefix) {
     card.dataset.noteIndex = noteIndex;
     card.dataset.noteId = safeId;
     card.dataset.pubkey = repostEvent.pubkey || '';
-    if (dataOriginalPubkey) card.dataset.originalPubkey = dataOriginalPubkey;
+    if (dataOriginalPubkey) {
+        card.dataset.originalPubkey = dataOriginalPubkey;
+    }
     card.innerHTML = `
         <div class="note-repost-header">
             <img src="icons/repost.svg" alt="" class="note-repost-header-icon" aria-hidden="true">
@@ -3173,7 +3725,9 @@ function createRepostCard(repostEvent, noteIndex, idPrefix) {
 
 // Verify a note's signature. idPrefix optional (e.g. 'profile-' for profile feed).
 async function verifyNote(note, noteIndex, idPrefix) {
-    if (idPrefix === undefined) idPrefix = '';
+    if (idPrefix === undefined) {
+        idPrefix = '';
+    }
     try {
         const noteJson = JSON.stringify(note);
         const resultJson = await invoke('verify_event', { eventJson: noteJson });
@@ -3190,10 +3744,14 @@ async function verifyNote(note, noteIndex, idPrefix) {
 
 // Update the verification badge for a note (badgeSuffix optional, e.g. 'repost-orig-verify-' for repost embedded note)
 function updateVerificationBadge(noteIndex, result, idPrefix, badgeSuffix) {
-    if (idPrefix === undefined) idPrefix = '';
+    if (idPrefix === undefined) {
+        idPrefix = '';
+    }
     var suffix = badgeSuffix !== undefined ? badgeSuffix : 'verify-';
     const badgeEl = document.getElementById(idPrefix + suffix + noteIndex);
-    if (!badgeEl) return;
+    if (!badgeEl) {
+        return;
+    }
     const t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
     if (result.valid) {
         const title = t('note.signatureVerified');
@@ -3208,11 +3766,17 @@ function updateVerificationBadge(noteIndex, result, idPrefix, badgeSuffix) {
 
 // Verify the embedded note inside a kind 6 repost and update the original-author verification badge
 async function verifyRepostOriginal(repostEvent, noteIndex, idPrefix) {
-    if (idPrefix === undefined) idPrefix = '';
-    if (!repostEvent.content || !repostEvent.content.trim()) return;
+    if (idPrefix === undefined) {
+        idPrefix = '';
+    }
+    if (!repostEvent.content || !repostEvent.content.trim()) {
+        return;
+    }
     try {
         var parsed = JSON.parse(repostEvent.content);
-        if (!parsed || !parsed.pubkey) return;
+        if (!parsed || !parsed.pubkey) {
+            return;
+        }
         var noteJson = JSON.stringify(parsed);
         var resultJson = await invoke('verify_event', { eventJson: noteJson });
         if (resultJson) {
@@ -3242,27 +3806,49 @@ function formatTimestamp(timestamp) {
     const diffMonth = Math.floor(diffDay / 30);
     const diffYear = Math.floor(diffDay / 365);
 
-    if (diffSec < 60) return 'now';
-    if (diffMin < 60) return diffMin === 1 ? '1min' : diffMin + 'min';
-    if (diffHour < 24) return diffHour + 'h';
-    if (diffDay < 30) return diffDay === 1 ? '1 day' : diffDay + ' days';
-    if (diffMonth < 12) return diffMonth === 1 ? '1 month' : diffMonth + ' months';
+    if (diffSec < 60) {
+        return 'now';
+    }
+    if (diffMin < 60) {
+        return diffMin === 1 ? '1min' : diffMin + 'min';
+    }
+    if (diffHour < 24) {
+        return diffHour + 'h';
+    }
+    if (diffDay < 30) {
+        return diffDay === 1 ? '1 day' : diffDay + ' days';
+    }
+    if (diffMonth < 12) {
+        return diffMonth === 1 ? '1 month' : diffMonth + ' months';
+    }
     return diffYear === 1 ? '1 year' : diffYear + ' years';
 }
 
 // Validate and sanitize a URL: only allow http/https schemes, strip control characters.
 // Returns the sanitized URL or null if unsafe.
 function sanitizeUrl(url) {
-    if (!url) return null;
+    if (!url) {
+        return null;
+    }
     var trimmed = url.trim();
     // Only allow http: and https: schemes
-    if (!/^https?:\/\//i.test(trimmed)) return null;
+    if (!/^https?:\/\//i.test(trimmed)) {
+        return null;
+    }
     // Block URLs containing control characters, quotes, or angle brackets that could break attributes
-    if (/[\x00-\x1f"'<>`]/.test(trimmed)) return null;
+    if (/[\x00-\x1f"'<>`]/.test(trimmed)) {
+        return null;
+    }
     // Block javascript: in any encoding (e.g., via entity or percent-encoding in the already-escaped output)
-    if (/javascript\s*:/i.test(trimmed)) return null;
-    if (/data\s*:/i.test(trimmed)) return null;
-    if (/vbscript\s*:/i.test(trimmed)) return null;
+    if (/javascript\s*:/i.test(trimmed)) {
+        return null;
+    }
+    if (/data\s*:/i.test(trimmed)) {
+        return null;
+    }
+    if (/vbscript\s*:/i.test(trimmed)) {
+        return null;
+    }
     return trimmed;
 }
 
@@ -3274,7 +3860,9 @@ var NOSTR_EMBED_MAX_DEPTH = 5;
 // then safe URLs are converted to media elements and links.
 // depth: recursion depth for nested nostr: note embeds (0 = top-level)
 function processNoteContent(content, depth) {
-    if (depth === undefined) depth = 0;
+    if (depth === undefined) {
+        depth = 0;
+    }
 
     // Escape HTML first - this is the primary XSS defense
     let html = escapeHtml(content);
@@ -3353,12 +3941,16 @@ function createEmbeddedNoteCard(note, depth) {
 // Resolve nostr: URI placeholders and profile links inside a container.
 // Called after note cards are inserted into the DOM.
 async function resolveNostrEmbeds(container) {
-    if (!container) return;
+    if (!container) {
+        return;
+    }
 
     // --- 1. Collect all placeholders and profile links ---
     var embedPlaceholders = container.querySelectorAll('.nostr-embed-placeholder[data-nostr-ref]');
     var profileLinks = container.querySelectorAll('.nostr-profile-link[data-nostr-ref]');
-    if (embedPlaceholders.length === 0 && profileLinks.length === 0) return;
+    if (embedPlaceholders.length === 0 && profileLinks.length === 0) {
+        return;
+    }
 
     // --- 2. Decode all bech32 references in parallel ---
     var decoded = {};  // bech32 -> decoded JSON object
@@ -3369,7 +3961,9 @@ async function resolveNostrEmbeds(container) {
     await Promise.all(Array.from(allRefs).map(async function(ref) {
         try {
             var json = await invoke('decode_nostr_uri', { bech32_str: ref });
-            if (json) decoded[ref] = JSON.parse(json);
+            if (json) {
+                decoded[ref] = JSON.parse(json);
+            }
         } catch (e) {
             console.warn('[Plume] Failed to decode nostr URI:', ref, e);
         }
@@ -3379,7 +3973,9 @@ async function resolveNostrEmbeds(container) {
     var profilePubkeys = new Set();
     profileLinks.forEach(function(link) {
         var d = decoded[link.dataset.nostrRef];
-        if (!d) return;
+        if (!d) {
+            return;
+        }
         var pk = d.pubkey || null;
         if (pk) {
             link.dataset.pubkey = pk;
@@ -3405,7 +4001,9 @@ async function resolveNostrEmbeds(container) {
     // Update profile link display text
     profileLinks.forEach(function(link) {
         var pk = link.dataset.pubkey;
-        if (!pk) return;
+        if (!pk) {
+            return;
+        }
         var cached = state.profileCache[pk];
         var name = (cached && cached.name) ? cached.name : shortenKey(pk);
         link.textContent = '@' + name;
@@ -3416,7 +4014,9 @@ async function resolveNostrEmbeds(container) {
     var embedInfo = {};  // bech32 -> { eventId, relayHints }
     embedPlaceholders.forEach(function(el) {
         var d = decoded[el.dataset.nostrRef];
-        if (!d) return;
+        if (!d) {
+            return;
+        }
         var eid = d.event_id;
         if (eid) {
             eventIdsToFetch.add(eid);
@@ -3451,7 +4051,10 @@ async function resolveNostrEmbeds(container) {
     // Replace placeholders with embedded note cards
     embedPlaceholders.forEach(function(el) {
         var info = embedInfo[el.dataset.nostrRef];
-        if (!info) { el.remove(); return; }
+        if (!info) {
+            el.remove();
+            return;
+        }
         var ev = fetchedEvents[info.eventId];
         if (!ev) {
             // Could not fetch: show as a link to the note
@@ -3481,7 +4084,16 @@ function displayNotes(notes) {
     const t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
     const container = document.getElementById('notes-container');
     container.innerHTML = '';
-    notes = (notes || []).filter(function(n) { return !isNoteMuted(n); });
+    var hideEncrypted = !state.config || state.config.hide_encrypted_notes !== false;
+    notes = (notes || []).filter(function(n) {
+        if (isNoteMuted(n)) {
+            return false;
+        }
+        if (hideEncrypted && n.kind === 1 && isContentUnreadable(n.content)) {
+            return false;
+        }
+        return true;
+    });
     if (notes.length === 0) {
         container.innerHTML = `
             <div class="placeholder-message">
@@ -3539,7 +4151,9 @@ async function verifyNotesAsync(notesToVerify) {
 
 // Escape HTML to prevent XSS
 function escapeHtml(text) {
-    if (!text) return '';
+    if (!text) {
+        return '';
+    }
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
@@ -3615,14 +4229,22 @@ function openCompose(replyingTo) {
     const modal = document.getElementById('compose-modal');
     const replyCtx = document.getElementById('compose-reply-context');
     const replyName = document.getElementById('compose-reply-name');
-    if (replyCtx) replyCtx.style.display = state.replyingTo ? 'block' : 'none';
+    if (replyCtx) {
+        replyCtx.style.display = state.replyingTo ? 'block' : 'none';
+    }
     const t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
-    if (replyName && state.replyingTo) replyName.textContent = state.replyingTo.name ? `@${state.replyingTo.name}` : t('note.replyLabel');
+    if (replyName && state.replyingTo) {
+        replyName.textContent = state.replyingTo.name ? `@${state.replyingTo.name}` : t('note.replyLabel');
+    }
     modal.classList.add('active');
     const content = document.getElementById('compose-content');
-    if (content) content.value = '';
+    if (content) {
+        content.value = '';
+    }
     const charCountEl = document.getElementById('compose-char-count');
-    if (charCountEl) charCountEl.textContent = t('composeModal.charCount', { count: 0 });
+    if (charCountEl) {
+        charCountEl.textContent = t('composeModal.charCount', { count: 0 });
+    }
     hideComposeError();
     hideComposeStatus();
     enableComposeButton();
@@ -3675,7 +4297,9 @@ function disableComposeButton() {
     if (btn) {
         btn.disabled = true;
         const text = document.getElementById('compose-btn-text');
-        if (text) text.textContent = (window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t('composeModal.posting') : 'Posting…');
+        if (text) {
+            text.textContent = (window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t('composeModal.posting') : 'Posting…');
+        }
     }
 }
 
@@ -3685,7 +4309,9 @@ function enableComposeButton() {
     if (btn) {
         btn.disabled = false;
         const text = document.getElementById('compose-btn-text');
-        if (text) text.textContent = (window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t('composeModal.post') : 'Post');
+        if (text) {
+            text.textContent = (window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t('composeModal.post') : 'Post');
+        }
     }
 }
 
@@ -3752,8 +4378,11 @@ async function handleComposeSubmit(event) {
             state.replyingTo = null;
             setTimeout(() => {
                 closeCompose();
-                if (state.homeFeedMode === 'follows') pollForNewNotes();
-                else fetchNotesFirehoseOnHomeClick();
+                if (state.homeFeedMode === 'follows') {
+                    pollForNewNotes();
+                } else {
+                    fetchNotesFirehoseOnHomeClick();
+                }
             }, 1500);
         } else {
             // All relays failed
@@ -3803,22 +4432,52 @@ function updateSidebarAuthState() {
 
     if (!hasProfile) {
         // State 1: logged out
-        if (navMessages) { navMessages.classList.add('nav-muted'); navMessages.dataset.mutedReason = t('welcome.identityRequired') || 'Log in to access messages'; }
-        if (navNotifications) { navNotifications.classList.add('nav-muted'); navNotifications.dataset.mutedReason = t('welcome.identityRequired') || 'Log in to see notifications'; }
-        if (navBookmarks) { navBookmarks.classList.add('nav-muted'); navBookmarks.dataset.mutedReason = t('welcome.identityRequired') || 'Log in to access bookmarks'; }
-        if (composeBtn) { composeBtn.classList.add('nav-muted'); composeBtn.dataset.mutedReason = t('welcome.identityRequired') || 'Log in to compose notes'; }
+        if (navMessages) {
+            navMessages.classList.add('nav-muted');
+            navMessages.dataset.mutedReason = t('welcome.identityRequired') || 'Log in to access messages';
+        }
+        if (navNotifications) {
+            navNotifications.classList.add('nav-muted');
+            navNotifications.dataset.mutedReason = t('welcome.identityRequired') || 'Log in to see notifications';
+        }
+        if (navBookmarks) {
+            navBookmarks.classList.add('nav-muted');
+            navBookmarks.dataset.mutedReason = t('welcome.identityRequired') || 'Log in to access bookmarks';
+        }
+        if (composeBtn) {
+            composeBtn.classList.add('nav-muted');
+            composeBtn.dataset.mutedReason = t('welcome.identityRequired') || 'Log in to compose notes';
+        }
     } else if (!hasNsec) {
         // State 2: npub only (read-only)
-        if (navMessages) { navMessages.classList.add('nav-muted'); navMessages.dataset.mutedReason = t('welcome.nsecRequired') || 'Private key required to send messages'; }
-        if (navNotifications) navNotifications.classList.remove('nav-muted');
-        if (navBookmarks) navBookmarks.classList.remove('nav-muted');
-        if (composeBtn) { composeBtn.classList.add('nav-muted'); composeBtn.dataset.mutedReason = t('welcome.nsecRequired') || 'Private key required to publish notes'; }
+        if (navMessages) {
+            navMessages.classList.add('nav-muted');
+            navMessages.dataset.mutedReason = t('welcome.nsecRequired') || 'Private key required to send messages';
+        }
+        if (navNotifications) {
+            navNotifications.classList.remove('nav-muted');
+        }
+        if (navBookmarks) {
+            navBookmarks.classList.remove('nav-muted');
+        }
+        if (composeBtn) {
+            composeBtn.classList.add('nav-muted');
+            composeBtn.dataset.mutedReason = t('welcome.nsecRequired') || 'Private key required to publish notes';
+        }
     } else {
         // State 3: full auth
-        if (navMessages) navMessages.classList.remove('nav-muted');
-        if (navNotifications) navNotifications.classList.remove('nav-muted');
-        if (navBookmarks) navBookmarks.classList.remove('nav-muted');
-        if (composeBtn) composeBtn.classList.remove('nav-muted');
+        if (navMessages) {
+            navMessages.classList.remove('nav-muted');
+        }
+        if (navNotifications) {
+            navNotifications.classList.remove('nav-muted');
+        }
+        if (navBookmarks) {
+            navBookmarks.classList.remove('nav-muted');
+        }
+        if (composeBtn) {
+            composeBtn.classList.remove('nav-muted');
+        }
     }
 }
 
@@ -3826,7 +4485,9 @@ function showMutedTooltip(el) {
     var reason = el.dataset.mutedReason || 'Not available';
     // Remove any existing tooltip
     var existing = document.querySelector('.nav-muted-tooltip');
-    if (existing) existing.remove();
+    if (existing) {
+        existing.remove();
+    }
 
     var tip = document.createElement('div');
     tip.className = 'nav-muted-tooltip';
@@ -3849,12 +4510,16 @@ function showMutedTooltip(el) {
 async function populateWelcomeProfiles() {
     var container = document.getElementById('welcome-known-profiles');
     var list = document.getElementById('welcome-profiles-list');
-    if (!container || !list) return;
+    if (!container || !list) {
+        return;
+    }
 
     var profiles = [];
     try {
         var json = await invoke('list_profiles');
-        if (json) profiles = JSON.parse(json);
+        if (json) {
+            profiles = JSON.parse(json);
+        }
     } catch (e) {
         console.warn('[Plume] Failed to list profiles:', e);
     }
@@ -3882,13 +4547,15 @@ async function populateWelcomeProfiles() {
         li.addEventListener('click', function() { handleProfileSelect(p.npub); });
         // Handle avatar load error
         var img = li.querySelector('.known-profile-avatar');
-        if (img) img.addEventListener('error', function() {
-            this.style.display = 'none';
-            var placeholder = document.createElement('span');
-            placeholder.className = 'known-profile-placeholder';
-            placeholder.innerHTML = '<img src="icons/user.svg" alt="" class="nav-icon">';
-            this.parentNode.insertBefore(placeholder, this);
-        });
+        if (img) {
+            img.addEventListener('error', function() {
+                this.style.display = 'none';
+                var placeholder = document.createElement('span');
+                placeholder.className = 'known-profile-placeholder';
+                placeholder.innerHTML = '<img src="icons/user.svg" alt="" class="nav-icon">';
+                this.parentNode.insertBefore(placeholder, this);
+            });
+        }
         list.appendChild(li);
     });
 }
@@ -3897,13 +4564,17 @@ async function handleWelcomeLogin() {
     var npubEl = document.getElementById('welcome-npub');
     var nsecEl = document.getElementById('welcome-nsec');
     var errorEl = document.getElementById('welcome-login-error');
-    if (errorEl) errorEl.textContent = '';
+    if (errorEl) {
+        errorEl.textContent = '';
+    }
 
     var npub = (npubEl ? npubEl.value : '').trim();
     var nsec = (nsecEl ? nsecEl.value : '').trim();
 
     if (!npub) {
-        if (errorEl) errorEl.textContent = 'Public key is required';
+        if (errorEl) {
+            errorEl.textContent = 'Public key is required';
+        }
         return;
     }
 
@@ -3936,13 +4607,17 @@ async function handleWelcomeLogin() {
         // Fetch profile from relays in background to update sidebar avatar and local config
         fetchProfile();
     } catch (err) {
-        if (errorEl) errorEl.textContent = typeof err === 'string' ? err : (err.message || 'Login failed');
+        if (errorEl) {
+            errorEl.textContent = typeof err === 'string' ? err : (err.message || 'Login failed');
+        }
     }
 }
 
 async function handleWelcomeGenerate() {
     var btn = document.getElementById('welcome-generate-btn');
-    if (!btn) return;
+    if (!btn) {
+        return;
+    }
     var t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
     var originalText = btn.textContent;
 
@@ -4047,7 +4722,8 @@ async function handleLogout() {
             muted_words: [],
             muted_hashtags: [],
             bookmarks: [],
-            default_zap_amount: 42
+            default_zap_amount: 42,
+            hide_encrypted_notes: true
         };
         state.publicKeyHex = null;
         state.publicKeyNpub = null;
@@ -4056,7 +4732,10 @@ async function handleLogout() {
         state.notes = [];
         state.homeFeedMode = 'firehose';
         state.initialFeedLoadDone = false;
-        if (state.feedPollIntervalId) { clearInterval(state.feedPollIntervalId); state.feedPollIntervalId = null; }
+        if (state.feedPollIntervalId) {
+            clearInterval(state.feedPollIntervalId);
+            state.feedPollIntervalId = null;
+        }
 
         // Refresh app config for known profiles list
         try {
@@ -4093,7 +4772,9 @@ async function init() {
             item.addEventListener('click', function(e) {
                 e.preventDefault();
                 var view = item.dataset.view;
-                if (!view) return;
+                if (!view) {
+                    return;
+                }
                 // Muted nav items show a tooltip instead of navigating
                 if (item.classList.contains('nav-muted')) {
                     showMutedTooltip(item);
@@ -4141,10 +4822,14 @@ async function init() {
         // Settings modal (Account) – open from Settings menu
         const closeSettingsBtn = document.getElementById('close-settings');
         const settingsModal = document.getElementById('settings-modal');
-        if (closeSettingsBtn) closeSettingsBtn.addEventListener('click', closeSettings);
+        if (closeSettingsBtn) {
+            closeSettingsBtn.addEventListener('click', closeSettings);
+        }
         if (settingsModal) {
             settingsModal.addEventListener('click', (e) => {
-                if (e.target === e.currentTarget) closeSettings();
+                if (e.target === e.currentTarget) {
+                    closeSettings();
+                }
             });
         }
 
@@ -4164,7 +4849,12 @@ async function init() {
         document.getElementById('settings-follows-save')?.addEventListener('click', saveFollowsPanel);
         document.getElementById('settings-zaps-save')?.addEventListener('click', saveZapsFromPanel);
         var settingsKeysForm = document.getElementById('settings-keys-form');
-        if (settingsKeysForm) settingsKeysForm.addEventListener('submit', function(e) { e.preventDefault(); saveKeysPanel(e); });
+        if (settingsKeysForm) {
+            settingsKeysForm.addEventListener('submit', function(e) {
+                e.preventDefault();
+                saveKeysPanel(e);
+            });
+        }
         document.getElementById('settings-keys-copy-nsec')?.addEventListener('click', copyNsecToClipboard);
 
         // Messages view: conversation list, send button, Message from profile
@@ -4174,7 +4864,9 @@ async function init() {
                 var item = e.target.closest('.conversation-item');
                 if (item) {
                     var other = item.getAttribute('data-other-pubkey');
-                    if (other) selectConversation(other);
+                    if (other) {
+                        selectConversation(other);
+                    }
                 }
             });
         }
@@ -4182,7 +4874,10 @@ async function init() {
         var messageInput = document.getElementById('message-input');
         if (messageInput) {
             messageInput.addEventListener('keydown', function(e) {
-                if (e.key === 'Enter') { e.preventDefault(); sendMessage(); }
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    sendMessage();
+                }
             });
         }
         document.getElementById('message-user-btn')?.addEventListener('click', function() {
@@ -4197,7 +4892,9 @@ async function init() {
             window.__TAURI__.event.listen('dm-received', function(ev) {
                 var payload = ev.payload;
                 var otherPubkey = Array.isArray(payload) ? payload[0] : (payload && payload.other_pubkey);
-                if (!otherPubkey) return;
+                if (!otherPubkey) {
+                    return;
+                }
                 var norm = (state.selectedConversation || '').toLowerCase();
                 var otherNorm = (otherPubkey || '').toLowerCase();
                 if (state.currentView === 'messages' && norm === otherNorm) {
@@ -4221,9 +4918,13 @@ async function init() {
         document.getElementById('follows-add-btn')?.addEventListener('click', function() {
             var t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
             var input = document.getElementById('follows-add-input');
-            if (!input) return;
+            if (!input) {
+                return;
+            }
             var raw = (input.value || '').trim();
-            if (!raw) return;
+            if (!raw) {
+                return;
+            }
             if (state.followsPanelLoading) {
                 alert(t('settings.followsStillLoading') || 'Follow list is still loading, please wait.');
                 return;
@@ -4234,7 +4935,9 @@ async function init() {
                     return;
                 }
                 var hex = r.hex;
-                if (!state.followsPanelList) state.followsPanelList = [];
+                if (!state.followsPanelList) {
+                    state.followsPanelList = [];
+                }
                 var exists = state.followsPanelList.some(function(x) { return (x.pubkey || '').toLowerCase() === hex.toLowerCase(); });
                 if (exists) {
                     alert(t('settings.followsAlreadyExists') || 'This key is already in your follow list.');
@@ -4255,15 +4958,25 @@ async function init() {
         });
         document.getElementById('muted-user-add-btn')?.addEventListener('click', function() {
             var input = document.getElementById('muted-user-add-input');
-            if (!input) return;
+            if (!input) {
+                return;
+            }
             var raw = (input.value || '').trim();
-            if (!raw) return;
+            if (!raw) {
+                return;
+            }
             validatePublicKey(raw).then(function(r) {
-                if (!r.valid || !r.hex) return;
+                if (!r.valid || !r.hex) {
+                    return;
+                }
                 var hex = r.hex;
-                if (!state.mutedUsersPanelList) state.mutedUsersPanelList = [];
+                if (!state.mutedUsersPanelList) {
+                    state.mutedUsersPanelList = [];
+                }
                 var exists = state.mutedUsersPanelList.some(function(x) { return (x.pubkey || '').toLowerCase() === hex.toLowerCase(); });
-                if (exists) return;
+                if (exists) {
+                    return;
+                }
                 state.mutedUsersPanelList.push({ pubkey: hex, checked: true });
                 input.value = '';
                 renderMutedPanels();
@@ -4277,35 +4990,53 @@ async function init() {
                 document.querySelectorAll('.muted-tab').forEach(function(x) { x.classList.remove('active'); });
                 document.querySelectorAll('.muted-tab-panel').forEach(function(x) { x.style.display = 'none'; });
                 var panel = document.getElementById('muted-tab-' + tabKey);
-                if (panel) panel.style.display = 'block';
+                if (panel) {
+                    panel.style.display = 'block';
+                }
                 this.classList.add('active');
             });
         });
         document.getElementById('muted-word-add')?.addEventListener('click', function() {
             var input = document.getElementById('muted-word-input');
-            if (!input || !state.config) return;
+            if (!input || !state.config) {
+                return;
+            }
             var w = (input.value && input.value.trim()) || '';
-            if (!w) return;
+            if (!w) {
+                return;
+            }
             ensureMutedConfig();
-            if (state.config.muted_words.indexOf(w) === -1) state.config.muted_words.push(w);
+            if (state.config.muted_words.indexOf(w) === -1) {
+                state.config.muted_words.push(w);
+            }
             input.value = '';
             renderMutedPanels();
         });
         document.getElementById('muted-hashtag-add')?.addEventListener('click', function() {
             var input = document.getElementById('muted-hashtag-input');
-            if (!input || !state.config) return;
+            if (!input || !state.config) {
+                return;
+            }
             var h = (input.value && input.value.trim()).replace(/^#/, '') || '';
-            if (!h) return;
+            if (!h) {
+                return;
+            }
             ensureMutedConfig();
-            if (state.config.muted_hashtags.indexOf(h) === -1) state.config.muted_hashtags.push(h);
+            if (state.config.muted_hashtags.indexOf(h) === -1) {
+                state.config.muted_hashtags.push(h);
+            }
             input.value = '';
             renderMutedPanels();
         });
         document.getElementById('settings-detail')?.addEventListener('click', function(e) {
             var remove = e.target.closest('.muted-item-remove');
-            if (!remove || !state.config) return;
+            if (!remove || !state.config) {
+                return;
+            }
             var li = remove.closest('li');
-            if (!li) return;
+            if (!li) {
+                return;
+            }
             ensureMutedConfig();
             if (li.dataset.word) {
                 state.config.muted_words = state.config.muted_words.filter(function(w) { return w !== li.dataset.word; });
@@ -4317,16 +5048,24 @@ async function init() {
         
         // Set up settings form
         const settingsForm = document.getElementById('settings-form');
-        if (settingsForm) settingsForm.addEventListener('submit', handleSettingsSubmit);
+        if (settingsForm) {
+            settingsForm.addEventListener('submit', handleSettingsSubmit);
+        }
         
         // Set up compose modal
         const composeBtn = document.getElementById('compose-btn');
         const closeComposeBtn = document.getElementById('close-compose');
         const cancelComposeBtn = document.getElementById('cancel-compose');
         const composeModal = document.getElementById('compose-modal');
-        if (composeBtn) composeBtn.addEventListener('click', function() { console.log('[Plume] compose btn clicked'); openCompose(); });
-        if (closeComposeBtn) closeComposeBtn.addEventListener('click', closeCompose);
-        if (cancelComposeBtn) cancelComposeBtn.addEventListener('click', closeCompose);
+        if (composeBtn) {
+            composeBtn.addEventListener('click', function() { console.log('[Plume] compose btn clicked'); openCompose(); });
+        }
+        if (closeComposeBtn) {
+            closeComposeBtn.addEventListener('click', closeCompose);
+        }
+        if (cancelComposeBtn) {
+            cancelComposeBtn.addEventListener('click', closeCompose);
+        }
         if (composeModal) {
             composeModal.addEventListener('click', (e) => {
                 if (e.target === e.currentTarget) {
@@ -4338,29 +5077,50 @@ async function init() {
         var profileQrBtn = document.getElementById('profile-qr-btn');
         var closeProfileQrBtn = document.getElementById('close-profile-qr');
         var profileQrModal = document.getElementById('profile-qr-modal');
-        if (profileQrBtn) profileQrBtn.addEventListener('click', openProfileQRModal);
-        if (closeProfileQrBtn) closeProfileQrBtn.addEventListener('click', closeProfileQRModal);
+        if (profileQrBtn) {
+            profileQrBtn.addEventListener('click', openProfileQRModal);
+        }
+        if (closeProfileQrBtn) {
+            closeProfileQrBtn.addEventListener('click', closeProfileQRModal);
+        }
         if (profileQrModal) {
             profileQrModal.addEventListener('click', function(e) {
-                if (e.target === e.currentTarget) closeProfileQRModal();
+                if (e.target === e.currentTarget) {
+                    closeProfileQRModal();
+                }
             });
         }
 
         var editProfileBtn = document.getElementById('edit-profile-btn');
         var editProfileForm = document.getElementById('edit-profile-form');
-        if (editProfileBtn) editProfileBtn.addEventListener('click', openEditProfileInSettings);
-        if (editProfileForm) editProfileForm.addEventListener('submit', function(e) { e.preventDefault(); handleEditProfileSubmit(e); });
+        if (editProfileBtn) {
+            editProfileBtn.addEventListener('click', openEditProfileInSettings);
+        }
+        if (editProfileForm) {
+            editProfileForm.addEventListener('submit', function(e) {
+                e.preventDefault();
+                handleEditProfileSubmit(e);
+            });
+        }
 
         var followBtn = document.getElementById('follow-btn');
-        if (followBtn) followBtn.addEventListener('click', handleFollowClick);
+        if (followBtn) {
+            followBtn.addEventListener('click', handleFollowClick);
+        }
         var muteBtn = document.getElementById('mute-btn');
-        if (muteBtn) muteBtn.addEventListener('click', handleMuteClick);
+        if (muteBtn) {
+            muteBtn.addEventListener('click', handleMuteClick);
+        }
         
         // Set up compose form
         const composeForm = document.getElementById('compose-form');
         const composeContent = document.getElementById('compose-content');
-        if (composeForm) composeForm.addEventListener('submit', handleComposeSubmit);
-        if (composeContent) composeContent.addEventListener('input', updateCharCount);
+        if (composeForm) {
+            composeForm.addEventListener('submit', handleComposeSubmit);
+        }
+        if (composeContent) {
+            composeContent.addEventListener('input', updateCharCount);
+        }
 
         // Generate keys button (on profile when no key)
         debugLog('Looking for generate-keys-btn...');
@@ -4426,16 +5186,24 @@ async function init() {
                 e.preventDefault();
                 var card = replyBtn.closest('.note-card');
                 var noteId = (replyBtn.dataset.noteId || (card && card.dataset.noteId)) || '';
-                if (!noteId) return;
+                if (!noteId) {
+                    return;
+                }
                 var note = (state.notes && state.notes.find(function(n) { return n.id === noteId; })) ||
                     (state.profileNotes && state.profileNotes.find(function(n) { return n.id === noteId; })) ||
                     (state.bookmarkNotes && state.bookmarkNotes.find(function(n) { return n.id === noteId; }));
                 if (!note && state.noteDetailReplies) {
                     var found = state.noteDetailReplies.find(function(x) { return x.note.id === noteId; });
-                    if (found) note = found.note;
+                    if (found) {
+                        note = found.note;
+                    }
                 }
-                if (!note && state.noteDetailAncestors) note = state.noteDetailAncestors.find(function(n) { return n.id === noteId; });
-                if (!note && state.noteDetailSubject && state.noteDetailSubject.id === noteId) note = state.noteDetailSubject;
+                if (!note && state.noteDetailAncestors) {
+                    note = state.noteDetailAncestors.find(function(n) { return n.id === noteId; });
+                }
+                if (!note && state.noteDetailSubject && state.noteDetailSubject.id === noteId) {
+                    note = state.noteDetailSubject;
+                }
                 openNoteDetail(note || noteId);
                 return;
             }
@@ -4445,7 +5213,9 @@ async function init() {
                 e.stopPropagation();
                 var targetPubkey = zapBtn.getAttribute('data-zap-target-pubkey');
                 var eventId = zapBtn.getAttribute('data-zap-event-id') || (zapBtn.closest('.note-card') && zapBtn.closest('.note-card').dataset.noteId);
-                if (targetPubkey) performZap(targetPubkey, eventId, zapBtn);
+                if (targetPubkey) {
+                    performZap(targetPubkey, eventId, zapBtn);
+                }
                 return;
             }
             var likeBtn = e.target.closest('.note-action[data-action="like"]');
@@ -4460,7 +5230,9 @@ async function init() {
                 var card = repostBtn.closest('.note-card');
                 var noteId = (repostBtn.dataset.noteId || (card && card.dataset.noteId)) || '';
                 var pubkey = (repostBtn.dataset.pubkey || (card && card.dataset.pubkey)) || '';
-                if (!noteId || !pubkey) return;
+                if (!noteId || !pubkey) {
+                    return;
+                }
                 var note = (state.notes && state.notes.find(function(n) { return n.id === noteId; })) ||
                     (state.profileNotes && state.profileNotes.find(function(n) { return n.id === noteId; })) ||
                     (state.bookmarkNotes && state.bookmarkNotes.find(function(n) { return n.id === noteId; }));
@@ -4481,8 +5253,12 @@ async function init() {
             if (bookmarkBtn) {
                 e.preventDefault();
                 var noteId = bookmarkBtn.dataset.noteId || (bookmarkBtn.closest('.note-card') && bookmarkBtn.closest('.note-card').dataset.noteId);
-                if (!noteId || !state.config) return;
-                if (!Array.isArray(state.config.bookmarks)) state.config.bookmarks = [];
+                if (!noteId || !state.config) {
+                    return;
+                }
+                if (!Array.isArray(state.config.bookmarks)) {
+                    state.config.bookmarks = [];
+                }
                 var idx = state.config.bookmarks.indexOf(noteId);
                 if (idx === -1) {
                     state.config.bookmarks.push(noteId);
@@ -4492,12 +5268,16 @@ async function init() {
                 saveConfig();
                 var img = bookmarkBtn.querySelector('img');
                 var nowBookmarked = idx === -1;
-                if (img) img.src = nowBookmarked ? 'icons/bookmark-filled.svg' : 'icons/bookmark.svg';
+                if (img) {
+                    img.src = nowBookmarked ? 'icons/bookmark-filled.svg' : 'icons/bookmark.svg';
+                }
                 var t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
                 var label = nowBookmarked ? (t('note.unbookmark') || 'Unbookmark') : (t('note.bookmark') || 'Bookmark');
                 bookmarkBtn.setAttribute('title', label);
                 bookmarkBtn.setAttribute('aria-label', label);
-                if (img) img.setAttribute('alt', label);
+                if (img) {
+                    img.setAttribute('alt', label);
+                }
                 // In bookmarks view we do not remove the card on unbookmark; list refreshes when user leaves and returns.
                 return;
             }
@@ -4545,14 +5325,18 @@ async function init() {
         var likeEmojiModal = document.getElementById('like-emoji-modal');
         if (likeEmojiModal) {
             likeEmojiModal.addEventListener('click', function(e) {
-                if (e.target === likeEmojiModal) closeLikeEmojiModal();
+                if (e.target === likeEmojiModal) {
+                    closeLikeEmojiModal();
+                }
             });
         }
 
         var noteDetailBack = document.getElementById('note-detail-back');
-        if (noteDetailBack) noteDetailBack.addEventListener('click', function() {
-            switchView(state.noteDetailPreviousView || 'feed');
-        });
+        if (noteDetailBack) {
+            noteDetailBack.addEventListener('click', function() {
+                switchView(state.noteDetailPreviousView || 'feed');
+            });
+        }
 
         console.log('[Plume] all sync listeners attached, about to await i18n...');
         await (window.PlumeI18n && window.PlumeI18n.init ? window.PlumeI18n.init() : Promise.resolve());
@@ -4590,8 +5374,12 @@ async function init() {
         if (noteDetailReplyBtn && noteDetailReplyContent) {
             noteDetailReplyBtn.addEventListener('click', async function() {
                 var content = noteDetailReplyContent.value.trim();
-                if (!content) return;
-                if (!state.noteDetailSubject || !state.noteDetailSubjectId) return;
+                if (!content) {
+                    return;
+                }
+                if (!state.noteDetailSubject || !state.noteDetailSubjectId) {
+                    return;
+                }
                 var sub = state.noteDetailSubject;
                 noteDetailReplyBtn.disabled = true;
                 try {

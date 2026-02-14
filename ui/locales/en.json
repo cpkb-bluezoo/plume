@@ -74,6 +74,7 @@
     "homeFeedModalHint": "Choose what appears on your Home page.",
     "homeFeedFirehose": "Firehose – notes from everyone (global feed)",
     "homeFeedFollows": "Follows – notes only from people you follow",
+    "hideEncryptedNotes": "Hide encrypted / unreadable notes",
     "mediaUploads": "Media uploads",
     "mediaServerHint": "A media server hosts images and files you upload. Some servers may restrict who can upload.",
     "mediaServerUrl": "Media server URL",

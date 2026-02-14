@@ -429,47 +429,61 @@ pub fn filter_to_json(filter: &Filter) -> String {
     
     // ids
     if let Some(ref ids) = filter.ids {
-        if !first { json.push_str(","); }
+        if !first {
+            json.push_str(",");
+        }
         first = false;
         json.push_str("\"ids\":[");
         for (i, id) in ids.iter().enumerate() {
             json.push_str("\"");
             json.push_str(&escape_json_string(id));
             json.push_str("\"");
-            if i < ids.len() - 1 { json.push_str(","); }
+            if i < ids.len() - 1 {
+                json.push_str(",");
+            }
         }
         json.push_str("]");
     }
     
     // authors
     if let Some(ref authors) = filter.authors {
-        if !first { json.push_str(","); }
+        if !first {
+            json.push_str(",");
+        }
         first = false;
         json.push_str("\"authors\":[");
         for (i, author) in authors.iter().enumerate() {
             json.push_str("\"");
             json.push_str(&escape_json_string(author));
             json.push_str("\"");
-            if i < authors.len() - 1 { json.push_str(","); }
+            if i < authors.len() - 1 {
+                json.push_str(",");
+            }
         }
         json.push_str("]");
     }
     
     // kinds
     if let Some(ref kinds) = filter.kinds {
-        if !first { json.push_str(","); }
+        if !first {
+            json.push_str(",");
+        }
         first = false;
         json.push_str("\"kinds\":[");
         for (i, kind) in kinds.iter().enumerate() {
             json.push_str(&kind.to_string());
-            if i < kinds.len() - 1 { json.push_str(","); }
+            if i < kinds.len() - 1 {
+                json.push_str(",");
+            }
         }
         json.push_str("]");
     }
     
     // since
     if let Some(since) = filter.since {
-        if !first { json.push_str(","); }
+        if !first {
+            json.push_str(",");
+        }
         first = false;
         json.push_str("\"since\":");
         json.push_str(&since.to_string());
@@ -477,7 +491,9 @@ pub fn filter_to_json(filter: &Filter) -> String {
     
     // until
     if let Some(until) = filter.until {
-        if !first { json.push_str(","); }
+        if !first {
+            json.push_str(",");
+        }
         first = false;
         json.push_str("\"until\":");
         json.push_str(&until.to_string());
@@ -485,7 +501,9 @@ pub fn filter_to_json(filter: &Filter) -> String {
     
     // limit
     if let Some(limit) = filter.limit {
-        if !first { json.push_str(","); }
+        if !first {
+            json.push_str(",");
+        }
         first = false;
         json.push_str("\"limit\":");
         json.push_str(&limit.to_string());
@@ -493,28 +511,36 @@ pub fn filter_to_json(filter: &Filter) -> String {
     
     // #p tags (for filtering by referenced pubkeys)
     if let Some(ref p_tags) = filter.p_tags {
-        if !first { json.push_str(","); }
+        if !first {
+            json.push_str(",");
+        }
         first = false;
         json.push_str("\"#p\":[");
         for (i, pubkey) in p_tags.iter().enumerate() {
             json.push_str("\"");
             json.push_str(&escape_json_string(pubkey));
             json.push_str("\"");
-            if i < p_tags.len() - 1 { json.push_str(","); }
+            if i < p_tags.len() - 1 {
+                json.push_str(",");
+            }
         }
         json.push_str("]");
     }
 
     // #e tags (for filtering by referenced event IDs, e.g. replies)
     if let Some(ref e_tags) = filter.e_tags {
-        if !first { json.push_str(","); }
+        if !first {
+            json.push_str(",");
+        }
         let _ = first;
         json.push_str("\"#e\":[");
         for (i, eid) in e_tags.iter().enumerate() {
             json.push_str("\"");
             json.push_str(&escape_json_string(eid));
             json.push_str("\"");
-            if i < e_tags.len() - 1 { json.push_str(","); }
+            if i < e_tags.len() - 1 {
+                json.push_str(",");
+            }
         }
         json.push_str("]");
     }
@@ -717,56 +743,72 @@ pub fn profile_to_json(profile: &ProfileMetadata) -> String {
     let mut first = true;
     
     if let Some(ref name) = profile.name {
-        if !first { json.push_str(","); }
+        if !first {
+            json.push_str(",");
+        }
         first = false;
         json.push_str("\"name\":\"");
         json.push_str(&escape_json_string(name));
         json.push_str("\"");
     }
     if let Some(ref about) = profile.about {
-        if !first { json.push_str(","); }
+        if !first {
+            json.push_str(",");
+        }
         first = false;
         json.push_str("\"about\":\"");
         json.push_str(&escape_json_string(about));
         json.push_str("\"");
     }
     if let Some(ref picture) = profile.picture {
-        if !first { json.push_str(","); }
+        if !first {
+            json.push_str(",");
+        }
         first = false;
         json.push_str("\"picture\":\"");
         json.push_str(&escape_json_string(picture));
         json.push_str("\"");
     }
     if let Some(ref nip05) = profile.nip05 {
-        if !first { json.push_str(","); }
+        if !first {
+            json.push_str(",");
+        }
         first = false;
         json.push_str("\"nip05\":\"");
         json.push_str(&escape_json_string(nip05));
         json.push_str("\"");
     }
     if let Some(ref banner) = profile.banner {
-        if !first { json.push_str(","); }
+        if !first {
+            json.push_str(",");
+        }
         first = false;
         json.push_str("\"banner\":\"");
         json.push_str(&escape_json_string(banner));
         json.push_str("\"");
     }
     if let Some(ref website) = profile.website {
-        if !first { json.push_str(","); }
+        if !first {
+            json.push_str(",");
+        }
         first = false;
         json.push_str("\"website\":\"");
         json.push_str(&escape_json_string(website));
         json.push_str("\"");
     }
     if let Some(ref lud16) = profile.lud16 {
-        if !first { json.push_str(","); }
+        if !first {
+            json.push_str(",");
+        }
         first = false;
         json.push_str("\"lud16\":\"");
         json.push_str(&escape_json_string(lud16));
         json.push_str("\"");
     }
     if let Some(created_at) = profile.created_at {
-        if !first { json.push_str(","); }
+        if !first {
+            json.push_str(",");
+        }
         let _ = first;
         json.push_str("\"created_at\":");
         json.push_str(&created_at.to_string());
@@ -782,49 +824,63 @@ pub fn profile_to_content(profile: &ProfileMetadata) -> String {
     json.push_str("{");
     let mut first = true;
     if let Some(ref name) = profile.name {
-        if !first { json.push_str(","); }
+        if !first {
+            json.push_str(",");
+        }
         first = false;
         json.push_str("\"name\":\"");
         json.push_str(&escape_json_string(name));
         json.push_str("\"");
     }
     if let Some(ref about) = profile.about {
-        if !first { json.push_str(","); }
+        if !first {
+            json.push_str(",");
+        }
         first = false;
         json.push_str("\"about\":\"");
         json.push_str(&escape_json_string(about));
         json.push_str("\"");
     }
     if let Some(ref picture) = profile.picture {
-        if !first { json.push_str(","); }
+        if !first {
+            json.push_str(",");
+        }
         first = false;
         json.push_str("\"picture\":\"");
         json.push_str(&escape_json_string(picture));
         json.push_str("\"");
     }
     if let Some(ref nip05) = profile.nip05 {
-        if !first { json.push_str(","); }
+        if !first {
+            json.push_str(",");
+        }
         first = false;
         json.push_str("\"nip05\":\"");
         json.push_str(&escape_json_string(nip05));
         json.push_str("\"");
     }
     if let Some(ref banner) = profile.banner {
-        if !first { json.push_str(","); }
+        if !first {
+            json.push_str(",");
+        }
         first = false;
         json.push_str("\"banner\":\"");
         json.push_str(&escape_json_string(banner));
         json.push_str("\"");
     }
     if let Some(ref website) = profile.website {
-        if !first { json.push_str(","); }
+        if !first {
+            json.push_str(",");
+        }
         first = false;
         json.push_str("\"website\":\"");
         json.push_str(&escape_json_string(website));
         json.push_str("\"");
     }
     if let Some(ref lud16) = profile.lud16 {
-        if !first { json.push_str(","); }
+        if !first {
+            json.push_str(",");
+        }
         let _ = first;
         json.push_str("\"lud16\":\"");
         json.push_str(&escape_json_string(lud16));

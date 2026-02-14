@@ -74,6 +74,7 @@
     "homeFeedModalHint": "Wählen Sie, was auf Ihrer Startseite angezeigt wird.",
     "homeFeedFirehose": "Firehose – Notizen von allen (globaler Feed)",
     "homeFeedFollows": "Folgen – nur Notizen von Personen, denen Sie folgen",
+    "hideEncryptedNotes": "Verschlüsselte / unlesbare Notizen ausblenden",
     "mediaUploads": "Medien-Uploads",
     "mediaServerHint": "Ein Medienserver hostet Bilder und Dateien, die Sie hochladen. Einige Server können einschränken, wer hochladen darf.",
     "mediaServerUrl": "Medienserver-URL",

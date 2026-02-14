@@ -74,6 +74,7 @@
     "homeFeedModalHint": "Choisissez ce qui apparaît sur votre page d'accueil.",
     "homeFeedFirehose": "Firehose – notes de tout le monde (fil global)",
     "homeFeedFollows": "Abonnements – notes uniquement des personnes que vous suivez",
+    "hideEncryptedNotes": "Masquer les notes chiffrées / illisibles",
     "mediaUploads": "Téléversements média",
     "mediaServerHint": "Un serveur média héberge les images et fichiers que vous téléversez. Certains serveurs peuvent restreindre les téléversements.",
     "mediaServerUrl": "URL du serveur média",

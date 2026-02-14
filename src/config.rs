@@ -50,6 +50,7 @@ pub struct Config {
     pub muted_hashtags: Vec<String>,
     pub bookmarks: Vec<String>,
     pub default_zap_amount: u32,
+    pub hide_encrypted_notes: bool,
 }
 
 impl Config {
@@ -77,6 +78,7 @@ impl Config {
             muted_hashtags: Vec::new(),
             bookmarks: Vec::new(),
             default_zap_amount: 42,
+            hide_encrypted_notes: true,
         }
     }
 }
@@ -114,6 +116,7 @@ struct ConfigHandler {
     home_feed_mode: String,
     media_server_url: String,
     default_zap_amount: u32,
+    hide_encrypted_notes: bool,
     // Array fields
     relays: Vec<String>,
     following: Vec<String>,
@@ -143,6 +146,7 @@ impl ConfigHandler {
             home_feed_mode: String::from("firehose"),
             media_server_url: String::from("https://blossom.primal.net"),
             default_zap_amount: 42,
+            hide_encrypted_notes: true,
             relays: Vec::new(),
             following: Vec::new(),
             muted_users: Vec::new(),
@@ -215,6 +219,7 @@ impl ConfigHandler {
             muted_words: self.muted_words,
             muted_hashtags: self.muted_hashtags,
             bookmarks: self.bookmarks,
+            hide_encrypted_notes: self.hide_encrypted_notes,
         }
     }
 }
@@ -318,7 +323,15 @@ impl JsonContentHandler for ConfigHandler {
         }
     }
 
-    fn boolean_value(&mut self, _value: bool) {}
+    fn boolean_value(&mut self, value: bool) {
+        if self.depth == 1 {
+            if let Some(ref f) = self.current_field {
+                if f == "hide_encrypted_notes" {
+                    self.hide_encrypted_notes = value;
+                }
+            }
+        }
+    }
     fn null_value(&mut self) {}
 }
 
@@ -350,7 +363,9 @@ pub fn config_to_json(config: &Config) -> String {
         json.push_str("    \"");
         json.push_str(&escape_json_string(relay));
         json.push_str("\"");
-        if index < config.relays.len() - 1 { json.push_str(","); }
+        if index < config.relays.len() - 1 {
+            json.push_str(",");
+        }
         json.push_str("\n");
     }
     json.push_str("  ],\n");
@@ -400,6 +415,10 @@ pub fn config_to_json(config: &Config) -> String {
 
     json.push_str("  \"default_zap_amount\": ");
     json.push_str(&config.default_zap_amount.to_string());
+    json.push_str(",\n");
+
+    json.push_str("  \"hide_encrypted_notes\": ");
+    json.push_str(if config.hide_encrypted_notes { "true" } else { "false" });
     json.push_str("\n");
 
     json.push_str("}");
@@ -428,7 +447,9 @@ fn write_string_array(json: &mut String, name: &str, items: &[String]) {
         json.push_str("    \"");
         json.push_str(&escape_json_string(s));
         json.push_str("\"");
-        if i < items.len() - 1 { json.push_str(","); }
+        if i < items.len() - 1 {
+            json.push_str(",");
+        }
         json.push_str("\n");
     }
     json.push_str("  ]");
@@ -622,7 +643,9 @@ pub fn app_config_to_json(config: &AppConfig) -> String {
         json.push_str("    \"");
         json.push_str(&escape_json_string(npub));
         json.push_str("\"");
-        if i < config.known_profiles.len() - 1 { json.push_str(","); }
+        if i < config.known_profiles.len() - 1 {
+            json.push_str(",");
+        }
         json.push_str("\n");
     }
     json.push_str("  ]\n");

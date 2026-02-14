@@ -194,13 +194,19 @@ fn decode_nostr_uri(bech32_str: String) -> Result<String, String> {
         json.push_str(&decoded.event_id);
         json.push_str("\",\"relays\":[");
         for (i, r) in decoded.relays.iter().enumerate() {
-            if i > 0 { json.push(','); }
+            if i > 0 {
+                json.push(',');
+            }
             json.push('"');
             // Escape any quotes in relay URL
             for ch in r.chars() {
-                if ch == '"' { json.push_str("\\\""); }
-                else if ch == '\\' { json.push_str("\\\\"); }
-                else { json.push(ch); }
+                if ch == '"' {
+                    json.push_str("\\\"");
+                } else if ch == '\\' {
+                    json.push_str("\\\\");
+                } else {
+                    json.push(ch);
+                }
             }
             json.push('"');
         }
@@ -219,12 +225,18 @@ fn decode_nostr_uri(bech32_str: String) -> Result<String, String> {
         json.push_str(&decoded.pubkey);
         json.push_str("\",\"relays\":[");
         for (i, r) in decoded.relays.iter().enumerate() {
-            if i > 0 { json.push(','); }
+            if i > 0 {
+                json.push(',');
+            }
             json.push('"');
             for ch in r.chars() {
-                if ch == '"' { json.push_str("\\\""); }
-                else if ch == '\\' { json.push_str("\\\\"); }
-                else { json.push(ch); }
+                if ch == '"' {
+                    json.push_str("\\\"");
+                } else if ch == '\\' {
+                    json.push_str("\\\\");
+                } else {
+                    json.push(ch);
+                }
             }
             json.push('"');
         }
@@ -720,7 +732,9 @@ async fn fetch_relay_list(pubkey: String, relay_urls: Vec<String>) -> Result<Str
         Ok(urls) => {
             let mut json = String::from("[");
             for (i, url) in urls.iter().enumerate() {
-                if i > 0 { json.push_str(","); }
+                if i > 0 {
+                    json.push_str(",");
+                }
                 json.push('"');
                 json.push_str(&url.replace('\\', "\\\\").replace('"', "\\\""));
                 json.push('"');
@@ -957,10 +971,14 @@ impl JsonContentHandler for LnurlResponseHandler {
     fn end_object(&mut self) {}
     fn start_array(&mut self) {}
     fn end_array(&mut self) {}
-    fn key(&mut self, key: &str) { self.current_field = Some(key.to_string()); }
+    fn key(&mut self, key: &str) {
+        self.current_field = Some(key.to_string());
+    }
     fn string_value(&mut self, value: &str) {
         if let Some(ref f) = self.current_field {
-            if f == "callback" { self.callback = Some(value.to_string()); }
+            if f == "callback" {
+                self.callback = Some(value.to_string());
+            }
         }
     }
     fn number_value(&mut self, number: JsonNumber) {
@@ -974,7 +992,9 @@ impl JsonContentHandler for LnurlResponseHandler {
     }
     fn boolean_value(&mut self, value: bool) {
         if let Some(ref f) = self.current_field {
-            if f == "allowsNostr" { self.allows_nostr = value; }
+            if f == "allowsNostr" {
+                self.allows_nostr = value;
+            }
         }
     }
     fn null_value(&mut self) {}
@@ -997,10 +1017,14 @@ impl JsonContentHandler for ZapCallbackHandler {
     fn end_object(&mut self) {}
     fn start_array(&mut self) {}
     fn end_array(&mut self) {}
-    fn key(&mut self, key: &str) { self.current_field = Some(key.to_string()); }
+    fn key(&mut self, key: &str) {
+        self.current_field = Some(key.to_string());
+    }
     fn string_value(&mut self, value: &str) {
         if let Some(ref f) = self.current_field {
-            if f == "pr" { self.pr = Some(value.to_string()); }
+            if f == "pr" {
+                self.pr = Some(value.to_string());
+            }
         }
     }
     fn number_value(&mut self, _number: JsonNumber) {}
@@ -1337,7 +1361,9 @@ fn list_profiles(state: tauri::State<AppState>) -> Result<String, String> {
         let name = cfg.as_ref().map(|c| c.name.as_str()).unwrap_or("Anonymous");
         let picture = cfg.as_ref().and_then(|c| c.picture.as_deref());
 
-        if i > 0 { json.push(','); }
+        if i > 0 {
+            json.push(',');
+        }
         json.push_str("{\"npub\":\"");
         json.push_str(npub);
         json.push_str("\",\"name\":\"");
