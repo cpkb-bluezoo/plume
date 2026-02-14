@@ -182,6 +182,69 @@ fn parse_key(key: String) -> Result<String, String> {
     return Err(String::from("Invalid key format. Expected npub1..., nsec1..., or 64-char hex"));
 }
 
+// Decode a NIP-19 bech32 entity (nevent, nprofile, note, npub).
+// Accepts the raw bech32 string (without the "nostr:" prefix).
+#[tauri::command(rename_all = "snake_case")]
+fn decode_nostr_uri(bech32_str: String) -> Result<String, String> {
+    let trimmed = bech32_str.trim();
+
+    if trimmed.starts_with("nevent1") {
+        let decoded = keys::decode_nevent(trimmed)?;
+        let mut json = String::from("{\"type\":\"nevent\",\"event_id\":\"");
+        json.push_str(&decoded.event_id);
+        json.push_str("\",\"relays\":[");
+        for (i, r) in decoded.relays.iter().enumerate() {
+            if i > 0 { json.push(','); }
+            json.push('"');
+            // Escape any quotes in relay URL
+            for ch in r.chars() {
+                if ch == '"' { json.push_str("\\\""); }
+                else if ch == '\\' { json.push_str("\\\\"); }
+                else { json.push(ch); }
+            }
+            json.push('"');
+        }
+        json.push_str("],\"author\":");
+        match &decoded.author {
+            Some(a) => { json.push('"'); json.push_str(a); json.push('"'); }
+            None => json.push_str("null"),
+        }
+        json.push('}');
+        return Ok(json);
+    }
+
+    if trimmed.starts_with("nprofile1") {
+        let decoded = keys::decode_nprofile(trimmed)?;
+        let mut json = String::from("{\"type\":\"nprofile\",\"pubkey\":\"");
+        json.push_str(&decoded.pubkey);
+        json.push_str("\",\"relays\":[");
+        for (i, r) in decoded.relays.iter().enumerate() {
+            if i > 0 { json.push(','); }
+            json.push('"');
+            for ch in r.chars() {
+                if ch == '"' { json.push_str("\\\""); }
+                else if ch == '\\' { json.push_str("\\\\"); }
+                else { json.push(ch); }
+            }
+            json.push('"');
+        }
+        json.push_str("]}");
+        return Ok(json);
+    }
+
+    if trimmed.starts_with("note1") {
+        let event_id = keys::note_to_hex(trimmed)?;
+        return Ok(format!("{{\"type\":\"note\",\"event_id\":\"{}\"}}", event_id));
+    }
+
+    if trimmed.starts_with("npub1") {
+        let pubkey = keys::npub_to_hex(trimmed)?;
+        return Ok(format!("{{\"type\":\"npub\",\"pubkey\":\"{}\"}}", pubkey));
+    }
+
+    Err(String::from("Unsupported NIP-19 entity. Expected nevent1..., nprofile1..., note1..., or npub1..."))
+}
+
 // ============================================================
 // Relay Commands (all async)
 // ============================================================
@@ -1137,12 +1200,8 @@ fn generate_keypair(state: tauri::State<AppState>) -> Result<String, String> {
     let mut app_config = config::load_app_config(&state.base_dir)
         .unwrap_or_else(|_| config::AppConfig::new());
     app_config.active_profile = Some(npub.clone());
-    if !app_config.known_profiles.iter().any(|p| p.npub == npub) {
-        app_config.known_profiles.push(config::KnownProfile {
-            npub: npub.clone(),
-            name: None,
-            picture: None,
-        });
+    if !app_config.known_profiles.iter().any(|p| p == &npub) {
+        app_config.known_profiles.push(npub.clone());
     }
     config::save_app_config(&state.base_dir, &app_config)?;
 
@@ -1205,12 +1264,8 @@ fn login_with_keys(
     let mut app_config = config::load_app_config(&state.base_dir)
         .unwrap_or_else(|_| config::AppConfig::new());
     app_config.active_profile = Some(npub.clone());
-    if !app_config.known_profiles.iter().any(|p| p.npub == npub) {
-        app_config.known_profiles.push(config::KnownProfile {
-            npub: npub.clone(),
-            name: if cfg.name != "Anonymous" { Some(cfg.name.clone()) } else { None },
-            picture: cfg.picture.clone(),
-        });
+    if !app_config.known_profiles.iter().any(|p| p == &npub) {
+        app_config.known_profiles.push(npub.clone());
     }
     config::save_app_config(&state.base_dir, &app_config)?;
 
@@ -1260,7 +1315,7 @@ fn delete_profile(state: tauri::State<AppState>, npub: String) -> Result<(), Str
     }
     let mut app_config = config::load_app_config(&state.base_dir)
         .unwrap_or_else(|_| config::AppConfig::new());
-    app_config.known_profiles.retain(|p| p.npub != npub);
+    app_config.known_profiles.retain(|p| p != &npub);
     if app_config.active_profile.as_deref() == Some(npub.as_str()) {
         app_config.active_profile = None;
         state.set_config_dir(state.base_dir.clone());
@@ -1269,10 +1324,53 @@ fn delete_profile(state: tauri::State<AppState>, npub: String) -> Result<(), Str
     Ok(())
 }
 
+/// List known profiles with name and picture resolved from each profile's config.json.
+/// Returns a JSON array of objects: [{ "npub": "...", "name": "...", "picture": "..." }, ...]
 #[tauri::command]
 fn list_profiles(state: tauri::State<AppState>) -> Result<String, String> {
-    config::load_app_config(&state.base_dir)
-        .map(|c| config::app_config_to_json(&c))
+    let app_config = config::load_app_config(&state.base_dir)
+        .unwrap_or_else(|_| config::AppConfig::new());
+    let mut json = String::from("[");
+    for (i, npub) in app_config.known_profiles.iter().enumerate() {
+        let profile_dir = config::get_profile_dir(&state.base_dir, npub);
+        let cfg = config::load_config(&profile_dir).ok();
+        let name = cfg.as_ref().map(|c| c.name.as_str()).unwrap_or("Anonymous");
+        let picture = cfg.as_ref().and_then(|c| c.picture.as_deref());
+
+        if i > 0 { json.push(','); }
+        json.push_str("{\"npub\":\"");
+        json.push_str(npub);
+        json.push_str("\",\"name\":\"");
+        // Escape name for JSON safety
+        for ch in name.chars() {
+            match ch {
+                '"' => json.push_str("\\\""),
+                '\\' => json.push_str("\\\\"),
+                '\n' => json.push_str("\\n"),
+                '\r' => json.push_str("\\r"),
+                '\t' => json.push_str("\\t"),
+                _ => json.push(ch),
+            }
+        }
+        json.push_str("\",\"picture\":");
+        match picture {
+            Some(url) => {
+                json.push('"');
+                for ch in url.chars() {
+                    match ch {
+                        '"' => json.push_str("\\\""),
+                        '\\' => json.push_str("\\\\"),
+                        _ => json.push(ch),
+                    }
+                }
+                json.push('"');
+            }
+            None => json.push_str("null"),
+        }
+        json.push('}');
+    }
+    json.push(']');
+    Ok(json)
 }
 
 // ============================================================
@@ -1352,6 +1450,7 @@ fn main() {
             convert_secret_key_to_hex,
             convert_hex_to_nsec,
             parse_key,
+            decode_nostr_uri,
             fetch_notes,
             fetch_notes_from_relays,
             start_feed_stream,

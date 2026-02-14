@@ -355,3 +355,152 @@ pub fn shorten_npub(npub: &str) -> String {
     return format!("{}...{}", start, end);
 }
 
+// ============================================================
+// NIP-19 TLV Decoding (nevent, nprofile, note)
+// ============================================================
+
+// Human-readable parts for NIP-19 shareable identifiers
+const HRP_NOTE: &str = "note";
+const HRP_NEVENT: &str = "nevent";
+const HRP_NPROFILE: &str = "nprofile";
+
+// TLV type constants (NIP-19)
+const TLV_SPECIAL: u8 = 0;  // event id (nevent) or pubkey (nprofile)
+const TLV_RELAY: u8 = 1;    // relay URL (UTF-8)
+const TLV_AUTHOR: u8 = 2;   // author pubkey (32 bytes, nevent only)
+
+/// Decoded nevent: event ID + optional relay hints + optional author
+pub struct DecodedNevent {
+    pub event_id: String,       // hex
+    pub relays: Vec<String>,
+    pub author: Option<String>, // hex
+}
+
+/// Decoded nprofile: pubkey + optional relay hints
+pub struct DecodedNprofile {
+    pub pubkey: String,         // hex
+    pub relays: Vec<String>,
+}
+
+/// Decode a note1... bech32 string to a hex event ID (simple 32-byte encoding, no TLV)
+pub fn note_to_hex(note: &str) -> Result<String, String> {
+    if !note.starts_with("note1") {
+        return Err(String::from("Not a note: must start with 'note1'"));
+    }
+    let (hrp, bytes) = match bech32::decode(note) {
+        Ok(result) => result,
+        Err(e) => return Err(format!("Invalid bech32: {}", e)),
+    };
+    if hrp.as_str() != HRP_NOTE {
+        return Err(format!("Wrong prefix: expected '{}', got '{}'", HRP_NOTE, hrp));
+    }
+    if bytes.len() != 32 {
+        return Err(format!("Invalid event ID length: expected 32 bytes, got {}", bytes.len()));
+    }
+    Ok(bytes_to_hex(&bytes))
+}
+
+/// Decode an nevent1... bech32 string using the NIP-19 TLV format
+pub fn decode_nevent(nevent: &str) -> Result<DecodedNevent, String> {
+    if !nevent.starts_with("nevent1") {
+        return Err(String::from("Not an nevent: must start with 'nevent1'"));
+    }
+    let (hrp, bytes) = match bech32::decode(nevent) {
+        Ok(result) => result,
+        Err(e) => return Err(format!("Invalid bech32: {}", e)),
+    };
+    if hrp.as_str() != HRP_NEVENT {
+        return Err(format!("Wrong prefix: expected '{}', got '{}'", HRP_NEVENT, hrp));
+    }
+    let mut event_id: Option<String> = None;
+    let mut relays: Vec<String> = Vec::new();
+    let mut author: Option<String> = None;
+    let mut pos = 0;
+    while pos < bytes.len() {
+        if pos + 2 > bytes.len() {
+            return Err(String::from("Truncated TLV data"));
+        }
+        let tlv_type = bytes[pos];
+        let tlv_len = bytes[pos + 1] as usize;
+        pos += 2;
+        if pos + tlv_len > bytes.len() {
+            return Err(format!("TLV value overflows buffer: need {} bytes at offset {}, have {}", tlv_len, pos, bytes.len()));
+        }
+        let tlv_value = &bytes[pos..pos + tlv_len];
+        pos += tlv_len;
+        match tlv_type {
+            TLV_SPECIAL => {
+                if tlv_value.len() != 32 {
+                    return Err(format!("Invalid event ID length in TLV: expected 32, got {}", tlv_value.len()));
+                }
+                event_id = Some(bytes_to_hex(tlv_value));
+            }
+            TLV_RELAY => {
+                match std::str::from_utf8(tlv_value) {
+                    Ok(url) => relays.push(url.to_string()),
+                    Err(_) => {} // skip invalid UTF-8 relay hints
+                }
+            }
+            TLV_AUTHOR => {
+                if tlv_value.len() == 32 {
+                    author = Some(bytes_to_hex(tlv_value));
+                }
+            }
+            _ => {} // ignore unknown TLV types
+        }
+    }
+    match event_id {
+        Some(id) => Ok(DecodedNevent { event_id: id, relays, author }),
+        None => Err(String::from("nevent missing required event ID (TLV type 0)")),
+    }
+}
+
+/// Decode an nprofile1... bech32 string using the NIP-19 TLV format
+pub fn decode_nprofile(nprofile: &str) -> Result<DecodedNprofile, String> {
+    if !nprofile.starts_with("nprofile1") {
+        return Err(String::from("Not an nprofile: must start with 'nprofile1'"));
+    }
+    let (hrp, bytes) = match bech32::decode(nprofile) {
+        Ok(result) => result,
+        Err(e) => return Err(format!("Invalid bech32: {}", e)),
+    };
+    if hrp.as_str() != HRP_NPROFILE {
+        return Err(format!("Wrong prefix: expected '{}', got '{}'", HRP_NPROFILE, hrp));
+    }
+    let mut pubkey: Option<String> = None;
+    let mut relays: Vec<String> = Vec::new();
+    let mut pos = 0;
+    while pos < bytes.len() {
+        if pos + 2 > bytes.len() {
+            return Err(String::from("Truncated TLV data"));
+        }
+        let tlv_type = bytes[pos];
+        let tlv_len = bytes[pos + 1] as usize;
+        pos += 2;
+        if pos + tlv_len > bytes.len() {
+            return Err(format!("TLV value overflows buffer: need {} bytes at offset {}, have {}", tlv_len, pos, bytes.len()));
+        }
+        let tlv_value = &bytes[pos..pos + tlv_len];
+        pos += tlv_len;
+        match tlv_type {
+            TLV_SPECIAL => {
+                if tlv_value.len() != 32 {
+                    return Err(format!("Invalid pubkey length in TLV: expected 32, got {}", tlv_value.len()));
+                }
+                pubkey = Some(bytes_to_hex(tlv_value));
+            }
+            TLV_RELAY => {
+                match std::str::from_utf8(tlv_value) {
+                    Ok(url) => relays.push(url.to_string()),
+                    Err(_) => {} // skip invalid UTF-8 relay hints
+                }
+            }
+            _ => {} // ignore unknown TLV types (nprofile doesn't use type 2)
+        }
+    }
+    match pubkey {
+        Some(pk) => Ok(DecodedNprofile { pubkey: pk, relays }),
+        None => Err(String::from("nprofile missing required pubkey (TLV type 0)")),
+    }
+}
+

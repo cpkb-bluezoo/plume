@@ -166,6 +166,8 @@
     "privateKey": "Privater Schlüssel (nsec oder Hex) – Optional",
     "privateKeyPlaceholder": "nsec1... oder Hex (optional)",
     "privateKeyHint": "Nur zum Veröffentlichen von Notizen nötig",
+    "privateKeyConfigured": "Privater Schlüssel konfiguriert (verborgen)",
+    "copyNsec": "nsec kopieren",
     "save": "Speichern"
   },
   "likeModal": {

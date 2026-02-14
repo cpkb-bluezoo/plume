@@ -599,6 +599,127 @@ html, body {
     margin-top: 6px;
 }
 
+/* Embedded note cards (nostr:nevent / nostr:note references) */
+.note-card-embed {
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md, 8px);
+    padding: 10px 12px;
+    margin: 8px 0;
+    background: var(--bg-primary);
+    cursor: pointer;
+    transition: background 0.1s ease;
+}
+
+.note-card-embed:hover {
+    background: var(--bg-secondary);
+}
+
+.embed-top-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.embed-avatar {
+    width: 24px;
+    height: 24px;
+    min-width: 24px;
+    border-radius: 50%;
+    background: var(--bg-tertiary, #2a2a2e);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.65rem;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+}
+
+.embed-head {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    min-width: 0;
+    flex: 1;
+}
+
+.embed-author {
+    font-weight: 600;
+    font-size: 0.85rem;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    cursor: pointer;
+    background: none;
+    border: none;
+    padding: 0;
+}
+
+.embed-author:hover {
+    text-decoration: underline;
+}
+
+.embed-time {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+.embed-content {
+    margin-top: 4px;
+    font-size: 0.9rem;
+    color: var(--text-primary);
+    white-space: pre-wrap;
+    word-break: break-word;
+    line-height: 1.4;
+}
+
+.embed-content img,
+.embed-content video {
+    display: block;
+    max-width: 100%;
+    max-height: 40vh;
+    width: auto;
+    height: auto;
+    object-fit: contain;
+    border-radius: var(--radius, 4px);
+    margin-top: 4px;
+}
+
+.embed-loading {
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    font-style: italic;
+}
+
+.embed-not-found {
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    font-style: italic;
+}
+
+/* Nostr profile links (nostr:npub / nostr:nprofile references) */
+.nostr-profile-link {
+    color: var(--accent, #6366f1);
+    cursor: pointer;
+    text-decoration: none;
+    font-weight: 500;
+}
+
+.nostr-profile-link:hover {
+    text-decoration: underline;
+}
+
+/* Placeholder for loading embeds */
+.nostr-embed-placeholder {
+    border: 1px dashed var(--border-color);
+    border-radius: var(--radius-md, 8px);
+    padding: 10px 12px;
+    margin: 8px 0;
+}
+
 .note-content {
     margin-top: 4px;
     color: var(--text-primary);
@@ -609,7 +730,12 @@ html, body {
 
 .note-content img,
 .note-content video {
-    max-width: 100%;
+    display: block;
+    max-width: min(100%, 100vw - 120px);   /* never wider than card */
+    max-height: 70vh;                       /* never taller than viewport */
+    width: auto;
+    height: auto;
+    object-fit: contain;
     border-radius: var(--radius);
     margin-top: 8px;
 }
@@ -1419,6 +1545,23 @@ html, body {
 
 .nip05:before {
     content: "✓ ";
+}
+
+.profile-website-link {
+    display: block;
+    color: var(--accent-primary);
+    font-size: 0.85rem;
+    text-decoration: none;
+    margin-bottom: 8px;
+    text-align: left;
+}
+
+.profile-website-link:hover {
+    text-decoration: underline;
+}
+
+.profile-website-link:before {
+    content: "🔗 ";
 }
 
 .pubkey {

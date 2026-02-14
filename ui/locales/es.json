@@ -166,6 +166,8 @@
     "privateKey": "Clave privada (nsec o hex) – Opcional",
     "privateKeyPlaceholder": "nsec1... o hex (opcional)",
     "privateKeyHint": "Solo hace falta para publicar notas",
+    "privateKeyConfigured": "Clave privada configurada (oculta)",
+    "copyNsec": "Copiar nsec",
     "save": "Guardar"
   },
   "likeModal": {

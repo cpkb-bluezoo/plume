@@ -518,15 +518,9 @@ pub fn save_config(config_dir: &str, config: &Config) -> Result<(), String> {
 // App-level configuration (plume.json) - multi-profile support
 // ============================================================
 
-pub struct KnownProfile {
-    pub npub: String,
-    pub name: Option<String>,
-    pub picture: Option<String>,
-}
-
 pub struct AppConfig {
     pub active_profile: Option<String>,
-    pub known_profiles: Vec<KnownProfile>,
+    pub known_profiles: Vec<String>,  // list of npub strings
 }
 
 impl AppConfig {
@@ -542,11 +536,8 @@ struct AppConfigHandler {
     depth: i32,
     current_field: Option<String>,
     active_profile: Option<String>,
-    known_profiles: Vec<KnownProfile>,
+    known_profiles: Vec<String>,
     in_profiles_array: bool,
-    cur_npub: String,
-    cur_name: Option<String>,
-    cur_picture: Option<String>,
 }
 
 impl AppConfigHandler {
@@ -557,9 +548,6 @@ impl AppConfigHandler {
             active_profile: None,
             known_profiles: Vec::new(),
             in_profiles_array: false,
-            cur_npub: String::new(),
-            cur_name: None,
-            cur_picture: None,
         }
     }
 
@@ -574,20 +562,8 @@ impl AppConfigHandler {
 impl JsonContentHandler for AppConfigHandler {
     fn start_object(&mut self) {
         self.depth += 1;
-        if self.depth == 3 && self.in_profiles_array {
-            self.cur_npub = String::new();
-            self.cur_name = None;
-            self.cur_picture = None;
-        }
     }
     fn end_object(&mut self) {
-        if self.depth == 3 && self.in_profiles_array && !self.cur_npub.is_empty() {
-            self.known_profiles.push(KnownProfile {
-                npub: std::mem::take(&mut self.cur_npub),
-                name: self.cur_name.take(),
-                picture: self.cur_picture.take(),
-            });
-        }
         self.depth -= 1;
     }
     fn start_array(&mut self) {
@@ -610,15 +586,9 @@ impl JsonContentHandler for AppConfigHandler {
         self.current_field = Some(key.to_string());
     }
     fn string_value(&mut self, value: &str) {
-        if self.depth == 3 && self.in_profiles_array {
-            if let Some(ref f) = self.current_field {
-                match f.as_str() {
-                    "npub" => self.cur_npub = value.to_string(),
-                    "name" => self.cur_name = Some(value.to_string()),
-                    "picture" => self.cur_picture = Some(value.to_string()),
-                    _ => {}
-                }
-            }
+        // known_profiles is now a simple array of npub strings
+        if self.in_profiles_array && self.depth == 2 {
+            self.known_profiles.push(value.to_string());
             return;
         }
         if self.depth == 1 {
@@ -648,31 +618,10 @@ pub fn app_config_to_json(config: &AppConfig) -> String {
     }
     json.push_str(",\n");
     json.push_str("  \"known_profiles\": [\n");
-    for (i, profile) in config.known_profiles.iter().enumerate() {
-        json.push_str("    {\n");
-        json.push_str("      \"npub\": \"");
-        json.push_str(&escape_json_string(&profile.npub));
-        json.push_str("\",\n");
-        json.push_str("      \"name\": ");
-        match &profile.name {
-            Some(name) => {
-                json.push_str("\"");
-                json.push_str(&escape_json_string(name));
-                json.push_str("\"");
-            }
-            None => json.push_str("null"),
-        }
-        json.push_str(",\n");
-        json.push_str("      \"picture\": ");
-        match &profile.picture {
-            Some(pic) => {
-                json.push_str("\"");
-                json.push_str(&escape_json_string(pic));
-                json.push_str("\"");
-            }
-            None => json.push_str("null"),
-        }
-        json.push_str("\n    }");
+    for (i, npub) in config.known_profiles.iter().enumerate() {
+        json.push_str("    \"");
+        json.push_str(&escape_json_string(npub));
+        json.push_str("\"");
         if i < config.known_profiles.len() - 1 { json.push_str(","); }
         json.push_str("\n");
     }

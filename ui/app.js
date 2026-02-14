@@ -356,13 +356,14 @@ function setSavingState(btn) {
     };
 }
 
-// Update sidebar profile avatar from config (so it shows at launch before profile page is loaded)
-function updateSidebarAvatarFromConfig() {
-    if (!state.config) return;
-    const sidebarAvatar = document.getElementById('sidebar-avatar');
-    const sidebarPlaceholder = document.getElementById('sidebar-avatar-placeholder');
+// Update sidebar profile avatar from config or profile (whichever has a picture).
+// Called whenever the local profile is updated: login, config load, profile fetch from relays, etc.
+function updateSidebarAvatar() {
+    var sidebarAvatar = document.getElementById('sidebar-avatar');
+    var sidebarPlaceholder = document.getElementById('sidebar-avatar-placeholder');
     if (!sidebarAvatar || !sidebarPlaceholder) return;
-    const pic = state.config.picture;
+    // Prefer profile picture (fetched from relays), fall back to config picture (local)
+    var pic = (state.profile && state.profile.picture) || (state.config && state.config.picture) || null;
     if (pic) {
         sidebarAvatar.src = pic;
         sidebarAvatar.style.display = 'block';
@@ -550,7 +551,7 @@ function updateUIFromConfig() {
     // Private key is NEVER written to the DOM to prevent exfiltration by injected scripts.
     // The input-private-key field is write-only (user types a new key; it is not pre-populated).
 
-    updateSidebarAvatarFromConfig();
+    updateSidebarAvatar();
     updateMessagesNavUnread();
     updateProfileDisplay();
     updateRelayList();
@@ -614,6 +615,22 @@ async function fetchProfile() {
             if (profileJson && profileJson !== '{}') {
                 state.profile = JSON.parse(profileJson);
                 state.viewedProfile = state.profile;
+                // Sync fetched profile fields into config so sidebar avatar and
+                // other UI elements stay current without a page reload.
+                if (state.config && state.profile) {
+                    var changed = false;
+                    ['name', 'about', 'picture', 'nip05', 'banner', 'website', 'lud16'].forEach(function(f) {
+                        if (state.profile[f] && state.profile[f] !== state.config[f]) {
+                            state.config[f] = state.profile[f];
+                            changed = true;
+                        }
+                    });
+                    if (changed) {
+                        updateSidebarAvatar();
+                        // Persist the updated config in the background
+                        saveConfig();
+                    }
+                }
             } else {
                 state.profile = null;
                 state.viewedProfile = null;
@@ -815,6 +832,7 @@ function handleEditProfileSubmit(e) {
                 state.config.lud16 = state.profile.lud16 || state.config.lud16;
             }
             updateProfileDisplay();
+            updateSidebarAvatar();
             // Navigate back to where the user was before editing profile
             var prevView = state.editProfilePreviousView;
             state.editProfilePreviousView = null;
@@ -877,6 +895,7 @@ function appendProfileNoteCardSync(note) {
     if (note.kind === 1) verifyNote(note, noteIndex, 'profile-');
     if (note.kind === 6) verifyRepostOriginal(note, noteIndex, 'profile-');
     ensureProfilesForNotes([note]);
+    resolveNostrEmbeds(card);
     return true;
 }
 
@@ -1092,6 +1111,7 @@ function displayProfileNotes(notes) {
         noteIndex++;
     });
     ensureProfilesForNotes(notes);
+    resolveNostrEmbeds(container);
 }
 
 // Generate a new key pair
@@ -1188,8 +1208,15 @@ function updateProfileDisplay() {
             nip05El.style.display = profile.nip05 ? 'block' : 'none';
         }
         if (websiteEl) {
-            websiteEl.href = profile.website || '#';
-            websiteEl.style.display = profile.website ? 'inline' : 'none';
+            if (profile.website) {
+                websiteEl.href = profile.website;
+                // Show the URL without protocol prefix for a cleaner look
+                var displayUrl = profile.website.replace(/^https?:\/\//, '').replace(/\/$/, '');
+                websiteEl.textContent = displayUrl;
+                websiteEl.style.display = 'block';
+            } else {
+                websiteEl.style.display = 'none';
+            }
         }
         if (lightningEl && lud16El) {
             lud16El.textContent = profile.lud16 || '';
@@ -1501,6 +1528,7 @@ async function loadBookmarksView() {
                 if (cardEl) setCardAvatar(cardEl, profile.picture);
             }
         });
+        resolveNostrEmbeds(container);
     } catch (e) {
         console.error('Failed to load bookmarks:', e);
         state.bookmarkNotes = [];
@@ -1623,6 +1651,7 @@ function renderNoteDetailPage() {
             ancestorsEl.appendChild(card);
         });
         ensureProfilesForNotes(visibleAncestors);
+        resolveNostrEmbeds(ancestorsEl);
     }
 
     subjectWrap.innerHTML = '';
@@ -1636,6 +1665,7 @@ function renderNoteDetailPage() {
             card.classList.add('note-detail-subject-card');
             subjectWrap.appendChild(card);
             ensureProfilesForNotes([sub]);
+            resolveNostrEmbeds(subjectWrap);
         }
     }
 
@@ -1653,6 +1683,7 @@ function renderNoteDetailPage() {
             repliesEl.appendChild(wrap);
         });
         ensureProfilesForNotes(state.noteDetailReplies.map(function(x) { return x.note; }));
+        resolveNostrEmbeds(repliesEl);
     } else {
         repliesEl.innerHTML = '<div class="placeholder-message"><p>' + escapeHtml(t('noteDetail.noReplies')) + '</p></div>';
     }
@@ -1750,6 +1781,28 @@ function closeSettings() {
 }
 
 // Show a settings panel by key. key null = show default placeholder.
+// Populate the settings profile edit form from the best available source:
+// relay-fetched profile first, then local config as fallback.
+function populateProfilePanel() {
+    var cfg = state.config || {};
+    var profile = state.profile || {};
+    var el;
+    el = document.getElementById('edit-profile-name');
+    if (el) el.value = profile.name || cfg.name || '';
+    el = document.getElementById('edit-profile-nip05');
+    if (el) el.value = profile.nip05 || cfg.nip05 || '';
+    el = document.getElementById('edit-profile-website');
+    if (el) el.value = profile.website || cfg.website || '';
+    el = document.getElementById('edit-profile-about');
+    if (el) el.value = profile.about || cfg.about || '';
+    el = document.getElementById('edit-profile-lud16');
+    if (el) el.value = profile.lud16 || cfg.lud16 || '';
+    el = document.getElementById('edit-profile-picture');
+    if (el) el.value = profile.picture || cfg.picture || '';
+    el = document.getElementById('edit-profile-banner');
+    if (el) el.value = profile.banner || cfg.banner || '';
+}
+
 function showSettingsPanel(key) {
     var detail = document.getElementById('settings-detail');
     if (!detail) return;
@@ -1773,14 +1826,11 @@ function showSettingsPanel(key) {
     }
 
     if (key === 'profile') {
-        var profile = state.profile || state.viewedProfile || {};
-        document.getElementById('edit-profile-name').value = profile.name || state.config?.name || '';
-        document.getElementById('edit-profile-nip05').value = profile.nip05 || '';
-        document.getElementById('edit-profile-website').value = profile.website || '';
-        document.getElementById('edit-profile-about').value = profile.about || '';
-        document.getElementById('edit-profile-lud16').value = profile.lud16 || '';
-        document.getElementById('edit-profile-picture').value = profile.picture || '';
-        document.getElementById('edit-profile-banner').value = profile.banner || '';
+        populateProfilePanel();
+        // If profile hasn't been fetched from relays yet, fetch it now and repopulate
+        if (!state.profile && state.config && state.config.public_key) {
+            fetchProfile().then(function() { populateProfilePanel(); });
+        }
     }
     if (key === 'home-feed') {
         var mode = (state.config && state.config.home_feed_mode === 'follows') ? 'follows' : 'firehose';
@@ -2593,24 +2643,25 @@ function scheduleFeedNoteDrain() {
         feedNoteDrainScheduled = false;
         if (feedNoteQueue.length === 0) return;
         var note = feedNoteQueue.shift();
-        var noteIndex = appendNoteCardToFeedSync(note);
-        if (noteIndex !== -1) {
+        var result = appendNoteCardToFeedSync(note);
+        if (result.index !== -1) {
             ensureProfilesForNotes([note]);
-            verifyNote(note, noteIndex);
+            verifyNote(note, result.index);
+            if (result.card) resolveNostrEmbeds(result.card);
         }
         if (feedNoteQueue.length > 0) scheduleFeedNoteDrain();
     });
 }
 
 // Append a single note card to the feed (streaming). Dedupes by id; inserts in sorted position.
-// Returns the noteIndex used for the card, or -1 if skipped.
+// Returns { index, card } where index is -1 if skipped.
 function appendNoteCardToFeedSync(note) {
-    if (!note || note.kind !== 1) return -1;
-    if (isNoteMuted(note)) return -1;
-    if (state.notes.some(function(n) { return n.id === note.id; })) return -1;
+    if (!note || note.kind !== 1) return { index: -1, card: null };
+    if (isNoteMuted(note)) return { index: -1, card: null };
+    if (state.notes.some(function(n) { return n.id === note.id; })) return { index: -1, card: null };
 
     const container = document.getElementById('notes-container');
-    if (!container) return -1;
+    if (!container) return { index: -1, card: null };
 
     state.notes.push(note);
     state.notes.sort(function(a, b) { return (b.created_at || 0) - (a.created_at || 0); });
@@ -2629,7 +2680,7 @@ function appendNoteCardToFeedSync(note) {
     } else {
         container.insertBefore(card, container.children[idx]);
     }
-    return noteIndex;
+    return { index: noteIndex, card: card };
 }
 
 function appendNoteCardToFeed(note) {
@@ -3215,12 +3266,37 @@ function sanitizeUrl(url) {
     return trimmed;
 }
 
-// Process note content - find and embed images/videos.
+// Maximum recursion depth for embedded nostr: note references
+var NOSTR_EMBED_MAX_DEPTH = 5;
+
+// Process note content - find and embed images/videos and nostr: URIs.
 // Content is HTML-escaped first to neutralize any injected tags/scripts,
 // then safe URLs are converted to media elements and links.
-function processNoteContent(content) {
+// depth: recursion depth for nested nostr: note embeds (0 = top-level)
+function processNoteContent(content, depth) {
+    if (depth === undefined) depth = 0;
+
     // Escape HTML first - this is the primary XSS defense
     let html = escapeHtml(content);
+
+    // Handle nostr: URIs (before URL linkification so they don't get turned into <a> tags)
+    var nostrRegex = /nostr:(n(?:event|profile|pub|ote)1[a-z0-9]+)/gi;
+    html = html.replace(nostrRegex, function(fullMatch, bech32) {
+        var lower = bech32.toLowerCase();
+        if (lower.startsWith('npub1') || lower.startsWith('nprofile1')) {
+            // Profile reference: inline link placeholder (resolved async after DOM insert)
+            return '<a class="nostr-profile-link" data-nostr-ref="' + escapeHtml(lower) + '" data-pubkey="" href="#">@' + escapeHtml(shortenKey(lower)) + '</a>';
+        }
+        if (lower.startsWith('note1') || lower.startsWith('nevent1')) {
+            // Note/event reference: embed if within depth limit
+            if (depth < NOSTR_EMBED_MAX_DEPTH) {
+                return '<div class="nostr-embed-placeholder" data-nostr-ref="' + escapeHtml(lower) + '" data-depth="' + depth + '"><span class="embed-loading">Loading referenced note...</span></div>';
+            }
+            // Over depth limit: show as plain text
+            return escapeHtml(fullMatch);
+        }
+        return escapeHtml(fullMatch);
+    });
     
     // Find image URLs and convert to img tags (only safe http/https URLs)
     const imageAlt = (window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t('content.image') : 'Image');
@@ -3246,6 +3322,158 @@ function processNoteContent(content) {
     });
     
     return html;
+}
+
+// Create a compact embedded note card for nostr: URI references.
+// No action bar, clickable to open full note detail.
+function createEmbeddedNoteCard(note, depth) {
+    var time = formatTimestamp(note.created_at);
+    var display = getAuthorDisplay(note.pubkey);
+    var displayName = display.name;
+    var processedContent = processNoteContent(note.content, depth + 1);
+    var safePubkey = escapeHtml(note.pubkey || '');
+    var safeId = escapeHtml(note.id || '');
+
+    var card = document.createElement('div');
+    card.className = 'note-card-embed';
+    card.dataset.noteId = safeId;
+    card.dataset.pubkey = safePubkey;
+    card.innerHTML =
+        '<div class="embed-top-row">' +
+            '<button type="button" class="note-avatar note-author-link embed-avatar" data-pubkey="' + safePubkey + '"><span class="avatar-fallback">?</span></button>' +
+            '<div class="embed-head">' +
+                '<span class="embed-author note-author-link" data-pubkey="' + safePubkey + '">' + escapeHtml(displayName) + '</span>' +
+                '<span class="embed-time">' + escapeHtml(time) + '</span>' +
+            '</div>' +
+        '</div>' +
+        '<div class="embed-content">' + processedContent + '</div>';
+    return card;
+}
+
+// Resolve nostr: URI placeholders and profile links inside a container.
+// Called after note cards are inserted into the DOM.
+async function resolveNostrEmbeds(container) {
+    if (!container) return;
+
+    // --- 1. Collect all placeholders and profile links ---
+    var embedPlaceholders = container.querySelectorAll('.nostr-embed-placeholder[data-nostr-ref]');
+    var profileLinks = container.querySelectorAll('.nostr-profile-link[data-nostr-ref]');
+    if (embedPlaceholders.length === 0 && profileLinks.length === 0) return;
+
+    // --- 2. Decode all bech32 references in parallel ---
+    var decoded = {};  // bech32 -> decoded JSON object
+    var allRefs = new Set();
+    embedPlaceholders.forEach(function(el) { allRefs.add(el.dataset.nostrRef); });
+    profileLinks.forEach(function(el) { allRefs.add(el.dataset.nostrRef); });
+
+    await Promise.all(Array.from(allRefs).map(async function(ref) {
+        try {
+            var json = await invoke('decode_nostr_uri', { bech32_str: ref });
+            if (json) decoded[ref] = JSON.parse(json);
+        } catch (e) {
+            console.warn('[Plume] Failed to decode nostr URI:', ref, e);
+        }
+    }));
+
+    // --- 3. Resolve profile links (npub / nprofile) ---
+    var profilePubkeys = new Set();
+    profileLinks.forEach(function(link) {
+        var d = decoded[link.dataset.nostrRef];
+        if (!d) return;
+        var pk = d.pubkey || null;
+        if (pk) {
+            link.dataset.pubkey = pk;
+            profilePubkeys.add(pk);
+        }
+    });
+
+    // Fetch any missing profiles
+    var toFetch = Array.from(profilePubkeys).filter(function(pk) { return !state.profileCache[pk]; });
+    if (toFetch.length > 0) {
+        var relays = getEffectiveRelays();
+        await Promise.all(toFetch.map(async function(pk) {
+            try {
+                var pjson = await invoke('fetch_profile', { pubkey: pk, relay_urls: relays });
+                if (pjson && pjson !== '{}') {
+                    var p = JSON.parse(pjson);
+                    state.profileCache[pk] = { name: p.name || null, nip05: p.nip05 || null, picture: p.picture || null, lud16: p.lud16 || null };
+                }
+            } catch (_) {}
+        }));
+    }
+
+    // Update profile link display text
+    profileLinks.forEach(function(link) {
+        var pk = link.dataset.pubkey;
+        if (!pk) return;
+        var cached = state.profileCache[pk];
+        var name = (cached && cached.name) ? cached.name : shortenKey(pk);
+        link.textContent = '@' + name;
+    });
+
+    // --- 4. Resolve note/event embeds ---
+    var eventIdsToFetch = new Set();
+    var embedInfo = {};  // bech32 -> { eventId, relayHints }
+    embedPlaceholders.forEach(function(el) {
+        var d = decoded[el.dataset.nostrRef];
+        if (!d) return;
+        var eid = d.event_id;
+        if (eid) {
+            eventIdsToFetch.add(eid);
+            embedInfo[el.dataset.nostrRef] = { eventId: eid, relayHints: d.relays || [] };
+        }
+    });
+
+    // Batch-fetch all referenced events
+    var fetchedEvents = {};  // eventId -> event object
+    if (eventIdsToFetch.size > 0) {
+        // Use relay hints merged with effective relays, deduplicating
+        var allRelayHints = new Set(getEffectiveRelays());
+        Object.values(embedInfo).forEach(function(info) {
+            (info.relayHints || []).forEach(function(r) { allRelayHints.add(r); });
+        });
+        try {
+            var idsArr = Array.from(eventIdsToFetch);
+            var eventsJson = await invoke('fetch_events_by_ids', { relay_urls: Array.from(allRelayHints), ids: idsArr });
+            var events = eventsJson ? JSON.parse(eventsJson) : [];
+            events.forEach(function(ev) { fetchedEvents[ev.id] = ev; });
+        } catch (e) {
+            console.warn('[Plume] Failed to fetch embedded events:', e);
+        }
+
+        // Ensure profiles for embedded note authors
+        var embeddedNotes = Object.values(fetchedEvents);
+        if (embeddedNotes.length > 0) {
+            await ensureProfilesForNotes(embeddedNotes);
+        }
+    }
+
+    // Replace placeholders with embedded note cards
+    embedPlaceholders.forEach(function(el) {
+        var info = embedInfo[el.dataset.nostrRef];
+        if (!info) { el.remove(); return; }
+        var ev = fetchedEvents[info.eventId];
+        if (!ev) {
+            // Could not fetch: show as a link to the note
+            el.innerHTML = '<span class="embed-not-found">Referenced note not found</span>';
+            return;
+        }
+        var depth = parseInt(el.dataset.depth, 10) || 0;
+        var card = createEmbeddedNoteCard(ev, depth);
+        el.replaceWith(card);
+
+        // Recursively resolve any nostr: URIs inside the embedded card
+        resolveNostrEmbeds(card);
+
+        // Update avatar for the embedded card author
+        var cached = state.profileCache[ev.pubkey];
+        if (cached && cached.picture) {
+            var avatarBtn = card.querySelector('.embed-avatar');
+            if (avatarBtn) {
+                avatarBtn.innerHTML = '<img src="' + escapeHtml(cached.picture) + '" class="sidebar-avatar" alt="" style="width:24px;height:24px;border-radius:50%;">';
+            }
+        }
+    });
 }
 
 // Display notes in the feed
@@ -3290,6 +3518,7 @@ function displayNotes(notes) {
     
     verifyNotesAsync(notesToVerify);
     ensureProfilesForNotes(notes);
+    resolveNostrEmbeds(container);
 }
 
 // Verify notes asynchronously
@@ -3615,10 +3844,21 @@ function showMutedTooltip(el) {
     }, 2000);
 }
 
-function populateWelcomeProfiles(profiles) {
+// Populate the welcome screen's "Your profiles" list by fetching enriched
+// profile data (name, picture) from each profile's config.json via the backend.
+async function populateWelcomeProfiles() {
     var container = document.getElementById('welcome-known-profiles');
     var list = document.getElementById('welcome-profiles-list');
     if (!container || !list) return;
+
+    var profiles = [];
+    try {
+        var json = await invoke('list_profiles');
+        if (json) profiles = JSON.parse(json);
+    } catch (e) {
+        console.warn('[Plume] Failed to list profiles:', e);
+    }
+
     if (!profiles || profiles.length === 0) {
         container.style.display = 'none';
         return;
@@ -3693,6 +3933,8 @@ async function handleWelcomeLogin() {
         state.notes = [];
         switchView('feed');
         startInitialFeedFetch();
+        // Fetch profile from relays in background to update sidebar avatar and local config
+        fetchProfile();
     } catch (err) {
         if (errorEl) errorEl.textContent = typeof err === 'string' ? err : (err.message || 'Login failed');
     }
@@ -3762,6 +4004,8 @@ async function handleProfileSelect(npub) {
         state.notes = [];
         switchView('feed');
         startInitialFeedFetch();
+        // Fetch profile from relays in background to update sidebar avatar and local config
+        fetchProfile();
     } catch (err) {
         alert('Failed to switch profile: ' + (typeof err === 'string' ? err : err.message || err));
     }
@@ -3823,8 +4067,9 @@ async function handleLogout() {
         }
 
         console.log('[Plume] Logout state reset complete, switching to welcome');
+        updateSidebarAvatar();
         updateSidebarAuthState();
-        populateWelcomeProfiles(state.appConfig.known_profiles || []);
+        await populateWelcomeProfiles();
         switchView('welcome');
     } catch (err) {
         console.error('[Plume] handleLogout() FAILED:', err);
@@ -4151,6 +4396,25 @@ async function init() {
 
         // Note card: reply button and author link (avatar/name -> profile). Same behavior for home feed and profile feed.
         function handleNoteCardClick(e) {
+            // Nostr profile link (from nostr:npub or nostr:nprofile in note content)
+            var profileLink = e.target.closest('.nostr-profile-link');
+            if (profileLink && profileLink.dataset.pubkey) {
+                e.preventDefault();
+                openProfileForUser(profileLink.dataset.pubkey);
+                return;
+            }
+            // Embedded note card (from nostr:nevent or nostr:note in note content)
+            var embedCard = e.target.closest('.note-card-embed');
+            if (embedCard && embedCard.dataset.noteId) {
+                // Don't navigate if user clicked a profile link inside the embed
+                if (e.target.closest('.note-author-link') || e.target.closest('.nostr-profile-link')) {
+                    // let it fall through to the author link handler below
+                } else {
+                    e.preventDefault();
+                    openNoteDetail(embedCard.dataset.noteId);
+                    return;
+                }
+            }
             var authorLink = e.target.closest('.note-author-link');
             if (authorLink && authorLink.dataset.pubkey) {
                 e.preventDefault();
@@ -4311,10 +4575,12 @@ async function init() {
             await loadConfig();
             updateSidebarAuthState();
             switchView('feed');
+            // Fetch profile from relays in background to update sidebar avatar and local config
+            fetchProfile();
         } else {
             // Not logged in – show welcome screen
             updateSidebarAuthState();
-            populateWelcomeProfiles(appConfig.known_profiles || []);
+            await populateWelcomeProfiles();
             switchView('welcome');
         }
         console.log('[Plume] loadConfig done');
