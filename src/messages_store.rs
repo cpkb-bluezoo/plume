@@ -25,7 +25,9 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
+use bytes::BytesMut;
 use crate::crypto;
+use crate::json::{JsonContentHandler, JsonNumber, JsonParser};
 use crate::nostr;
 
 fn messages_dir(config_dir: &str) -> String {
@@ -44,7 +46,6 @@ pub fn ensure_messages_dir(config_dir: &str) -> Result<(), io::Error> {
     Ok(())
 }
 
-/// Normalize pubkey to lowercase for consistent filenames.
 fn normalize_hex(s: &str) -> String {
     s.trim().to_lowercase()
 }
@@ -79,13 +80,166 @@ pub fn list_conversations(config_dir: &str) -> Result<Vec<String>, String> {
     Ok(pubkeys)
 }
 
-/// One decrypted message for the frontend.
 pub struct DecryptedMessage {
     pub id: String,
     pub pubkey: String,
     pub created_at: u64,
     pub content: String,
     pub is_outgoing: bool,
+}
+
+// ============================================================
+// Push-parser handler for parsing an array of event objects
+// ============================================================
+
+struct EventArrayHandler {
+    depth: i32,
+    // Event fields (populated while parsing each object)
+    current_field: Option<String>,
+    event_id: Option<String>,
+    event_pubkey: Option<String>,
+    event_created_at: u64,
+    event_kind: u32,
+    event_content: String,
+    event_sig: Option<String>,
+    event_tags: Vec<Vec<String>>,
+    current_tag: Vec<String>,
+    tags_depth: i32,
+    // Accumulated results
+    events: Vec<nostr::Event>,
+}
+
+impl EventArrayHandler {
+    fn new() -> Self {
+        Self {
+            depth: 0,
+            current_field: None,
+            event_id: None,
+            event_pubkey: None,
+            event_created_at: 0,
+            event_kind: 0,
+            event_content: String::new(),
+            event_sig: None,
+            event_tags: Vec::new(),
+            current_tag: Vec::new(),
+            tags_depth: 0,
+            events: Vec::new(),
+        }
+    }
+
+    fn reset_event(&mut self) {
+        self.current_field = None;
+        self.event_id = None;
+        self.event_pubkey = None;
+        self.event_created_at = 0;
+        self.event_kind = 0;
+        self.event_content.clear();
+        self.event_sig = None;
+        self.event_tags.clear();
+        self.current_tag.clear();
+        self.tags_depth = 0;
+    }
+}
+
+impl JsonContentHandler for EventArrayHandler {
+    fn start_object(&mut self) {
+        self.depth += 1;
+        if self.depth == 2 {
+            self.reset_event();
+        }
+    }
+
+    fn end_object(&mut self) {
+        if self.depth == 2 {
+            // Finished one event object
+            if let (Some(id), Some(pubkey), Some(sig)) = 
+                (self.event_id.clone(), self.event_pubkey.clone(), self.event_sig.clone()) 
+            {
+                self.events.push(nostr::Event {
+                    id,
+                    pubkey,
+                    created_at: self.event_created_at,
+                    kind: self.event_kind,
+                    tags: self.event_tags.clone(),
+                    content: self.event_content.clone(),
+                    sig,
+                });
+            }
+        }
+        self.depth -= 1;
+    }
+
+    fn start_array(&mut self) {
+        self.depth += 1;
+        if self.tags_depth == 1 {
+            self.tags_depth = 2;
+            self.current_tag.clear();
+        } else if self.tags_depth == 2 {
+            self.current_tag.clear();
+        }
+    }
+
+    fn end_array(&mut self) {
+        if self.tags_depth == 2 && self.depth == 4 {
+            if !self.current_tag.is_empty() {
+                self.event_tags.push(self.current_tag.clone());
+            }
+            self.current_tag.clear();
+        } else if self.tags_depth == 2 && self.depth == 3 {
+            self.tags_depth = 0;
+        } else if self.tags_depth == 1 && self.depth == 3 {
+            self.tags_depth = 0;
+        }
+        self.depth -= 1;
+    }
+
+    fn key(&mut self, key: &str) {
+        self.current_field = Some(key.to_string());
+        if self.depth == 2 && key == "tags" {
+            self.tags_depth = 1;
+        }
+    }
+
+    fn string_value(&mut self, value: &str) {
+        if self.tags_depth == 2 {
+            self.current_tag.push(value.to_string());
+        } else if self.depth == 2 {
+            if let Some(ref f) = self.current_field {
+                match f.as_str() {
+                    "id" => self.event_id = Some(value.to_string()),
+                    "pubkey" => self.event_pubkey = Some(value.to_string()),
+                    "content" => self.event_content = value.to_string(),
+                    "sig" => self.event_sig = Some(value.to_string()),
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    fn number_value(&mut self, number: JsonNumber) {
+        if self.depth == 2 {
+            if let Some(ref f) = self.current_field {
+                if f == "created_at" {
+                    self.event_created_at = number.as_f64().max(0.0) as u64;
+                } else if f == "kind" {
+                    self.event_kind = number.as_f64().max(0.0) as u32;
+                }
+            }
+        }
+    }
+
+    fn boolean_value(&mut self, _value: bool) {}
+    fn null_value(&mut self) {}
+}
+
+/// Parse a JSON array of event objects from a string.
+fn parse_event_array(json_str: &str) -> Result<Vec<nostr::Event>, String> {
+    let mut handler = EventArrayHandler::new();
+    let mut parser = JsonParser::new();
+    let mut buf = BytesMut::from(json_str.as_bytes());
+    parser.receive(&mut buf, &mut handler).map_err(|e| format!("JSON parse error: {}", e))?;
+    parser.close(&mut handler).map_err(|e| format!("JSON parse error: {}", e))?;
+    Ok(handler.events)
 }
 
 /// Read conversation file, decrypt each event, return messages sorted by created_at.
@@ -105,15 +259,10 @@ pub fn get_messages(
         Err(e) => return Err(format!("Read conversation file: {}", e)),
     };
 
-    let parsed = json::parse(&contents).map_err(|e| format!("Invalid JSON: {}", e))?;
-    if !parsed.is_array() {
-        return Ok(Vec::new());
-    }
+    let events = parse_event_array(&contents)?;
 
     let mut messages: Vec<DecryptedMessage> = Vec::new();
-    for item in parsed.members() {
-        let event_json = item.dump();
-        let event = nostr::parse_event(&event_json).map_err(|e| format!("Parse event: {}", e))?;
+    for event in &events {
         if event.kind != nostr::KIND_DM {
             continue;
         }
@@ -122,8 +271,8 @@ pub fn get_messages(
         let plaintext = crypto::nip04_decrypt(&event.content, our_secret_hex, sender_pubkey)
             .unwrap_or_else(|_| String::from("[unable to decrypt]"));
         messages.push(DecryptedMessage {
-            id: event.id,
-            pubkey: event.pubkey,
+            id: event.id.clone(),
+            pubkey: event.pubkey.clone(),
             created_at: event.created_at,
             content: plaintext,
             is_outgoing,
@@ -134,6 +283,7 @@ pub fn get_messages(
 }
 
 /// Append a raw kind 4 event to the conversation file (dedupe by event id).
+/// Uses text manipulation instead of DOM parsing for efficiency.
 pub fn append_raw_event(
     config_dir: &str,
     other_pubkey_hex: &str,
@@ -145,48 +295,55 @@ pub fn append_raw_event(
         return Err(String::from("Event is not kind 4"));
     }
 
-    let mut events: Vec<json::JsonValue> = Vec::new();
+    let new_id = new_event.id.to_lowercase();
+
     if Path::new(&path).exists() {
         let contents = fs::read_to_string(&path).map_err(|e| format!("Read file: {}", e))?;
-        let parsed = json::parse(&contents).map_err(|e| format!("Invalid JSON: {}", e))?;
-        if parsed.is_array() {
-            for item in parsed.members() {
-                events.push(item.clone());
+        // Dedup: search for the event ID in the raw file text
+        let search_pattern = format!("\"id\":\"{}\"", new_id);
+        if contents.to_lowercase().contains(&search_pattern) {
+            return Ok(()); // already present
+        }
+        // Append: strip trailing ] and add ,event]
+        let trimmed = contents.trim_end();
+        if trimmed.ends_with(']') {
+            let mut out = String::from(&trimmed[..trimmed.len() - 1]);
+            if out.trim_end().ends_with('}') {
+                out.push(',');
             }
+            out.push_str(raw_event_json);
+            out.push(']');
+            fs::write(&path, out).map_err(|e| format!("Write file: {}", e))?;
+        } else {
+            // File is malformed, rewrite
+            let mut out = String::from("[");
+            out.push_str(raw_event_json);
+            out.push(']');
+            fs::write(&path, out).map_err(|e| format!("Write file: {}", e))?;
         }
+    } else {
+        // New file
+        let out = format!("[{}]", raw_event_json);
+        fs::write(&path, out).map_err(|e| format!("Write file: {}", e))?;
     }
 
-    let new_id = new_event.id.to_lowercase();
-    if events.iter().any(|e| e["id"].as_str().map(|s| s.to_lowercase()) == Some(new_id.clone())) {
-        return Ok(()); // already present
-    }
-
-    let new_obj = json::parse(raw_event_json).map_err(|e| format!("Invalid event JSON: {}", e))?;
-    events.push(new_obj);
-
-    let mut out = String::from("[");
-    for (i, ev) in events.iter().enumerate() {
-        if i > 0 {
-            out.push(',');
-        }
-        out.push_str(&ev.dump());
-    }
-    out.push(']');
-
-    fs::write(&path, out).map_err(|e| format!("Write file: {}", e))?;
     Ok(())
 }
 
-/// Get last event's created_at from a conversation file (no decryption). For sorting the list.
+/// Get last event's created_at from a conversation file. Scans for the last "created_at": number.
 fn last_created_at(config_dir: &str, other_pubkey_hex: &str) -> Option<u64> {
     let path = conversation_file_path(config_dir, other_pubkey_hex);
     let contents = fs::read_to_string(&path).ok()?;
-    let parsed = json::parse(&contents).ok()?;
-    let last = parsed.members().last()?;
-    last["created_at"].as_u64()
+    // Find last occurrence of "created_at": followed by digits
+    let pattern = "\"created_at\":";
+    let pos = contents.rfind(pattern)?;
+    let after = &contents[pos + pattern.len()..];
+    let after = after.trim_start();
+    let digits: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+    digits.parse::<u64>().ok()
 }
 
-/// List conversations with last_created_at for sorting. Returns JSON array of { other_pubkey, last_created_at }.
+/// List conversations with last_created_at for sorting.
 pub fn list_conversations_json(config_dir: &str) -> Result<String, String> {
     let mut list: Vec<(String, u64)> = list_conversations(config_dir)?
         .into_iter()
@@ -219,7 +376,6 @@ fn escape_json(s: &str) -> String {
     o
 }
 
-/// Serialize decrypted messages to JSON array for the frontend.
 pub fn messages_to_json(messages: &[DecryptedMessage]) -> String {
     let mut out = String::from("[");
     for (i, m) in messages.iter().enumerate() {

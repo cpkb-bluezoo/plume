@@ -18,6 +18,9 @@
  * along with Plume.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+use bytes::BytesMut;
+use crate::json::{JsonContentHandler, JsonNumber, JsonParser};
+
 // A Nostr event - the fundamental data structure in Nostr
 // See: https://github.com/nostr-protocol/nips/blob/master/01.md
 pub struct Event {
@@ -121,6 +124,7 @@ pub struct ProfileMetadata {
 }
 
 impl ProfileMetadata {
+    #[allow(dead_code)]
     pub fn new() -> ProfileMetadata {
         ProfileMetadata {
             name: None,
@@ -136,127 +140,226 @@ impl ProfileMetadata {
 }
 
 // ============================================================
-// JSON Parsing Functions
+// JSON Push-Parser Handlers
 // ============================================================
+
+/// Handler for parsing a single Nostr Event from JSON.
+struct EventHandler {
+    depth: i32,
+    current_field: Option<String>,
+    id: Option<String>,
+    pubkey: Option<String>,
+    created_at: u64,
+    kind: u32,
+    content: String,
+    sig: Option<String>,
+    tags: Vec<Vec<String>>,
+    current_tag: Vec<String>,
+    tags_depth: i32, // 0=not in tags, 1=in tags array, 2=in one tag array
+}
+
+impl EventHandler {
+    fn new() -> Self {
+        Self {
+            depth: 0,
+            current_field: None,
+            id: None,
+            pubkey: None,
+            created_at: 0,
+            kind: 0,
+            content: String::new(),
+            sig: None,
+            tags: Vec::new(),
+            current_tag: Vec::new(),
+            tags_depth: 0,
+        }
+    }
+
+    fn take_event(&self) -> Result<Event, String> {
+        Ok(Event {
+            id: self.id.clone().ok_or("Missing 'id' field")?,
+            pubkey: self.pubkey.clone().ok_or("Missing 'pubkey' field")?,
+            created_at: self.created_at,
+            kind: self.kind,
+            tags: self.tags.clone(),
+            content: self.content.clone(),
+            sig: self.sig.clone().ok_or("Missing 'sig' field")?,
+        })
+    }
+}
+
+impl JsonContentHandler for EventHandler {
+    fn start_object(&mut self) {
+        self.depth += 1;
+    }
+
+    fn end_object(&mut self) {
+        self.depth -= 1;
+    }
+
+    fn start_array(&mut self) {
+        self.depth += 1;
+        if self.tags_depth == 1 {
+            self.tags_depth = 2;
+            self.current_tag.clear();
+        } else if self.tags_depth == 2 {
+            self.current_tag.clear();
+        }
+    }
+
+    fn end_array(&mut self) {
+        if self.tags_depth == 2 && self.depth == 3 {
+            if !self.current_tag.is_empty() {
+                self.tags.push(self.current_tag.clone());
+            }
+            self.current_tag.clear();
+        } else if self.tags_depth == 2 && self.depth == 2 {
+            self.tags_depth = 0;
+        } else if self.tags_depth == 1 && self.depth == 2 {
+            self.tags_depth = 0;
+        }
+        self.depth -= 1;
+    }
+
+    fn key(&mut self, key: &str) {
+        self.current_field = Some(key.to_string());
+        if self.depth == 1 && key == "tags" {
+            self.tags_depth = 1;
+        }
+    }
+
+    fn string_value(&mut self, value: &str) {
+        if self.tags_depth == 2 {
+            self.current_tag.push(value.to_string());
+        } else if self.depth == 1 {
+            if let Some(ref f) = self.current_field {
+                match f.as_str() {
+                    "id" => self.id = Some(value.to_string()),
+                    "pubkey" => self.pubkey = Some(value.to_string()),
+                    "content" => self.content = value.to_string(),
+                    "sig" => self.sig = Some(value.to_string()),
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    fn number_value(&mut self, number: JsonNumber) {
+        if self.depth == 1 {
+            if let Some(ref f) = self.current_field {
+                if f == "created_at" {
+                    self.created_at = number.as_f64().max(0.0) as u64;
+                } else if f == "kind" {
+                    self.kind = number.as_f64().max(0.0) as u32;
+                }
+            }
+        }
+    }
+
+    fn boolean_value(&mut self, _value: bool) {}
+    fn null_value(&mut self) {}
+}
+
+/// Handler for parsing ProfileMetadata from JSON.
+struct ProfileHandler {
+    current_field: Option<String>,
+    name: Option<String>,
+    about: Option<String>,
+    picture: Option<String>,
+    nip05: Option<String>,
+    banner: Option<String>,
+    website: Option<String>,
+    lud16: Option<String>,
+}
+
+impl ProfileHandler {
+    fn new() -> Self {
+        Self {
+            current_field: None,
+            name: None,
+            about: None,
+            picture: None,
+            nip05: None,
+            banner: None,
+            website: None,
+            lud16: None,
+        }
+    }
+
+    fn take_profile(&self) -> ProfileMetadata {
+        ProfileMetadata {
+            name: self.name.clone(),
+            about: self.about.clone(),
+            picture: self.picture.clone(),
+            nip05: self.nip05.clone(),
+            banner: self.banner.clone(),
+            website: self.website.clone(),
+            lud16: self.lud16.clone(),
+            created_at: None,
+        }
+    }
+}
+
+impl JsonContentHandler for ProfileHandler {
+    fn start_object(&mut self) {}
+    fn end_object(&mut self) {}
+    fn start_array(&mut self) {}
+    fn end_array(&mut self) {}
+
+    fn key(&mut self, key: &str) {
+        self.current_field = Some(key.to_string());
+    }
+
+    fn string_value(&mut self, value: &str) {
+        if let Some(ref f) = self.current_field {
+            match f.as_str() {
+                "name" => self.name = Some(value.to_string()),
+                "about" => self.about = Some(value.to_string()),
+                "picture" => self.picture = Some(value.to_string()),
+                "nip05" => self.nip05 = Some(value.to_string()),
+                "banner" => self.banner = Some(value.to_string()),
+                "website" => self.website = Some(value.to_string()),
+                "lud16" => self.lud16 = Some(value.to_string()),
+                _ => {}
+            }
+        }
+    }
+
+    fn number_value(&mut self, _number: JsonNumber) {}
+    fn boolean_value(&mut self, _value: bool) {}
+    fn null_value(&mut self) {}
+}
+
+// ============================================================
+// JSON Parsing Functions (using push parser)
+// ============================================================
+
+/// Helper: run the push parser on a complete JSON string, calling handler.
+fn parse_json_str<H: JsonContentHandler>(json_str: &str, handler: &mut H) -> Result<(), String> {
+    let mut parser = JsonParser::new();
+    let mut buf = BytesMut::from(json_str.as_bytes());
+    parser.receive(&mut buf, handler).map_err(|e| format!("JSON parse error: {}", e))?;
+    parser.close(handler).map_err(|e| format!("JSON parse error: {}", e))?;
+    Ok(())
+}
 
 // Parse a JSON string into a Nostr Event
 pub fn parse_event(json_str: &str) -> Result<Event, String> {
-    let parsed = match json::parse(json_str) {
-        Ok(value) => value,
-        Err(e) => return Err(format!("Invalid JSON: {}", e)),
-    };
-    
-    // Extract id (required)
-    let id: String;
-    if parsed["id"].is_string() {
-        id = parsed["id"].as_str().unwrap().to_string();
-    } else {
-        return Err(String::from("Missing or invalid 'id' field"));
-    }
-    
-    // Extract pubkey (required)
-    let pubkey: String;
-    if parsed["pubkey"].is_string() {
-        pubkey = parsed["pubkey"].as_str().unwrap().to_string();
-    } else {
-        return Err(String::from("Missing or invalid 'pubkey' field"));
-    }
-    
-    // Extract created_at (required)
-    let created_at: u64;
-    if parsed["created_at"].is_number() {
-        created_at = parsed["created_at"].as_u64().unwrap_or(0);
-    } else {
-        return Err(String::from("Missing or invalid 'created_at' field"));
-    }
-    
-    // Extract kind (required)
-    let kind: u32;
-    if parsed["kind"].is_number() {
-        kind = parsed["kind"].as_u32().unwrap_or(0);
-    } else {
-        return Err(String::from("Missing or invalid 'kind' field"));
-    }
-    
-    // Extract content (required)
-    let content: String;
-    if parsed["content"].is_string() {
-        content = parsed["content"].as_str().unwrap().to_string();
-    } else {
-        content = String::new();
-    }
-    
-    // Extract sig (required)
-    let sig: String;
-    if parsed["sig"].is_string() {
-        sig = parsed["sig"].as_str().unwrap().to_string();
-    } else {
-        return Err(String::from("Missing or invalid 'sig' field"));
-    }
-    
-    // Extract tags (array of arrays)
-    let mut tags: Vec<Vec<String>> = Vec::new();
-    if parsed["tags"].is_array() {
-        for tag_array in parsed["tags"].members() {
-            let mut tag: Vec<String> = Vec::new();
-            if tag_array.is_array() {
-                for item in tag_array.members() {
-                    if item.is_string() {
-                        tag.push(item.as_str().unwrap().to_string());
-                    }
-                }
-            }
-            tags.push(tag);
-        }
-    }
-    
-    let event = Event {
-        id: id,
-        pubkey: pubkey,
-        created_at: created_at,
-        kind: kind,
-        tags: tags,
-        content: content,
-        sig: sig,
-    };
-    
-    return Ok(event);
+    let mut handler = EventHandler::new();
+    parse_json_str(json_str, &mut handler)?;
+    handler.take_event()
 }
 
 // Parse profile metadata from a kind 0 event's content
 pub fn parse_profile(content: &str) -> Result<ProfileMetadata, String> {
-    let parsed = match json::parse(content) {
-        Ok(value) => value,
-        Err(e) => return Err(format!("Invalid profile JSON: {}", e)),
-    };
-    
-    let mut profile = ProfileMetadata::new();
-    
-    // Extract each optional field
-    if parsed["name"].is_string() {
-        profile.name = Some(parsed["name"].as_str().unwrap().to_string());
-    }
-    if parsed["about"].is_string() {
-        profile.about = Some(parsed["about"].as_str().unwrap().to_string());
-    }
-    if parsed["picture"].is_string() {
-        profile.picture = Some(parsed["picture"].as_str().unwrap().to_string());
-    }
-    if parsed["nip05"].is_string() {
-        profile.nip05 = Some(parsed["nip05"].as_str().unwrap().to_string());
-    }
-    if parsed["banner"].is_string() {
-        profile.banner = Some(parsed["banner"].as_str().unwrap().to_string());
-    }
-    if parsed["website"].is_string() {
-        profile.website = Some(parsed["website"].as_str().unwrap().to_string());
-    }
-    if parsed["lud16"].is_string() {
-        profile.lud16 = Some(parsed["lud16"].as_str().unwrap().to_string());
-    }
-    
-    return Ok(profile);
+    let mut handler = ProfileHandler::new();
+    parse_json_str(content, &mut handler)?;
+    Ok(handler.take_profile())
 }
+
+// ============================================================
+// JSON Serialization Functions (manual string building, no crate)
+// ============================================================
 
 // Convert an Event to JSON string
 pub fn event_to_json(event: &Event) -> String {
@@ -405,6 +508,7 @@ pub fn filter_to_json(filter: &Filter) -> String {
     // #e tags (for filtering by referenced event IDs, e.g. replies)
     if let Some(ref e_tags) = filter.e_tags {
         if !first { json.push_str(","); }
+        let _ = first;
         json.push_str("\"#e\":[");
         for (i, eid) in e_tags.iter().enumerate() {
             json.push_str("\"");
@@ -612,7 +716,6 @@ pub fn profile_to_json(profile: &ProfileMetadata) -> String {
     
     let mut first = true;
     
-    // name
     if let Some(ref name) = profile.name {
         if !first { json.push_str(","); }
         first = false;
@@ -620,8 +723,6 @@ pub fn profile_to_json(profile: &ProfileMetadata) -> String {
         json.push_str(&escape_json_string(name));
         json.push_str("\"");
     }
-    
-    // about
     if let Some(ref about) = profile.about {
         if !first { json.push_str(","); }
         first = false;
@@ -629,8 +730,6 @@ pub fn profile_to_json(profile: &ProfileMetadata) -> String {
         json.push_str(&escape_json_string(about));
         json.push_str("\"");
     }
-    
-    // picture
     if let Some(ref picture) = profile.picture {
         if !first { json.push_str(","); }
         first = false;
@@ -638,8 +737,6 @@ pub fn profile_to_json(profile: &ProfileMetadata) -> String {
         json.push_str(&escape_json_string(picture));
         json.push_str("\"");
     }
-    
-    // nip05
     if let Some(ref nip05) = profile.nip05 {
         if !first { json.push_str(","); }
         first = false;
@@ -647,8 +744,6 @@ pub fn profile_to_json(profile: &ProfileMetadata) -> String {
         json.push_str(&escape_json_string(nip05));
         json.push_str("\"");
     }
-    
-    // banner
     if let Some(ref banner) = profile.banner {
         if !first { json.push_str(","); }
         first = false;
@@ -656,8 +751,6 @@ pub fn profile_to_json(profile: &ProfileMetadata) -> String {
         json.push_str(&escape_json_string(banner));
         json.push_str("\"");
     }
-    
-    // website
     if let Some(ref website) = profile.website {
         if !first { json.push_str(","); }
         first = false;
@@ -665,18 +758,16 @@ pub fn profile_to_json(profile: &ProfileMetadata) -> String {
         json.push_str(&escape_json_string(website));
         json.push_str("\"");
     }
-    
-    // lud16 (lightning address)
     if let Some(ref lud16) = profile.lud16 {
         if !first { json.push_str(","); }
-        // first = false;  // Not needed, last field
+        first = false;
         json.push_str("\"lud16\":\"");
         json.push_str(&escape_json_string(lud16));
         json.push_str("\"");
     }
-    
     if let Some(created_at) = profile.created_at {
         if !first { json.push_str(","); }
+        let _ = first;
         json.push_str("\"created_at\":");
         json.push_str(&created_at.to_string());
     }
@@ -734,6 +825,7 @@ pub fn profile_to_content(profile: &ProfileMetadata) -> String {
     }
     if let Some(ref lud16) = profile.lud16 {
         if !first { json.push_str(","); }
+        let _ = first;
         json.push_str("\"lud16\":\"");
         json.push_str(&escape_json_string(lud16));
         json.push_str("\"");
@@ -746,33 +838,18 @@ pub fn profile_to_content(profile: &ProfileMetadata) -> String {
 // Contact List (Following/Followers)
 // ============================================================
 
-// A contact entry from a kind 3 event
-// Each "p" tag in a kind 3 event represents someone the author follows
 pub struct Contact {
-    // The public key of the followed user
     pub pubkey: String,
-    
-    // Optional relay URL where this user can be found
     pub relay_url: Option<String>,
-    
-    // Optional petname (local nickname)
     pub petname: Option<String>,
 }
 
-// A contact list (who a user follows)
 pub struct ContactList {
-    // The public key of the owner of this contact list
     pub owner_pubkey: String,
-    
-    // List of contacts (people they follow)
     pub contacts: Vec<Contact>,
-    
-    // When this contact list was last updated
     pub created_at: u64,
 }
 
-// Parse contacts from a kind 3 event
-// The "p" tags contain: ["p", pubkey, relay_url?, petname?]
 pub fn parse_contact_list(event: &Event) -> Result<ContactList, String> {
     if event.kind != KIND_CONTACTS {
         return Err(format!("Expected kind 3 event, got kind {}", event.kind));
@@ -780,55 +857,35 @@ pub fn parse_contact_list(event: &Event) -> Result<ContactList, String> {
     
     let mut contacts: Vec<Contact> = Vec::new();
     
-    // Extract contacts from "p" tags
     for tag in &event.tags {
         if tag.len() >= 2 && tag[0] == "p" {
             let pubkey = tag[1].clone();
-            
-            // Optional relay URL (index 2)
-            let relay_url: Option<String>;
-            if tag.len() >= 3 && !tag[2].is_empty() {
-                relay_url = Some(tag[2].clone());
+            let relay_url = if tag.len() >= 3 && !tag[2].is_empty() {
+                Some(tag[2].clone())
             } else {
-                relay_url = None;
-            }
-            
-            // Optional petname (index 3)
-            let petname: Option<String>;
-            if tag.len() >= 4 && !tag[3].is_empty() {
-                petname = Some(tag[3].clone());
+                None
+            };
+            let petname = if tag.len() >= 4 && !tag[3].is_empty() {
+                Some(tag[3].clone())
             } else {
-                petname = None;
-            }
-            
-            contacts.push(Contact {
-                pubkey: pubkey,
-                relay_url: relay_url,
-                petname: petname,
-            });
+                None
+            };
+            contacts.push(Contact { pubkey, relay_url, petname });
         }
     }
     
     return Ok(ContactList {
         owner_pubkey: event.pubkey.clone(),
-        contacts: contacts,
+        contacts,
         created_at: event.created_at,
     });
 }
 
-/// Get just the pubkeys from a contact list.
 #[allow(dead_code)]
 pub fn get_following_pubkeys(contact_list: &ContactList) -> Vec<String> {
-    let mut pubkeys: Vec<String> = Vec::new();
-    
-    for contact in &contact_list.contacts {
-        pubkeys.push(contact.pubkey.clone());
-    }
-    
-    return pubkeys;
+    contact_list.contacts.iter().map(|c| c.pubkey.clone()).collect()
 }
 
-// Create a filter for a user's contact list (who they follow)
 pub fn filter_contact_list_by_author(author_pubkey: &str) -> Filter {
     Filter {
         ids: None,
@@ -836,27 +893,25 @@ pub fn filter_contact_list_by_author(author_pubkey: &str) -> Filter {
         kinds: Some(vec![KIND_CONTACTS]),
         since: None,
         until: None,
-        limit: Some(1),  // Only need the most recent contact list
+        limit: Some(1),
         p_tags: None,
         e_tags: None,
     }
 }
 
-// Create a filter to find followers (kind 3 events that tag a pubkey)
 pub fn filter_followers_by_pubkey(target_pubkey: &str) -> Filter {
     Filter {
         ids: None,
-        authors: None,  // Any author
+        authors: None,
         kinds: Some(vec![KIND_CONTACTS]),
         since: None,
         until: None,
-        limit: Some(500),  // Limit to avoid huge responses
+        limit: Some(500),
         p_tags: Some(vec![target_pubkey.to_string()]),
         e_tags: None,
     }
 }
 
-// Create a filter for a user's relay list (NIP-65 kind 10002)
 pub fn filter_relay_list_by_author(author_pubkey: &str) -> Filter {
     Filter {
         ids: None,
@@ -870,7 +925,6 @@ pub fn filter_relay_list_by_author(author_pubkey: &str) -> Filter {
     }
 }
 
-/// Parse relay list from a kind 10002 event (NIP-65). Tags: ["r", "relay_url"] or ["r", "url", "read"/"write"].
 pub fn parse_relay_list(event: &Event) -> Result<Vec<String>, String> {
     if event.kind != KIND_RELAY_LIST {
         return Err(format!("Expected kind 10002 event, got kind {}", event.kind));
@@ -887,90 +941,55 @@ pub fn parse_relay_list(event: &Event) -> Result<Vec<String>, String> {
     Ok(urls)
 }
 
-// Convert a ContactList to JSON string
 pub fn contact_list_to_json(contact_list: &ContactList) -> String {
     let mut json = String::new();
-    json.push_str("{");
-    
-    // owner_pubkey
-    json.push_str("\"owner_pubkey\":\"");
+    json.push_str("{\"owner_pubkey\":\"");
     json.push_str(&escape_json_string(&contact_list.owner_pubkey));
-    json.push_str("\",");
-    
-    // created_at
-    json.push_str("\"created_at\":");
+    json.push_str("\",\"created_at\":");
     json.push_str(&contact_list.created_at.to_string());
-    json.push_str(",");
-    
-    // count
-    json.push_str("\"count\":");
+    json.push_str(",\"count\":");
     json.push_str(&contact_list.contacts.len().to_string());
-    json.push_str(",");
-    
-    // contacts array
-    json.push_str("\"contacts\":[");
+    json.push_str(",\"contacts\":[");
     for (i, contact) in contact_list.contacts.iter().enumerate() {
-        json.push_str("{");
-        
-        // pubkey
-        json.push_str("\"pubkey\":\"");
+        json.push_str("{\"pubkey\":\"");
         json.push_str(&escape_json_string(&contact.pubkey));
         json.push_str("\"");
-        
-        // relay_url (optional)
         if let Some(ref relay) = contact.relay_url {
             json.push_str(",\"relay_url\":\"");
             json.push_str(&escape_json_string(relay));
             json.push_str("\"");
         }
-        
-        // petname (optional)
         if let Some(ref name) = contact.petname {
             json.push_str(",\"petname\":\"");
             json.push_str(&escape_json_string(name));
             json.push_str("\"");
         }
-        
         json.push_str("}");
-        
         if i < contact_list.contacts.len() - 1 {
             json.push_str(",");
         }
     }
-    json.push_str("]");
-    
-    json.push_str("}");
+    json.push_str("]}");
     return json;
 }
 
-// Simple struct for follower info
 pub struct FollowerInfo {
     pub pubkey: String,
 }
 
-// Convert followers list to JSON
 pub fn followers_to_json(followers: &Vec<FollowerInfo>) -> String {
     let mut json = String::new();
-    json.push_str("{");
-    
-    // count
-    json.push_str("\"count\":");
+    json.push_str("{\"count\":");
     json.push_str(&followers.len().to_string());
-    json.push_str(",");
-    
-    // followers array
-    json.push_str("\"followers\":[");
+    json.push_str(",\"followers\":[");
     for (i, follower) in followers.iter().enumerate() {
         json.push_str("{\"pubkey\":\"");
         json.push_str(&escape_json_string(&follower.pubkey));
         json.push_str("\"}");
-        
         if i < followers.len() - 1 {
             json.push_str(",");
         }
     }
-    json.push_str("]");
-    
-    json.push_str("}");
+    json.push_str("]}");
     return json;
 }

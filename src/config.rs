@@ -22,48 +22,26 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
+use bytes::BytesMut;
+use crate::json::{JsonContentHandler, JsonNumber, JsonParser};
+
 // The main configuration structure
-// This gets saved to and loaded from ~/.plume/config.json
 pub struct Config {
-    // User's Nostr public key (npub or hex)
     pub public_key: String,
-
-    // User's Nostr private key (nsec or hex) - optional, for signing
     pub private_key: Option<String>,
-
-    // List of relay URLs to connect to
     pub relays: Vec<String>,
-
-    // Display name for the user
     pub display_name: String,
-
-    // Profile picture URL (optional; used for sidebar avatar at launch)
     pub profile_picture: Option<String>,
-
-    // Full profile as JSON (kind 0 content: name, about, picture, nip05, banner, website, lud16)
     pub profile_metadata: Option<String>,
-
-    // Home feed mode: "follows" (notes from people you follow) or "firehose" (global)
     pub home_feed_mode: String,
-
-    // Media server URL for uploads (e.g. https://blossom.primal.net)
     pub media_server_url: String,
-
-    // Muted pubkeys (hex)
     pub muted_users: Vec<String>,
-    // Muted words (filter notes containing these)
     pub muted_words: Vec<String>,
-    // Muted hashtags (without #)
     pub muted_hashtags: Vec<String>,
-
-    // Bookmarked note event IDs (stored in config, shown on bookmarks page)
     pub bookmarks: Vec<String>,
-
-    // Default zap amount in satoshis (for Lightning zaps)
     pub default_zap_amount: u32,
 }
 
-// Create a default configuration for new users
 impl Config {
     pub fn new() -> Config {
         Config {
@@ -88,19 +66,187 @@ impl Config {
     }
 }
 
-// Convert a Config struct to a JSON string
-// We do this manually so you can see exactly what's happening
+// ============================================================
+// Push-parser handler for Config
+// ============================================================
+
+/// Which string array field we're currently inside (depth 2).
+#[derive(Clone, Copy, PartialEq)]
+enum ConfigArrayField {
+    None,
+    Relays,
+    MutedUsers,
+    MutedWords,
+    MutedHashtags,
+    Bookmarks,
+}
+
+struct ConfigHandler {
+    depth: i32,
+    current_field: Option<String>,
+    array_field: ConfigArrayField,
+    // Scalar fields
+    public_key: String,
+    private_key: Option<String>,
+    display_name: String,
+    profile_picture: Option<String>,
+    profile_metadata: Option<String>,
+    home_feed_mode: String,
+    media_server_url: String,
+    default_zap_amount: u32,
+    // Array fields
+    relays: Vec<String>,
+    muted_users: Vec<String>,
+    muted_words: Vec<String>,
+    muted_hashtags: Vec<String>,
+    bookmarks: Vec<String>,
+}
+
+impl ConfigHandler {
+    fn new() -> Self {
+        Self {
+            depth: 0,
+            current_field: None,
+            array_field: ConfigArrayField::None,
+            public_key: String::new(),
+            private_key: None,
+            display_name: String::from("Anonymous"),
+            profile_picture: None,
+            profile_metadata: None,
+            home_feed_mode: String::from("firehose"),
+            media_server_url: String::from("https://blossom.primal.net"),
+            default_zap_amount: 42,
+            relays: Vec::new(),
+            muted_users: Vec::new(),
+            muted_words: Vec::new(),
+            muted_hashtags: Vec::new(),
+            bookmarks: Vec::new(),
+        }
+    }
+
+    fn take_config(self) -> Config {
+        let mut relays = self.relays;
+        if relays.is_empty() {
+            relays.push(String::from("wss://relay.damus.io"));
+            relays.push(String::from("wss://nos.lol"));
+            relays.push(String::from("wss://relay.nostr.band"));
+        }
+        let home_feed_mode = if self.home_feed_mode == "follows" {
+            String::from("follows")
+        } else {
+            String::from("firehose")
+        };
+        Config {
+            public_key: self.public_key,
+            private_key: self.private_key,
+            relays,
+            display_name: self.display_name,
+            profile_picture: self.profile_picture,
+            profile_metadata: self.profile_metadata,
+            home_feed_mode,
+            media_server_url: self.media_server_url,
+            default_zap_amount: self.default_zap_amount,
+            muted_users: self.muted_users,
+            muted_words: self.muted_words,
+            muted_hashtags: self.muted_hashtags,
+            bookmarks: self.bookmarks,
+        }
+    }
+}
+
+impl JsonContentHandler for ConfigHandler {
+    fn start_object(&mut self) {
+        self.depth += 1;
+    }
+    fn end_object(&mut self) {
+        self.depth -= 1;
+    }
+    fn start_array(&mut self) {
+        self.depth += 1;
+        if self.depth == 2 {
+            if let Some(ref f) = self.current_field {
+                self.array_field = match f.as_str() {
+                    "relays" => ConfigArrayField::Relays,
+                    "muted_users" => ConfigArrayField::MutedUsers,
+                    "muted_words" => ConfigArrayField::MutedWords,
+                    "muted_hashtags" => ConfigArrayField::MutedHashtags,
+                    "bookmarks" => ConfigArrayField::Bookmarks,
+                    _ => ConfigArrayField::None,
+                };
+            }
+        }
+    }
+    fn end_array(&mut self) {
+        if self.depth == 2 {
+            self.array_field = ConfigArrayField::None;
+        }
+        self.depth -= 1;
+    }
+
+    fn key(&mut self, key: &str) {
+        self.current_field = Some(key.to_string());
+    }
+
+    fn string_value(&mut self, value: &str) {
+        // Inside an array at depth 2
+        if self.depth == 2 && self.array_field != ConfigArrayField::None {
+            let vec = match self.array_field {
+                ConfigArrayField::Relays => &mut self.relays,
+                ConfigArrayField::MutedUsers => &mut self.muted_users,
+                ConfigArrayField::MutedWords => &mut self.muted_words,
+                ConfigArrayField::MutedHashtags => &mut self.muted_hashtags,
+                ConfigArrayField::Bookmarks => &mut self.bookmarks,
+                ConfigArrayField::None => return,
+            };
+            vec.push(value.to_string());
+            return;
+        }
+        // Top-level scalar
+        if self.depth == 1 {
+            if let Some(ref f) = self.current_field {
+                match f.as_str() {
+                    "public_key" => self.public_key = value.to_string(),
+                    "private_key" => self.private_key = Some(value.to_string()),
+                    "display_name" => self.display_name = value.to_string(),
+                    "profile_picture" => self.profile_picture = Some(value.to_string()),
+                    "profile_metadata" => self.profile_metadata = Some(value.to_string()),
+                    "home_feed_mode" => self.home_feed_mode = value.to_string(),
+                    "media_server_url" => self.media_server_url = value.to_string(),
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    fn number_value(&mut self, number: JsonNumber) {
+        if self.depth == 1 {
+            if let Some(ref f) = self.current_field {
+                if f == "default_zap_amount" {
+                    let n = number.as_f64() as u32;
+                    if n >= 1 && n <= 1_000_000 {
+                        self.default_zap_amount = n;
+                    }
+                }
+            }
+        }
+    }
+
+    fn boolean_value(&mut self, _value: bool) {}
+    fn null_value(&mut self) {}
+}
+
+// ============================================================
+// Serialization / Deserialization
+// ============================================================
+
 pub fn config_to_json(config: &Config) -> String {
-    // Start building the JSON object
     let mut json = String::new();
     json.push_str("{\n");
     
-    // Add public_key field
     json.push_str("  \"public_key\": \"");
     json.push_str(&escape_json_string(&config.public_key));
     json.push_str("\",\n");
     
-    // Add private_key field (can be null)
     json.push_str("  \"private_key\": ");
     match &config.private_key {
         Some(key) => {
@@ -108,287 +254,88 @@ pub fn config_to_json(config: &Config) -> String {
             json.push_str(&escape_json_string(key));
             json.push_str("\"");
         }
-        None => {
-            json.push_str("null");
-        }
+        None => json.push_str("null"),
     }
     json.push_str(",\n");
     
-    // Add relays array
     json.push_str("  \"relays\": [\n");
     for (index, relay) in config.relays.iter().enumerate() {
         json.push_str("    \"");
         json.push_str(&escape_json_string(relay));
         json.push_str("\"");
-        // Add comma if not the last item
-        if index < config.relays.len() - 1 {
-            json.push_str(",");
-        }
+        if index < config.relays.len() - 1 { json.push_str(","); }
         json.push_str("\n");
     }
     json.push_str("  ],\n");
 
-    // Add display_name field
     json.push_str("  \"display_name\": \"");
     json.push_str(&escape_json_string(&config.display_name));
     json.push_str("\",\n");
 
-    // Add profile_picture field (optional)
     json.push_str("  \"profile_picture\": ");
     match &config.profile_picture {
-        Some(url) => {
-            json.push_str("\"");
-            json.push_str(&escape_json_string(url));
-            json.push_str("\"");
-        }
+        Some(url) => { json.push_str("\""); json.push_str(&escape_json_string(url)); json.push_str("\""); }
         None => json.push_str("null"),
     }
     json.push_str(",\n");
 
-    // Add profile_metadata field (optional; full profile JSON)
     json.push_str("  \"profile_metadata\": ");
     match &config.profile_metadata {
-        Some(s) => {
-            json.push_str("\"");
-            json.push_str(&escape_json_string(s));
-            json.push_str("\"");
-        }
+        Some(s) => { json.push_str("\""); json.push_str(&escape_json_string(s)); json.push_str("\""); }
         None => json.push_str("null"),
     }
     json.push_str(",\n");
 
-    // Add home_feed_mode field
     json.push_str("  \"home_feed_mode\": \"");
     json.push_str(&escape_json_string(&config.home_feed_mode));
     json.push_str("\",\n");
 
-    // Add media_server_url
     json.push_str("  \"media_server_url\": \"");
     json.push_str(&escape_json_string(&config.media_server_url));
     json.push_str("\",\n");
 
-    // Add muted_users array
-    json.push_str("  \"muted_users\": [\n");
-    for (index, s) in config.muted_users.iter().enumerate() {
-        json.push_str("    \"");
-        json.push_str(&escape_json_string(s));
-        json.push_str("\"");
-        if index < config.muted_users.len() - 1 {
-            json.push_str(",");
-        }
-        json.push_str("\n");
-    }
-    json.push_str("  ],\n");
+    write_string_array(&mut json, "muted_users", &config.muted_users);
+    json.push_str(",\n");
+    write_string_array(&mut json, "muted_words", &config.muted_words);
+    json.push_str(",\n");
+    write_string_array(&mut json, "muted_hashtags", &config.muted_hashtags);
+    json.push_str(",\n");
+    write_string_array(&mut json, "bookmarks", &config.bookmarks);
+    json.push_str(",\n");
 
-    // Add muted_words array
-    json.push_str("  \"muted_words\": [\n");
-    for (index, s) in config.muted_words.iter().enumerate() {
-        json.push_str("    \"");
-        json.push_str(&escape_json_string(s));
-        json.push_str("\"");
-        if index < config.muted_words.len() - 1 {
-            json.push_str(",");
-        }
-        json.push_str("\n");
-    }
-    json.push_str("  ],\n");
-
-    // Add muted_hashtags array
-    json.push_str("  \"muted_hashtags\": [\n");
-    for (index, s) in config.muted_hashtags.iter().enumerate() {
-        json.push_str("    \"");
-        json.push_str(&escape_json_string(s));
-        json.push_str("\"");
-        if index < config.muted_hashtags.len() - 1 {
-            json.push_str(",");
-        }
-        json.push_str("\n");
-    }
-    json.push_str("  ],\n");
-
-    // Add bookmarks array
-    json.push_str("  \"bookmarks\": [\n");
-    for (index, id) in config.bookmarks.iter().enumerate() {
-        json.push_str("    \"");
-        json.push_str(&escape_json_string(id));
-        json.push_str("\"");
-        if index < config.bookmarks.len() - 1 {
-            json.push_str(",");
-        }
-        json.push_str("\n");
-    }
-    json.push_str("  ],\n");
-
-    // Default zap amount (sats)
     json.push_str("  \"default_zap_amount\": ");
     json.push_str(&config.default_zap_amount.to_string());
     json.push_str("\n");
 
     json.push_str("}");
-    
     return json;
 }
 
-// Parse a JSON string into a Config struct
-// We do this manually so you can see exactly what's happening
-pub fn json_to_config(json_str: &str) -> Result<Config, String> {
-    // Use the json crate to parse the string
-    let parsed = match json::parse(json_str) {
-        Ok(value) => value,
-        Err(e) => return Err(format!("Invalid JSON: {}", e)),
-    };
-    
-    // Extract public_key (required string field)
-    let public_key: String;
-    if parsed["public_key"].is_string() {
-        public_key = parsed["public_key"].as_str().unwrap().to_string();
-    } else {
-        public_key = String::new();
+fn write_string_array(json: &mut String, name: &str, items: &[String]) {
+    json.push_str("  \"");
+    json.push_str(name);
+    json.push_str("\": [\n");
+    for (i, s) in items.iter().enumerate() {
+        json.push_str("    \"");
+        json.push_str(&escape_json_string(s));
+        json.push_str("\"");
+        if i < items.len() - 1 { json.push_str(","); }
+        json.push_str("\n");
     }
-    
-    // Extract private_key (optional string field)
-    let private_key: Option<String>;
-    if parsed["private_key"].is_string() {
-        private_key = Some(parsed["private_key"].as_str().unwrap().to_string());
-    } else {
-        private_key = None;
-    }
-    
-    // Extract display_name (string with default)
-    let display_name: String;
-    if parsed["display_name"].is_string() {
-        display_name = parsed["display_name"].as_str().unwrap().to_string();
-    } else {
-        display_name = String::from("Anonymous");
-    }
-
-    // Extract profile_picture (optional string)
-    let profile_picture: Option<String>;
-    if parsed["profile_picture"].is_string() {
-        profile_picture = Some(parsed["profile_picture"].as_str().unwrap().to_string());
-    } else {
-        profile_picture = None;
-    }
-
-    // Extract profile_metadata (optional string; full profile JSON)
-    let profile_metadata: Option<String>;
-    if parsed["profile_metadata"].is_string() {
-        profile_metadata = Some(parsed["profile_metadata"].as_str().unwrap().to_string());
-    } else {
-        profile_metadata = None;
-    }
-
-    // Extract home_feed_mode (string: "follows" or "firehose")
-    let home_feed_mode: String;
-    if parsed["home_feed_mode"].is_string() {
-        let mode = parsed["home_feed_mode"].as_str().unwrap();
-        if mode == "follows" {
-            home_feed_mode = String::from("follows");
-        } else {
-            home_feed_mode = String::from("firehose");
-        }
-    } else {
-        home_feed_mode = String::from("firehose");
-    }
-
-    // Extract media_server_url (string, default blossom.primal.net)
-    let media_server_url: String = if parsed["media_server_url"].is_string() {
-        parsed["media_server_url"].as_str().unwrap().to_string()
-    } else {
-        String::from("https://blossom.primal.net")
-    };
-
-    // Extract muted_users (array of pubkey strings)
-    let mut muted_users: Vec<String> = Vec::new();
-    if parsed["muted_users"].is_array() {
-        for item in parsed["muted_users"].members() {
-            if item.is_string() {
-                muted_users.push(item.as_str().unwrap().to_string());
-            }
-        }
-    }
-
-    // Extract muted_words (array of strings)
-    let mut muted_words: Vec<String> = Vec::new();
-    if parsed["muted_words"].is_array() {
-        for item in parsed["muted_words"].members() {
-            if item.is_string() {
-                muted_words.push(item.as_str().unwrap().to_string());
-            }
-        }
-    }
-
-    // Extract muted_hashtags (array of strings)
-    let mut muted_hashtags: Vec<String> = Vec::new();
-    if parsed["muted_hashtags"].is_array() {
-        for item in parsed["muted_hashtags"].members() {
-            if item.is_string() {
-                muted_hashtags.push(item.as_str().unwrap().to_string());
-            }
-        }
-    }
-
-    // Extract bookmarks (array of event ID strings)
-    let mut bookmarks: Vec<String> = Vec::new();
-    if parsed["bookmarks"].is_array() {
-        for item in parsed["bookmarks"].members() {
-            if item.is_string() {
-                bookmarks.push(item.as_str().unwrap().to_string());
-            }
-        }
-    }
-
-    // Extract default_zap_amount (number, default 42)
-    let default_zap_amount: u32 = match &parsed["default_zap_amount"] {
-        json::JsonValue::Number(n) => {
-            let f: f64 = n.clone().into();
-            let n = f as u32;
-            if n >= 1 && n <= 1_000_000 { n } else { 42 }
-        }
-        _ => 42,
-    };
-
-    // Extract relays (array of strings)
-    let mut relays: Vec<String> = Vec::new();
-    if parsed["relays"].is_array() {
-        for item in parsed["relays"].members() {
-            if item.is_string() {
-                relays.push(item.as_str().unwrap().to_string());
-            }
-        }
-    }
-    // Use defaults if no relays specified
-    if relays.is_empty() {
-        relays.push(String::from("wss://relay.damus.io"));
-        relays.push(String::from("wss://nos.lol"));
-        relays.push(String::from("wss://relay.nostr.band"));
-    }
-    
-    // Build and return the Config struct
-    let config = Config {
-        public_key: public_key,
-        private_key: private_key,
-        relays: relays,
-        display_name: display_name,
-        profile_picture: profile_picture,
-        profile_metadata: profile_metadata,
-        home_feed_mode: home_feed_mode,
-        media_server_url: media_server_url,
-        muted_users: muted_users,
-        muted_words: muted_words,
-        muted_hashtags: muted_hashtags,
-        bookmarks: bookmarks,
-        default_zap_amount: default_zap_amount,
-    };
-    
-    return Ok(config);
+    json.push_str("  ]");
 }
 
-// Escape special characters in a string for JSON
-// This handles quotes, backslashes, newlines, etc.
+pub fn json_to_config(json_str: &str) -> Result<Config, String> {
+    let mut handler = ConfigHandler::new();
+    let mut parser = JsonParser::new();
+    let mut buf = BytesMut::from(json_str.as_bytes());
+    parser.receive(&mut buf, &mut handler).map_err(|e| format!("Invalid JSON: {}", e))?;
+    parser.close(&mut handler).map_err(|e| format!("Invalid JSON: {}", e))?;
+    Ok(handler.take_config())
+}
+
 fn escape_json_string(input: &str) -> String {
     let mut output = String::new();
-    
     for character in input.chars() {
         match character {
             '"' => output.push_str("\\\""),
@@ -399,79 +346,54 @@ fn escape_json_string(input: &str) -> String {
             _ => output.push(character),
         }
     }
-    
     return output;
 }
 
-// Get the path to the config directory (~/.plume)
+// ============================================================
+// File System
+// ============================================================
+
 pub fn get_config_dir() -> Option<String> {
-    // Use the dirs crate to find the home directory
     match dirs::home_dir() {
         Some(home) => {
             let config_path = home.join(".plume");
-            // Convert the path to a string
-            match config_path.to_str() {
-                Some(s) => return Some(String::from(s)),
-                None => return None,
-            }
+            config_path.to_str().map(String::from)
         }
-        None => {
-            return None;
-        }
+        None => None,
     }
 }
 
-// Make sure the config directory exists, create it if not
 pub fn ensure_config_dir(config_dir: &str) -> Result<(), io::Error> {
     let path = Path::new(config_dir);
-    
     if path.exists() {
-        // Already exists, nothing to do
         return Ok(());
     }
-    
-    // Create the directory
     fs::create_dir_all(path)?;
-    
     println!("Created config directory: {}", config_dir);
     return Ok(());
 }
 
-// Get the full path to the config file
 fn get_config_file_path(config_dir: &str) -> String {
-    let path = Path::new(config_dir).join("config.json");
-    return path.to_string_lossy().to_string();
+    Path::new(config_dir).join("config.json").to_string_lossy().to_string()
 }
 
-// Load configuration from disk
 pub fn load_config(config_dir: &str) -> Result<Config, String> {
     let config_file = get_config_file_path(config_dir);
     let path = Path::new(&config_file);
-    
-    // If config file doesn't exist, return default config
     if !path.exists() {
         println!("No config file found, using defaults");
         return Ok(Config::new());
     }
-    
-    // Read the file contents
     let contents = match fs::read_to_string(path) {
         Ok(c) => c,
         Err(e) => return Err(format!("Could not read config file: {}", e)),
     };
-    
-    // Parse the JSON into a Config struct
     return json_to_config(&contents);
 }
 
-// Save configuration to disk
 pub fn save_config(config_dir: &str, config: &Config) -> Result<(), String> {
     let config_file = get_config_file_path(config_dir);
-    
-    // Convert config to JSON string
     let json = config_to_json(config);
-    
-    // Write to file
     match fs::write(&config_file, json) {
         Ok(()) => {
             println!("Saved config to: {}", config_file);
