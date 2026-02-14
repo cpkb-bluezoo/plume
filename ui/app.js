@@ -39,9 +39,31 @@ window.onunhandledrejection = function(event) {
 // Global State
 // ============================================================
 
+// Default relays used for anonymous firehose browsing when no user config is loaded
+const DEFAULT_RELAYS = ['wss://relay.damus.io', 'wss://relay.primal.net', 'wss://nos.lol'];
+
+// Returns the relay list to use: user's configured relays if available, otherwise defaults
+function getEffectiveRelays() {
+    if (state.config && Array.isArray(state.config.relays) && state.config.relays.length > 0) {
+        return state.config.relays;
+    }
+    return DEFAULT_RELAYS;
+}
+
 // Application state
 const state = {
-    config: null,
+    appConfig: null,
+    config: {
+        public_key: '',
+        private_key: null,
+        relays: DEFAULT_RELAYS.slice(),
+        name: 'Anonymous',
+        about: null, picture: null, nip05: null, banner: null, website: null, lud16: null,
+        home_feed_mode: 'firehose',
+        media_server_url: 'https://blossom.primal.net',
+        following: [], muted_users: [], muted_words: [], muted_hashtags: [], bookmarks: [],
+        default_zap_amount: 42
+    },
     currentView: 'feed',
     notes: [],
     loading: false,
@@ -84,9 +106,50 @@ const state = {
     // Follows settings panel: working copy [{ pubkey (hex), checked, listOrder }], sort key
     followsPanelList: [],
     followsPanelSort: 'name',
+    followsPanelLoading: false,
+    // Track where user was before entering edit-profile in settings (so Save navigates back)
+    editProfilePreviousView: null,
     // Muted users panel: working copy [{ pubkey, checked }], no config change until Save
     mutedUsersPanelList: []
 };
+
+// ============================================================
+// UI Helpers
+// ============================================================
+
+// Custom confirm dialog (native confirm() is blocked in Tauri 2.0 webviews)
+function showConfirm(message) {
+    return new Promise(function(resolve) {
+        var modal = document.getElementById('confirm-dialog');
+        var msgEl = document.getElementById('confirm-dialog-message');
+        var okBtn = document.getElementById('confirm-dialog-ok');
+        var cancelBtn = document.getElementById('confirm-dialog-cancel');
+        if (!modal || !msgEl || !okBtn || !cancelBtn) {
+            // Fallback: just resolve true if DOM elements are missing
+            resolve(true);
+            return;
+        }
+        msgEl.textContent = message;
+        modal.classList.add('active');
+        modal.setAttribute('aria-hidden', 'false');
+
+        function cleanup() {
+            modal.classList.remove('active');
+            modal.setAttribute('aria-hidden', 'true');
+            okBtn.removeEventListener('click', onOk);
+            cancelBtn.removeEventListener('click', onCancel);
+            modal.removeEventListener('click', onBackdrop);
+        }
+        function onOk() { cleanup(); resolve(true); }
+        function onCancel() { cleanup(); resolve(false); }
+        function onBackdrop(e) { if (e.target === modal) { cleanup(); resolve(false); } }
+
+        okBtn.addEventListener('click', onOk);
+        cancelBtn.addEventListener('click', onCancel);
+        modal.addEventListener('click', onBackdrop);
+        okBtn.focus();
+    });
+}
 
 // ============================================================
 // Tauri API Helpers
@@ -202,16 +265,22 @@ async function loadConfig() {
         if (configJson) {
             state.config = JSON.parse(configJson);
             if (!Array.isArray(state.config.bookmarks)) state.config.bookmarks = [];
-            console.log('Config loaded:', state.config);
+            // Log config without private key to avoid leaking secrets in console
+            var safeConfig = Object.assign({}, state.config, { private_key: state.config.private_key ? '[REDACTED]' : null });
+            console.log('Config loaded:', safeConfig);
             
-            // Restore full profile from config so sidebar and profile page have it at launch
-            if (state.config.profile_metadata) {
-                try {
-                    state.profile = JSON.parse(state.config.profile_metadata);
-                    state.viewedProfile = state.profile;
-                } catch (e) {
-                    state.profile = null;
-                }
+            // Build profile from config fields (profile fields are stored directly in config)
+            if (state.config.name && state.config.name !== 'Anonymous') {
+                state.profile = {
+                    name: state.config.name || null,
+                    about: state.config.about || null,
+                    picture: state.config.picture || null,
+                    nip05: state.config.nip05 || null,
+                    banner: state.config.banner || null,
+                    website: state.config.website || null,
+                    lud16: state.config.lud16 || null,
+                };
+                state.viewedProfile = state.profile;
             }
             
             // Parse the public key to get npub format
@@ -231,16 +300,22 @@ async function loadConfig() {
         state.config = {
             public_key: '',
             private_key: null,
-            relays: ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.nostr.band'],
-            display_name: 'Anonymous',
-            profile_picture: null,
-            profile_metadata: null,
+            relays: DEFAULT_RELAYS.slice(),
+            name: 'Anonymous',
+            about: null,
+            picture: null,
+            nip05: null,
+            banner: null,
+            website: null,
+            lud16: null,
             home_feed_mode: 'firehose',
             media_server_url: 'https://blossom.primal.net',
+            following: [],
             muted_users: [],
             muted_words: [],
             muted_hashtags: [],
-            bookmarks: []
+            bookmarks: [],
+            default_zap_amount: 42
         };
         updateUIFromConfig();
     }
@@ -249,9 +324,15 @@ async function loadConfig() {
 // Save configuration to the backend
 async function saveConfig() {
     try {
+        // Sync profile fields into config before saving
         if (state.profile) {
-            state.config.profile_picture = state.profile.picture || null;
-            state.config.profile_metadata = JSON.stringify(state.profile);
+            if (state.profile.name) state.config.name = state.profile.name;
+            state.config.about = state.profile.about || null;
+            state.config.picture = state.profile.picture || null;
+            state.config.nip05 = state.profile.nip05 || null;
+            state.config.banner = state.profile.banner || null;
+            state.config.website = state.profile.website || null;
+            state.config.lud16 = state.profile.lud16 || null;
         }
         const configJson = JSON.stringify(state.config);
         await invoke('save_config', { configJson: configJson });
@@ -262,13 +343,26 @@ async function saveConfig() {
     }
 }
 
+// Helper: set a button to a "saving" state (disabled + localised text), returns a restore function.
+function setSavingState(btn) {
+    if (!btn) return function() {};
+    var t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
+    var original = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = t('editProfileModal.saving') || 'Saving...';
+    return function() {
+        btn.disabled = false;
+        btn.textContent = original || t('accountModal.save') || 'Save';
+    };
+}
+
 // Update sidebar profile avatar from config (so it shows at launch before profile page is loaded)
 function updateSidebarAvatarFromConfig() {
     if (!state.config) return;
     const sidebarAvatar = document.getElementById('sidebar-avatar');
     const sidebarPlaceholder = document.getElementById('sidebar-avatar-placeholder');
     if (!sidebarAvatar || !sidebarPlaceholder) return;
-    const pic = state.config.profile_picture;
+    const pic = state.config.picture;
     if (pic) {
         sidebarAvatar.src = pic;
         sidebarAvatar.style.display = 'block';
@@ -347,7 +441,7 @@ async function loadMessagesView() {
             listEl.innerHTML = html;
         }
 
-        if (!state.dmStreamStarted && state.config.relays && state.config.relays.length > 0) {
+        if (!state.dmStreamStarted && getEffectiveRelays().length > 0) {
             state.dmStreamStarted = true;
             invoke('start_dm_stream').catch(function(e) { console.warn('start_dm_stream:', e); });
         }
@@ -451,10 +545,10 @@ function updateUIFromConfig() {
 
     const nameEl = document.getElementById('input-display-name');
     const pubEl = document.getElementById('input-public-key');
-    const privEl = document.getElementById('input-private-key');
-    if (nameEl) nameEl.value = state.config.display_name || '';
+    if (nameEl) nameEl.value = state.config.name || '';
     if (pubEl) pubEl.value = state.config.public_key || '';
-    if (privEl) privEl.value = state.config.private_key || '';
+    // Private key is NEVER written to the DOM to prevent exfiltration by injected scripts.
+    // The input-private-key field is write-only (user types a new key; it is not pre-populated).
 
     updateSidebarAvatarFromConfig();
     updateMessagesNavUnread();
@@ -469,7 +563,8 @@ function updateFeedInitialState() {
     const container = document.getElementById('notes-container');
     if (!container) return;
 
-    const hasRelays = state.config && state.config.relays && state.config.relays.length > 0;
+    const effectiveRelays = getEffectiveRelays();
+    const hasRelays = effectiveRelays.length > 0;
     const hasKeys = !!(state.config && state.config.public_key);
 
     if (!hasRelays) {
@@ -526,7 +621,7 @@ async function fetchProfile() {
         } else {
             const profileJson = await invoke('fetch_profile', {
                 pubkey: state.viewedProfilePubkey,
-                relay_urls: state.config.relays
+                relay_urls: getEffectiveRelays()
             });
             if (profileJson && profileJson !== '{}') {
                 state.viewedProfile = JSON.parse(profileJson);
@@ -653,6 +748,7 @@ function closeProfileQRModal() {
 
 // Navigate to Settings with Profile panel open (replaces opening edit profile modal)
 function openEditProfileInSettings() {
+    state.editProfilePreviousView = state.currentView;
     state.settingsPanelRequested = 'profile';
     switchView('settings');
 }
@@ -660,6 +756,11 @@ function openEditProfileInSettings() {
 function handleEditProfileSubmit(e) {
     if (e && e.preventDefault) e.preventDefault();
     debugLog('Edit profile submit/OK clicked');
+
+    // Show saving state on the button
+    var saveBtn = document.querySelector('#edit-profile-form button[type="submit"]');
+    var restoreBtn = setSavingState(saveBtn);
+
     var nameEl = document.getElementById('edit-profile-name');
     var nip05El = document.getElementById('edit-profile-nip05');
     var websiteEl = document.getElementById('edit-profile-website');
@@ -693,23 +794,39 @@ function handleEditProfileSubmit(e) {
     invoke('set_profile_metadata', { profileJson: profileJson })
         .then(function() {
             if (state.config) {
-                if (name) state.config.display_name = name;
-                if (picture) state.config.profile_picture = picture;
-                state.config.profile_metadata = profileJson;
+                if (name) state.config.name = name;
+                if (about) state.config.about = about;
+                if (picture) state.config.picture = picture;
+                if (nip05) state.config.nip05 = nip05;
+                if (banner) state.config.banner = banner;
+                if (website) state.config.website = website;
+                if (lud16) state.config.lud16 = lud16;
             }
             return fetchProfile();
         })
         .then(function() {
             if (state.profile && state.config) {
-                state.config.display_name = state.profile.name || state.config.display_name;
-                if (state.profile.picture) state.config.profile_picture = state.profile.picture;
+                state.config.name = state.profile.name || state.config.name;
+                state.config.about = state.profile.about || state.config.about;
+                state.config.picture = state.profile.picture || state.config.picture;
+                state.config.nip05 = state.profile.nip05 || state.config.nip05;
+                state.config.banner = state.profile.banner || state.config.banner;
+                state.config.website = state.profile.website || state.config.website;
+                state.config.lud16 = state.profile.lud16 || state.config.lud16;
             }
             updateProfileDisplay();
+            // Navigate back to where the user was before editing profile
+            var prevView = state.editProfilePreviousView;
+            state.editProfilePreviousView = null;
+            if (prevView && prevView !== 'settings') {
+                switchView(prevView);
+            }
         })
         .catch(function(err) {
             console.error('Failed to save profile:', err);
             alert(typeof err === 'string' ? err : (err?.message || 'Failed to save profile'));
-        });
+        })
+        .finally(restoreBtn);
 }
 
 // Whether the note should be shown on the current profile tab (notes / replies / zaps).
@@ -798,7 +915,8 @@ async function loadProfileFeed() {
     }
 
     container.innerHTML = '<div class="placeholder-message"><p>' + escapeHtml(t('feed.notesHint')) + '</p></div>';
-    if (!state.config.relays || !state.config.relays.length) {
+    var feedRelays = getEffectiveRelays();
+    if (!feedRelays.length) {
         container.innerHTML = '<div class="placeholder-message"><p>' + escapeHtml(t('feed.noRelays')) + '</p></div>';
         return;
     }
@@ -834,7 +952,7 @@ async function loadProfileFeed() {
             unlisten.note = listeners[0];
             unlisten.eose = listeners[1];
             await invoke('start_feed_stream', {
-                relay_urls: state.config.relays,
+                relay_urls: feedRelays,
                 limit: FEED_LIMIT,
                 authors: authors,
                 since: null,
@@ -853,7 +971,7 @@ async function loadProfileFeed() {
 
     // Batch fallback: fetch in background, then display (non-blocking). profile_feed=true so we get reposts (kind 6).
     state.profileNotesForPubkey = viewedPubkeyAtStart;
-    fetchFeedNotes(state.config.relays, authors, null, true).then(function(notes) {
+    fetchFeedNotes(feedRelays, authors, null, true).then(function(notes) {
         if (getEffectiveProfilePubkey() !== viewedPubkeyAtStart) return;
         var feedNotes = notes ? notes.filter(function(n) { return n.kind === 1 || n.kind === 6; }) : [];
         state.profileNotes = feedNotes;
@@ -885,7 +1003,7 @@ function loadProfileRelays() {
     var viewingOwn = state.viewedProfilePubkey === null || state.viewedProfilePubkey === state.publicKeyHex;
 
     if (viewingOwn) {
-        var relays = state.config && state.config.relays ? state.config.relays : [];
+        var relays = getEffectiveRelays();
         displayProfileRelays(relays);
         return;
     }
@@ -895,13 +1013,14 @@ function loadProfileRelays() {
         return;
     }
 
+    var fetchRelays = getEffectiveRelays();
     container.innerHTML = '<div class="placeholder-message"><p>' + escapeHtml(t('feed.notesHint')) + '</p></div>';
-    if (!state.config || !state.config.relays || !state.config.relays.length) {
+    if (!fetchRelays.length) {
         container.innerHTML = '<div class="placeholder-message"><p>' + escapeHtml(t('feed.noRelays')) + '</p></div>';
         return;
     }
     var pubkey = state.viewedProfilePubkey;
-    invoke('fetch_relay_list', { pubkey: pubkey, relayUrls: state.config.relays })
+    invoke('fetch_relay_list', { pubkey: pubkey, relayUrls: fetchRelays })
         .then(function(json) {
             if (state.viewedProfilePubkey !== pubkey) return;
             var relays = [];
@@ -1045,7 +1164,7 @@ function updateProfileDisplay() {
 
     const t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
     if (profile) {
-        if (nameEl) nameEl.textContent = profile.name || (viewingOwn ? state.config?.display_name : null) || t('profile.anonymous');
+        if (nameEl) nameEl.textContent = profile.name || (viewingOwn ? state.config?.name : null) || t('profile.anonymous');
         if (aboutEl) aboutEl.textContent = profile.about || '';
         if (pictureEl && placeholderEl) {
             if (profile.picture) {
@@ -1086,7 +1205,7 @@ function updateProfileDisplay() {
             }
         }
     } else {
-        var displayName = viewingOwn ? (state.config?.display_name || t('profile.notConfigured')) : (cache && cache.name ? cache.name : '…');
+        var displayName = viewingOwn ? (state.config?.name || t('profile.notConfigured')) : (cache && cache.name ? cache.name : '…');
         if (nameEl) nameEl.textContent = displayName;
         if (aboutEl) aboutEl.textContent = '';
         if (pictureEl && placeholderEl) {
@@ -1128,7 +1247,7 @@ function updateProfileDisplay() {
     }
 
     if (sidebarAvatar && sidebarPlaceholder) {
-        const pic = state.profile?.picture || state.config?.profile_picture;
+        const pic = state.profile?.picture || state.config?.picture;
         if (pic) {
             sidebarAvatar.src = pic;
             sidebarAvatar.style.display = 'block';
@@ -1156,13 +1275,13 @@ async function fetchFollowingAndFollowers() {
 
 // Fetch following and followers for any user (profile page counts). pubkey can be hex or npub.
 async function fetchFollowingAndFollowersForUser(pubkey) {
-    if (!state.config || !state.config.relays || !pubkey) return;
+    var relays = getEffectiveRelays();
+    if (!relays.length || !pubkey) return;
     var fc = document.getElementById('following-count');
     var fl = document.getElementById('followers-count');
     if (fc) fc.textContent = '…';
     if (fl) fl.textContent = '…';
 
-    var relays = state.config.relays;
     var followingResult = null;
     var followersResult = null;
     try {
@@ -1349,7 +1468,7 @@ async function loadBookmarksView() {
     if (!container) return;
     const t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
     const ids = state.config && Array.isArray(state.config.bookmarks) ? state.config.bookmarks : [];
-    const relays = state.config && state.config.relays && state.config.relays.length ? state.config.relays : [];
+    const relays = getEffectiveRelays();
     if (ids.length === 0 || relays.length === 0) {
         container.innerHTML = '<div class="placeholder-message"><p>' + escapeHtml(t('bookmarks.noBookmarks')) + '</p></div>';
         return;
@@ -1426,7 +1545,7 @@ async function openNoteDetail(noteIdOrNote) {
     state.noteDetailReplies = [];
 
     var t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
-    var relays = state.config && state.config.relays ? state.config.relays : [];
+    var relays = getEffectiveRelays();
     if (!relays.length) {
         state.currentView = 'note-detail';
         switchView('note-detail');
@@ -1553,6 +1672,10 @@ function switchView(viewName) {
         if (item.dataset.view === viewName) {
             item.classList.add('active');
         }
+        // Welcome view highlights the profile icon in sidebar
+        if (viewName === 'welcome' && item.dataset.view === 'profile') {
+            item.classList.add('active');
+        }
     });
 
     document.querySelectorAll('.view').forEach(view => {
@@ -1591,12 +1714,22 @@ function switchView(viewName) {
         state.settingsPanelRequested = null;
         showSettingsPanel(panel);
     }
-    // When switching to Home (including clicking Home again while already on feed), request incremental updates only.
-    if (viewName === 'feed' && state.initialFeedLoadDone) {
-        if (state.homeFeedMode === 'firehose') {
-            fetchNotesFirehoseOnHomeClick();
+    // When switching to Home, always re-display existing notes so they're visible immediately,
+    // then request incremental updates for any new notes since the user was away.
+    if (viewName === 'feed') {
+        if (state.notes.length > 0) {
+            displayNotes(state.notes);
+        }
+        if (state.initialFeedLoadDone) {
+            if (state.homeFeedMode === 'firehose') {
+                fetchNotesFirehoseOnHomeClick();
+            } else {
+                pollForNewNotes();
+            }
         } else {
-            pollForNewNotes();
+            // Feed mode was changed or this is first load — fetch from scratch
+            updateFeedInitialState();
+            startInitialFeedFetch();
         }
     }
 }
@@ -1641,7 +1774,7 @@ function showSettingsPanel(key) {
 
     if (key === 'profile') {
         var profile = state.profile || state.viewedProfile || {};
-        document.getElementById('edit-profile-name').value = profile.name || state.config?.display_name || '';
+        document.getElementById('edit-profile-name').value = profile.name || state.config?.name || '';
         document.getElementById('edit-profile-nip05').value = profile.nip05 || '';
         document.getElementById('edit-profile-website').value = profile.website || '';
         document.getElementById('edit-profile-about').value = profile.about || '';
@@ -1677,17 +1810,23 @@ function showSettingsPanel(key) {
     }
 }
 
-// Populate Keys panel with npub/nsec (from hex in config)
+// Populate Keys panel with npub (nsec is NEVER placed in the DOM)
 async function populateKeysPanel() {
     var npubEl = document.getElementById('settings-keys-npub');
     var nsecEl = document.getElementById('settings-keys-nsec');
     if (!npubEl || !nsecEl) return;
     npubEl.value = '';
     nsecEl.value = '';
+    nsecEl.placeholder = state.config && state.config.private_key
+        ? (window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t('accountModal.privateKeyConfigured') || 'Private key configured (hidden)' : 'Private key configured (hidden)')
+        : (window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t('accountModal.privateKeyPlaceholder') || 'nsec1... or hex (optional)' : 'nsec1... or hex (optional)');
     var npubError = document.getElementById('settings-keys-npub-error');
     var nsecError = document.getElementById('settings-keys-nsec-error');
     if (npubError) npubError.textContent = '';
     if (nsecError) nsecError.textContent = '';
+    // Show/hide copy nsec button based on whether key exists
+    var copyNsecBtn = document.getElementById('settings-keys-copy-nsec');
+    if (copyNsecBtn) copyNsecBtn.style.display = (state.config && state.config.private_key) ? 'inline-block' : 'none';
     if (!state.config) return;
     if (state.config.public_key) {
         try {
@@ -1697,13 +1836,22 @@ async function populateKeysPanel() {
             npubEl.value = state.config.public_key;
         }
     }
-    if (state.config.private_key) {
-        try {
-            var nsec = await invoke('convert_hex_to_nsec', { hex_key: state.config.private_key });
-            nsecEl.value = nsec || '';
-        } catch (e) {
-            nsecEl.value = state.config.private_key;
+    // Private key is NOT written to the DOM. The input is write-only for entering a new key.
+}
+
+// Copy nsec to clipboard without ever placing it in the DOM
+async function copyNsecToClipboard() {
+    if (!state.config || !state.config.private_key) return;
+    try {
+        var nsec = await invoke('convert_hex_to_nsec', { hex_key: state.config.private_key });
+        if (nsec && navigator.clipboard) {
+            await navigator.clipboard.writeText(nsec);
+            var t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
+            alert(t('accountModal.nsecCopied') || 'Private key (nsec) copied to clipboard.');
         }
+    } catch (e) {
+        console.error('Failed to copy nsec:', e);
+        alert('Failed to copy private key.');
     }
 }
 
@@ -1738,12 +1886,18 @@ async function saveKeysPanel(event) {
         }
         privateKeyHex = privResult.hex;
     }
+    var saveBtn = document.querySelector('#settings-keys-form button[type="submit"]');
+    var restoreBtn = setSavingState(saveBtn);
     state.config.public_key = publicKeyHex;
     state.config.private_key = privateKeyHex || state.config.private_key || null;
     state.publicKeyHex = publicKeyHex;
     state.publicKeyNpub = pubResult.npub || null;
-    await saveConfig();
-    updateUIFromConfig();
+    try {
+        await saveConfig();
+        updateUIFromConfig();
+    } finally {
+        restoreBtn();
+    }
 }
 
 // Save Home feed mode from settings panel
@@ -1753,14 +1907,20 @@ function saveHomeFeedModeFromPanel() {
     if (!state.config) state.config = {};
     state.config.home_feed_mode = mode;
     state.homeFeedMode = mode;
+    var restoreBtn = setSavingState(document.getElementById('home-feed-panel-save'));
     saveConfig().then(function() {
+        // Clear existing feed state so the next visit to feed reloads with the new mode
+        state.initialFeedLoadDone = false;
+        state.notes = [];
+        if (state.feedPollIntervalId) { clearInterval(state.feedPollIntervalId); state.feedPollIntervalId = null; }
         if (state.currentView === 'feed') {
-            state.initialFeedLoadDone = false;
-            if (state.feedPollIntervalId) { clearInterval(state.feedPollIntervalId); state.feedPollIntervalId = null; }
             updateFeedInitialState();
-            loadInitialFeed();
+            startInitialFeedFetch();
         }
-    }).catch(function(err) { console.error('Failed to save home feed mode:', err); });
+        // If not on feed view, it will reload when the user navigates to feed
+        // because state.initialFeedLoadDone is false.
+    }).catch(function(err) { console.error('Failed to save home feed mode:', err); })
+    .finally(restoreBtn);
 }
 
 // Save Zaps default amount from settings panel
@@ -1771,7 +1931,10 @@ function saveZapsFromPanel() {
     var amount = isNaN(raw) ? 42 : Math.max(1, Math.min(1000000, raw));
     state.config.default_zap_amount = amount;
     amountEl.value = amount;
-    saveConfig().catch(function(err) { console.error('Failed to save zaps settings:', err); });
+    var restoreBtn = setSavingState(document.getElementById('settings-zaps-save'));
+    saveConfig()
+        .catch(function(err) { console.error('Failed to save zaps settings:', err); })
+        .finally(restoreBtn);
 }
 
 // Save media server URL from settings panel
@@ -1779,7 +1942,10 @@ function saveMediaServerFromPanel() {
     var urlEl = document.getElementById('settings-media-server-url');
     if (!state.config || !urlEl) return;
     state.config.media_server_url = (urlEl.value && urlEl.value.trim()) || 'https://blossom.primal.net';
-    saveConfig().catch(function(err) { console.error('Failed to save media server URL:', err); });
+    var restoreBtn = setSavingState(document.getElementById('settings-media-save'));
+    saveConfig()
+        .catch(function(err) { console.error('Failed to save media server URL:', err); })
+        .finally(restoreBtn);
 }
 
 // Muted: ensure config arrays exist
@@ -1888,7 +2054,7 @@ function renderMutedPanels() {
                 li.className = 'follows-list-item';
                 li.dataset.pubkey = item.pubkey;
                 var imgHtml = picture
-                    ? '<img src="' + escapeHtml(picture) + '" alt="" class="follows-item-avatar" onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'inline-flex\';">'
+                    ? '<img src="' + escapeHtml(picture) + '" alt="" class="follows-item-avatar">'
                     : '';
                 li.innerHTML = '<label class="follows-item-row">' +
                     '<input type="checkbox" class="follows-item-checkbox muted-user-checkbox" ' + (item.checked ? 'checked' : '') + ' data-pubkey="' + escapeHtml(item.pubkey) + '">' +
@@ -1897,6 +2063,9 @@ function renderMutedPanels() {
                     '<span class="follows-item-name">' + escapeHtml(name) + '</span>' +
                     (nip05 ? '<span class="follows-item-nip05">' + escapeHtml(nip05) + '</span>' : '') +
                     '</span></label>';
+                // Attach image error handler without inline JS (CSP-safe)
+                var img = li.querySelector('.follows-item-avatar');
+                if (img) img.addEventListener('error', function() { this.style.display = 'none'; this.nextElementSibling.style.display = 'inline-flex'; });
                 ulUsers.appendChild(li);
             });
         }
@@ -1926,10 +2095,12 @@ function saveMutedFromPanel() {
     if (state.mutedUsersPanelList) {
         state.config.muted_users = state.mutedUsersPanelList.filter(function(x) { return x.checked; }).map(function(x) { return x.pubkey; });
     }
+    var restoreBtn = setSavingState(document.getElementById('settings-muted-save'));
     saveConfig().then(function() {
         var t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
         alert(t('settings.mutedSaved') || 'Muted lists saved.');
-    }).catch(function(err) { console.error('Failed to save muted lists:', err); });
+    }).catch(function(err) { console.error('Failed to save muted lists:', err); })
+    .finally(restoreBtn);
 }
 
 // ============================================================
@@ -1940,6 +2111,7 @@ async function loadFollowsPanel() {
     var listEl = document.getElementById('follows-list');
     var addInput = document.getElementById('follows-add-input');
     if (!listEl) return;
+    state.followsPanelLoading = true;
     listEl.innerHTML = '<li class="follows-list-placeholder">' + (window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t('settings.followsLoading') || 'Loading…' : 'Loading…') + '</li>';
     if (addInput) addInput.value = '';
     try {
@@ -1955,6 +2127,8 @@ async function loadFollowsPanel() {
     } catch (e) {
         console.error('Failed to load follows:', e);
         listEl.innerHTML = '<li class="follows-list-placeholder">' + (window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t('errors.loadFailed') : 'Failed to load') + '</li>';
+    } finally {
+        state.followsPanelLoading = false;
     }
 }
 
@@ -1997,8 +2171,8 @@ function renderFollowsPanel() {
         li.className = 'follows-list-item';
         li.dataset.pubkey = item.pubkey;
         var imgHtml = picture
-            ? '<img src="' + escapeHtml(picture) + '" alt="" class="follows-item-avatar" onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'inline-flex\';">'
-            : '';
+                    ? '<img src="' + escapeHtml(picture) + '" alt="" class="follows-item-avatar">'
+                    : '';
         li.innerHTML = '<label class="follows-item-row">' +
             '<input type="checkbox" class="follows-item-checkbox" ' + (item.checked ? 'checked' : '') + ' data-pubkey="' + escapeHtml(item.pubkey) + '">' +
             '<span class="follows-item-avatar-wrap">' + imgHtml + '<span class="follows-item-avatar-fallback" style="' + (picture ? 'display:none' : '') + '">' + (name ? name.charAt(0).toUpperCase() : '?') + '</span></span>' +
@@ -2007,6 +2181,9 @@ function renderFollowsPanel() {
             (nip05 ? '<span class="follows-item-nip05">' + escapeHtml(nip05) + '</span>' : '') +
             '</span></label>';
         listEl.appendChild(li);
+        // Attach image error handler without inline JS (CSP-safe)
+        var img = li.querySelector('.follows-item-avatar');
+        if (img) img.addEventListener('error', function() { this.style.display = 'none'; this.nextElementSibling.style.display = 'inline-flex'; });
     });
 
     listEl.querySelectorAll('.follows-item-checkbox').forEach(function(cb) {
@@ -2026,9 +2203,12 @@ function getFollowsPanelSort() {
 function saveFollowsPanel() {
     var pubkeys = (state.followsPanelList || []).filter(function(x) { return x.checked; }).map(function(x) { return x.pubkey; });
     var t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
+    var restoreBtn = setSavingState(document.getElementById('settings-follows-save'));
     invoke('set_contact_list', { pubkeys: pubkeys })
         .then(function() {
             state.ownFollowingPubkeys = pubkeys;
+            // Keep local config in sync so follows-mode feed works immediately
+            if (state.config) state.config.following = pubkeys.slice();
             var msg = t('settings.followsSaved') || 'Follow list saved and published.';
             alert(msg);
             loadFollowsPanel();
@@ -2036,7 +2216,8 @@ function saveFollowsPanel() {
         .catch(function(err) {
             console.error('Failed to save follows:', err);
             alert((t('errors.failedToPublish') || 'Failed to publish') + ': ' + err);
-        });
+        })
+        .finally(restoreBtn);
 }
 
 // Clear validation error displays
@@ -2186,16 +2367,28 @@ const FEED_LIMIT = 50;
 const POLL_INTERVAL_MS = 45000;
 
 // Returns list of hex pubkeys for "follows" mode, or null for firehose.
+// Uses the locally cached following list from config first for instant results,
+// then falls back to fetching from relays (which also updates the local cache).
 async function getHomeFeedAuthors() {
     if (state.homeFeedMode !== 'follows') return null;
     if (!state.config || !state.config.public_key) return null;
+    // Use locally cached following list if available
+    if (state.config.following && state.config.following.length > 0) {
+        return state.config.following.slice();
+    }
+    // Fall back to fetching from relays (also caches locally via backend)
     try {
         const json = await invoke('fetch_own_following');
         if (!json) return null;
         const data = JSON.parse(json);
         const contacts = data.contacts || [];
         if (contacts.length === 0) return null;
-        return contacts.map(c => c.pubkey).filter(Boolean);
+        const pubkeys = contacts.map(c => c.pubkey).filter(Boolean);
+        // Update local state so subsequent calls are instant
+        if (pubkeys.length > 0) {
+            state.config.following = pubkeys;
+        }
+        return pubkeys;
     } catch (e) {
         console.error('Failed to get following for feed:', e);
         return null;
@@ -2236,7 +2429,8 @@ function mergeNotesIntoState(newNotes, isIncremental) {
 async function startInitialFeedFetch() {
     const t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
     updateFeedInitialState();
-    if (!state.config || !state.config.relays || state.config.relays.length === 0) {
+    const effectiveRelays = getEffectiveRelays();
+    if (effectiveRelays.length === 0) {
         return;
     }
 
@@ -2260,13 +2454,16 @@ async function startInitialFeedFetch() {
             unlistenEose = await window.__TAURI__.event.listen('feed-eose', function() {
                 state.loading = false;
                 state.initialFeedLoadDone = true;
+                // Start periodic polling for new notes (both firehose and follows modes)
+                if (state.feedPollIntervalId) clearInterval(state.feedPollIntervalId);
                 if (state.homeFeedMode === 'follows') {
                     getHomeFeedAuthors().then(function(authors) {
                         if (authors && authors.length > 0) {
-                            if (state.feedPollIntervalId) clearInterval(state.feedPollIntervalId);
                             state.feedPollIntervalId = setInterval(pollForNewNotes, POLL_INTERVAL_MS);
                         }
                     });
+                } else {
+                    state.feedPollIntervalId = setInterval(function() { fetchNotesFirehoseOnHomeClick(); }, POLL_INTERVAL_MS);
                 }
                 unlistenNote();
                 unlistenEose();
@@ -2290,7 +2487,7 @@ async function startInitialFeedFetch() {
                 if (!authors || authors.length === 0) authors = null;
             }
             await invoke('start_feed_stream', {
-                relay_urls: state.config.relays,
+                relay_urls: effectiveRelays,
                 limit: FEED_LIMIT,
                 authors: authors,
                 since: null
@@ -2313,13 +2510,16 @@ async function startInitialFeedFetch() {
             authors = await getHomeFeedAuthors();
             if (!authors || authors.length === 0) authors = null;
         }
-        const notes = await fetchFeedNotes(state.config.relays, authors, null);
+        const notes = await fetchFeedNotes(effectiveRelays, authors, null);
         mergeNotesIntoState(notes, false);
         displayNotes(state.notes);
         state.initialFeedLoadDone = true;
+        // Start periodic polling for new notes (both firehose and follows modes)
+        if (state.feedPollIntervalId) clearInterval(state.feedPollIntervalId);
         if (state.homeFeedMode === 'follows' && authors && authors.length > 0) {
-            if (state.feedPollIntervalId) clearInterval(state.feedPollIntervalId);
             state.feedPollIntervalId = setInterval(pollForNewNotes, POLL_INTERVAL_MS);
+        } else if (state.homeFeedMode === 'firehose') {
+            state.feedPollIntervalId = setInterval(function() { fetchNotesFirehoseOnHomeClick(); }, POLL_INTERVAL_MS);
         }
     } catch (error) {
         console.error('Initial feed fetch failed:', error);
@@ -2331,14 +2531,15 @@ async function startInitialFeedFetch() {
 
 // Incremental poll (follows mode only). Fetches notes since latest we have; appends below the fold.
 async function pollForNewNotes() {
-    if (!state.config || !state.config.relays.length || state.loading) return;
+    const relays = getEffectiveRelays();
+    if (!relays.length || state.loading) return;
     const authors = await getHomeFeedAuthors();
     if (!authors || authors.length === 0) return;
     const since = state.notes.length
         ? Math.max(...state.notes.map(n => n.created_at || 0))
         : 0;
     try {
-        const notes = await fetchFeedNotes(state.config.relays, authors, since);
+        const notes = await fetchFeedNotes(relays, authors, since);
         if (notes.length === 0) return;
         mergeNotesIntoState(notes, true);
         displayNotes(state.notes);
@@ -2349,13 +2550,14 @@ async function pollForNewNotes() {
 
 // Firehose: fetch new notes when user opens Home (no auto-poll).
 async function fetchNotesFirehoseOnHomeClick() {
-    if (!state.config || !state.config.relays.length || state.loading) return;
+    const relays = getEffectiveRelays();
+    if (!relays.length || state.loading) return;
     const since = state.notes.length
         ? Math.max(...state.notes.map(n => n.created_at || 0))
         : 0;
     state.loading = true;
     try {
-        const notes = await fetchFeedNotes(state.config.relays, null, since);
+        const notes = await fetchFeedNotes(relays, null, since);
         if (notes.length > 0) {
             mergeNotesIntoState(notes, true);
             displayNotes(state.notes);
@@ -2453,7 +2655,8 @@ function getAuthorDisplay(pubkey) {
 
 // Fetch profiles for note authors (and reply-to targets) and update cache + DOM.
 async function ensureProfilesForNotes(notes) {
-    if (!state.config || !state.config.relays || state.config.relays.length === 0) return;
+    const relays = getEffectiveRelays();
+    if (relays.length === 0) return;
     var pubkeys = notes.map(n => n.pubkey).filter(Boolean);
     notes.forEach(function(n) {
         var p = getReplyToPubkey(n);
@@ -2468,7 +2671,6 @@ async function ensureProfilesForNotes(notes) {
     const unique = [...new Set(pubkeys)];
     const toFetch = unique.filter(p => !state.profileCache[p]);
     if (toFetch.length === 0) return;
-    const relays = state.config.relays;
     await Promise.all(toFetch.map(async (pubkey) => {
         try {
             const json = await invoke('fetch_profile', { pubkey, relay_urls: relays });
@@ -2997,23 +3199,51 @@ function formatTimestamp(timestamp) {
     return diffYear === 1 ? '1 year' : diffYear + ' years';
 }
 
-// Process note content - find and embed images/videos
+// Validate and sanitize a URL: only allow http/https schemes, strip control characters.
+// Returns the sanitized URL or null if unsafe.
+function sanitizeUrl(url) {
+    if (!url) return null;
+    var trimmed = url.trim();
+    // Only allow http: and https: schemes
+    if (!/^https?:\/\//i.test(trimmed)) return null;
+    // Block URLs containing control characters, quotes, or angle brackets that could break attributes
+    if (/[\x00-\x1f"'<>`]/.test(trimmed)) return null;
+    // Block javascript: in any encoding (e.g., via entity or percent-encoding in the already-escaped output)
+    if (/javascript\s*:/i.test(trimmed)) return null;
+    if (/data\s*:/i.test(trimmed)) return null;
+    if (/vbscript\s*:/i.test(trimmed)) return null;
+    return trimmed;
+}
+
+// Process note content - find and embed images/videos.
+// Content is HTML-escaped first to neutralize any injected tags/scripts,
+// then safe URLs are converted to media elements and links.
 function processNoteContent(content) {
-    // Escape HTML first
+    // Escape HTML first - this is the primary XSS defense
     let html = escapeHtml(content);
     
-    // Find image URLs and convert to img tags
+    // Find image URLs and convert to img tags (only safe http/https URLs)
     const imageAlt = (window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t('content.image') : 'Image');
+    const safeImageAlt = escapeHtml(imageAlt);
     const imageRegex = /(https?:\/\/[^\s]+\.(jpg|jpeg|png|gif|webp)(\?[^\s]*)?)/gi;
-    html = html.replace(imageRegex, '<img src="$1" alt="' + escapeHtml(imageAlt) + '" loading="lazy">');
+    html = html.replace(imageRegex, function(match) {
+        var safe = sanitizeUrl(match);
+        return safe ? '<img src="' + safe + '" alt="' + safeImageAlt + '" loading="lazy">' : escapeHtml(match);
+    });
     
     // Find video URLs and convert to video tags
     const videoRegex = /(https?:\/\/[^\s]+\.(mp4|webm|mov)(\?[^\s]*)?)/gi;
-    html = html.replace(videoRegex, '<video src="$1" controls preload="metadata"></video>');
+    html = html.replace(videoRegex, function(match) {
+        var safe = sanitizeUrl(match);
+        return safe ? '<video src="' + safe + '" controls preload="metadata"></video>' : escapeHtml(match);
+    });
     
-    // Convert plain URLs to links (but not ones we already converted)
+    // Convert plain URLs to links (but not ones we already converted to media/link tags)
     const urlRegex = /(?<!src=")(https?:\/\/[^\s<]+)(?![^<]*>)/gi;
-    html = html.replace(urlRegex, '<a href="$1" target="_blank" rel="noopener">$1</a>');
+    html = html.replace(urlRegex, function(match) {
+        var safe = sanitizeUrl(match);
+        return safe ? '<a href="' + safe + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(match) + '</a>' : escapeHtml(match);
+    });
     
     return html;
 }
@@ -3126,7 +3356,7 @@ async function handleSettingsSubmit(event) {
     }
     
     // Update config - store hex format internally
-    state.config.display_name = displayName;
+    state.config.name = displayName;
     state.config.public_key = publicKeyHex;
     state.config.private_key = privateKeyHex;
     
@@ -3324,36 +3554,343 @@ async function handleComposeSubmit(event) {
 // ============================================================
 
 // Initialize the application
+// ============================================================
+// Multi-Profile / Auth State
+// ============================================================
+
+// Three-tier sidebar auth state:
+// State 1 (logged out): Home + Profile/Welcome enabled; Messages, Notifications, Bookmarks, Compose muted
+// State 2 (npub only): Home, Profile, Notifications, Bookmarks, Settings enabled; Compose + Messages muted
+// State 3 (full auth): All enabled
+function updateSidebarAuthState() {
+    var hasProfile = !!(state.config && state.config.public_key);
+    var hasNsec = !!(state.config && state.config.private_key);
+    var t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
+
+    var navMessages = document.querySelector('.nav-item[data-view="messages"]');
+    var navNotifications = document.querySelector('.nav-item[data-view="notifications"]');
+    var navBookmarks = document.querySelector('.nav-item[data-view="bookmarks"]');
+    var composeBtn = document.getElementById('compose-btn');
+
+    if (!hasProfile) {
+        // State 1: logged out
+        if (navMessages) { navMessages.classList.add('nav-muted'); navMessages.dataset.mutedReason = t('welcome.identityRequired') || 'Log in to access messages'; }
+        if (navNotifications) { navNotifications.classList.add('nav-muted'); navNotifications.dataset.mutedReason = t('welcome.identityRequired') || 'Log in to see notifications'; }
+        if (navBookmarks) { navBookmarks.classList.add('nav-muted'); navBookmarks.dataset.mutedReason = t('welcome.identityRequired') || 'Log in to access bookmarks'; }
+        if (composeBtn) { composeBtn.classList.add('nav-muted'); composeBtn.dataset.mutedReason = t('welcome.identityRequired') || 'Log in to compose notes'; }
+    } else if (!hasNsec) {
+        // State 2: npub only (read-only)
+        if (navMessages) { navMessages.classList.add('nav-muted'); navMessages.dataset.mutedReason = t('welcome.nsecRequired') || 'Private key required to send messages'; }
+        if (navNotifications) navNotifications.classList.remove('nav-muted');
+        if (navBookmarks) navBookmarks.classList.remove('nav-muted');
+        if (composeBtn) { composeBtn.classList.add('nav-muted'); composeBtn.dataset.mutedReason = t('welcome.nsecRequired') || 'Private key required to publish notes'; }
+    } else {
+        // State 3: full auth
+        if (navMessages) navMessages.classList.remove('nav-muted');
+        if (navNotifications) navNotifications.classList.remove('nav-muted');
+        if (navBookmarks) navBookmarks.classList.remove('nav-muted');
+        if (composeBtn) composeBtn.classList.remove('nav-muted');
+    }
+}
+
+function showMutedTooltip(el) {
+    var reason = el.dataset.mutedReason || 'Not available';
+    // Remove any existing tooltip
+    var existing = document.querySelector('.nav-muted-tooltip');
+    if (existing) existing.remove();
+
+    var tip = document.createElement('div');
+    tip.className = 'nav-muted-tooltip';
+    tip.textContent = reason;
+    document.body.appendChild(tip);
+
+    var rect = el.getBoundingClientRect();
+    tip.style.left = (rect.right + 12) + 'px';
+    tip.style.top = (rect.top + rect.height / 2 - 14) + 'px';
+    requestAnimationFrame(function() { tip.classList.add('visible'); });
+
+    setTimeout(function() {
+        tip.classList.remove('visible');
+        setTimeout(function() { tip.remove(); }, 200);
+    }, 2000);
+}
+
+function populateWelcomeProfiles(profiles) {
+    var container = document.getElementById('welcome-known-profiles');
+    var list = document.getElementById('welcome-profiles-list');
+    if (!container || !list) return;
+    if (!profiles || profiles.length === 0) {
+        container.style.display = 'none';
+        return;
+    }
+    container.style.display = 'block';
+    list.innerHTML = '';
+    profiles.forEach(function(p) {
+        var li = document.createElement('li');
+        li.className = 'known-profile-item';
+        li.dataset.npub = p.npub;
+        var avatarHtml = p.picture
+            ? '<img src="' + escapeHtml(p.picture) + '" class="known-profile-avatar" alt="">'
+            : '<span class="known-profile-placeholder"><img src="icons/user.svg" alt="" class="nav-icon"></span>';
+        var name = p.name || 'Anonymous';
+        var shortNpub = p.npub.length > 20 ? p.npub.substring(0, 10) + '...' + p.npub.substring(p.npub.length - 6) : p.npub;
+        li.innerHTML = avatarHtml +
+            '<div class="known-profile-info">' +
+            '<div class="known-profile-name">' + escapeHtml(name) + '</div>' +
+            '<div class="known-profile-npub">' + escapeHtml(shortNpub) + '</div>' +
+            '</div>';
+        li.addEventListener('click', function() { handleProfileSelect(p.npub); });
+        // Handle avatar load error
+        var img = li.querySelector('.known-profile-avatar');
+        if (img) img.addEventListener('error', function() {
+            this.style.display = 'none';
+            var placeholder = document.createElement('span');
+            placeholder.className = 'known-profile-placeholder';
+            placeholder.innerHTML = '<img src="icons/user.svg" alt="" class="nav-icon">';
+            this.parentNode.insertBefore(placeholder, this);
+        });
+        list.appendChild(li);
+    });
+}
+
+async function handleWelcomeLogin() {
+    var npubEl = document.getElementById('welcome-npub');
+    var nsecEl = document.getElementById('welcome-nsec');
+    var errorEl = document.getElementById('welcome-login-error');
+    if (errorEl) errorEl.textContent = '';
+
+    var npub = (npubEl ? npubEl.value : '').trim();
+    var nsec = (nsecEl ? nsecEl.value : '').trim();
+
+    if (!npub) {
+        if (errorEl) errorEl.textContent = 'Public key is required';
+        return;
+    }
+
+    try {
+        var configJson = await invoke('login_with_keys', {
+            public_key: npub,
+            private_key: nsec || null
+        });
+        var cfg = JSON.parse(configJson);
+        state.config = cfg;
+        state.publicKeyHex = cfg.public_key || null;
+        state.publicKeyNpub = null;
+        if (cfg.public_key) {
+            try { state.publicKeyNpub = await invoke('convert_hex_to_npub', { hex_key: cfg.public_key }); } catch (e) {}
+        }
+        state.homeFeedMode = cfg.home_feed_mode || 'firehose';
+        updateUIFromConfig();
+        updateSidebarAuthState();
+
+        // Refresh app config
+        try {
+            var appJson = await invoke('get_app_config');
+            state.appConfig = JSON.parse(appJson);
+        } catch (e) {}
+
+        state.initialFeedLoadDone = false;
+        state.notes = [];
+        switchView('feed');
+        startInitialFeedFetch();
+    } catch (err) {
+        if (errorEl) errorEl.textContent = typeof err === 'string' ? err : (err.message || 'Login failed');
+    }
+}
+
+async function handleWelcomeGenerate() {
+    var btn = document.getElementById('welcome-generate-btn');
+    if (!btn) return;
+    var t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
+    var originalText = btn.textContent;
+
+    try {
+        btn.disabled = true;
+        btn.textContent = t('profile.generating') || 'Generating...';
+
+        var result = await invoke('generate_keypair');
+        var keys = JSON.parse(result);
+
+        state.config = state.config || {};
+        state.config.public_key = keys.public_key_hex;
+        state.config.private_key = keys.private_key_hex;
+        state.publicKeyHex = keys.public_key_hex;
+        state.publicKeyNpub = keys.npub;
+        updateUIFromConfig();
+        updateSidebarAuthState();
+
+        // Refresh app config
+        try {
+            var appJson = await invoke('get_app_config');
+            state.appConfig = JSON.parse(appJson);
+        } catch (e) {}
+
+        alert(t('profile.newIdentityCreated') + '\n\nPublic Key (npub):\n' + keys.npub + '\n\nSecret Key (nsec):\n' + keys.nsec + '\n\n' + t('profile.saveNsecWarning'));
+
+        state.initialFeedLoadDone = false;
+        state.notes = [];
+        switchView('feed');
+        startInitialFeedFetch();
+    } catch (error) {
+        alert((t('errors.failedToGenerateKeys') || 'Failed to generate key pair') + ': ' + error);
+    } finally {
+        btn.disabled = false;
+        btn.textContent = originalText;
+    }
+}
+
+async function handleProfileSelect(npub) {
+    try {
+        var configJson = await invoke('switch_profile', { npub: npub });
+        var cfg = JSON.parse(configJson);
+        state.config = cfg;
+        state.publicKeyHex = cfg.public_key || null;
+        state.publicKeyNpub = null;
+        if (cfg.public_key) {
+            try { state.publicKeyNpub = await invoke('convert_hex_to_npub', { hex_key: cfg.public_key }); } catch (e) {}
+        }
+        state.homeFeedMode = cfg.home_feed_mode || 'firehose';
+        updateUIFromConfig();
+        updateSidebarAuthState();
+
+        try {
+            var appJson = await invoke('get_app_config');
+            state.appConfig = JSON.parse(appJson);
+        } catch (e) {}
+
+        state.initialFeedLoadDone = false;
+        state.notes = [];
+        switchView('feed');
+        startInitialFeedFetch();
+    } catch (err) {
+        alert('Failed to switch profile: ' + (typeof err === 'string' ? err : err.message || err));
+    }
+}
+
+async function handleLogout() {
+    console.log('[Plume] handleLogout() called');
+    try {
+        var t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
+        var confirmed = await showConfirm(t('settings.logoutConfirm') || 'Are you sure you want to log out? Your profile data will be kept locally.');
+        if (!confirmed) {
+            console.log('[Plume] Logout cancelled by user');
+            return;
+        }
+        console.log('[Plume] Logout confirmed, calling backend...');
+        try {
+            await invoke('logout');
+            console.log('[Plume] Backend logout succeeded');
+        } catch (e) {
+            console.error('[Plume] Logout backend call failed:', e);
+        }
+
+        // Reset frontend state – keep default relays so anonymous firehose still works
+        state.config = {
+            public_key: '',
+            private_key: null,
+            relays: DEFAULT_RELAYS.slice(),
+            name: 'Anonymous',
+            about: null,
+            picture: null,
+            nip05: null,
+            banner: null,
+            website: null,
+            lud16: null,
+            home_feed_mode: 'firehose',
+            media_server_url: 'https://blossom.primal.net',
+            following: [],
+            muted_users: [],
+            muted_words: [],
+            muted_hashtags: [],
+            bookmarks: [],
+            default_zap_amount: 42
+        };
+        state.publicKeyHex = null;
+        state.publicKeyNpub = null;
+        state.profile = null;
+        state.viewedProfile = null;
+        state.notes = [];
+        state.homeFeedMode = 'firehose';
+        state.initialFeedLoadDone = false;
+        if (state.feedPollIntervalId) { clearInterval(state.feedPollIntervalId); state.feedPollIntervalId = null; }
+
+        // Refresh app config for known profiles list
+        try {
+            var appJson = await invoke('get_app_config');
+            state.appConfig = JSON.parse(appJson);
+        } catch (e) {
+            state.appConfig = { active_profile: null, known_profiles: [] };
+        }
+
+        console.log('[Plume] Logout state reset complete, switching to welcome');
+        updateSidebarAuthState();
+        populateWelcomeProfiles(state.appConfig.known_profiles || []);
+        switchView('welcome');
+    } catch (err) {
+        console.error('[Plume] handleLogout() FAILED:', err);
+        alert('Logout error: ' + (err && err.message ? err.message : String(err)));
+    }
+}
+
 async function init() {
     try {
         console.log('[Plume] init() entered');
 
         // Wire the UI first with no awaits – so nothing can block before buttons work
-        try {
-            switchView('feed');
-            console.log('[Plume] switchView(feed) done');
-        } catch (e) {
-            console.error('[Plume] switchView(feed) failed:', e);
-        }
         updateMessagesNavUnread();
         var navItems = document.querySelectorAll('.nav-item[data-view]');
         console.log('[Plume] nav items found: ' + navItems.length);
         document.querySelector('.sidebar-logo')?.addEventListener('click', function(e) {
             e.preventDefault();
-            console.log('[Plume] sidebar logo clicked');
             switchView('feed');
         });
         navItems.forEach(function(item) {
             item.addEventListener('click', function(e) {
                 e.preventDefault();
-                console.log('[Plume] nav clicked: ' + (item.dataset.view || '?'));
-                if (item.dataset.view === 'profile') {
+                var view = item.dataset.view;
+                if (!view) return;
+                // Muted nav items show a tooltip instead of navigating
+                if (item.classList.contains('nav-muted')) {
+                    showMutedTooltip(item);
+                    return;
+                }
+                // Profile icon: show welcome when logged out, profile when logged in
+                if (view === 'profile') {
+                    if (!state.config || !state.config.public_key) {
+                        switchView('welcome');
+                        return;
+                    }
                     state.viewedProfilePubkey = null;
                     state.viewedProfile = state.profile;
                 }
-                if (item.dataset.view) switchView(item.dataset.view);
+                switchView(view);
             });
         });
+        // Compose button also respects muted state
+        var composeBtnEl = document.getElementById('compose-btn');
+        if (composeBtnEl) {
+            var origComposeHandler = null;
+            composeBtnEl.addEventListener('click', function(e) {
+                if (composeBtnEl.classList.contains('nav-muted')) {
+                    e.stopImmediatePropagation();
+                    showMutedTooltip(composeBtnEl);
+                }
+            }, true); // capture phase so it fires before the existing handler
+        }
+
+        // Wire welcome screen buttons (sync, before any awaits)
+        document.getElementById('welcome-login-btn')?.addEventListener('click', handleWelcomeLogin);
+        document.getElementById('welcome-generate-btn')?.addEventListener('click', handleWelcomeGenerate);
+
+        // Wire logout button (sync, before any awaits)
+        var logoutBtnEl = document.getElementById('logout-btn');
+        if (logoutBtnEl) {
+            logoutBtnEl.addEventListener('click', handleLogout);
+            console.log('[Plume] logout button wired');
+        } else {
+            console.warn('[Plume] logout-btn element NOT found');
+        }
+
         console.log('[Plume] nav + logo listeners attached');
 
         // Settings modal (Account) – open from Settings menu
@@ -3383,6 +3920,7 @@ async function init() {
         document.getElementById('settings-zaps-save')?.addEventListener('click', saveZapsFromPanel);
         var settingsKeysForm = document.getElementById('settings-keys-form');
         if (settingsKeysForm) settingsKeysForm.addEventListener('submit', function(e) { e.preventDefault(); saveKeysPanel(e); });
+        document.getElementById('settings-keys-copy-nsec')?.addEventListener('click', copyNsecToClipboard);
 
         // Messages view: conversation list, send button, Message from profile
         var messagesListEl = document.querySelector('.messages-list');
@@ -3436,19 +3974,38 @@ async function init() {
             });
         });
         document.getElementById('follows-add-btn')?.addEventListener('click', function() {
+            var t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
             var input = document.getElementById('follows-add-input');
             if (!input) return;
             var raw = (input.value || '').trim();
             if (!raw) return;
+            if (state.followsPanelLoading) {
+                alert(t('settings.followsStillLoading') || 'Follow list is still loading, please wait.');
+                return;
+            }
             validatePublicKey(raw).then(function(r) {
-                if (!r.valid || !r.hex) return;
+                if (!r.valid || !r.hex) {
+                    alert(t('settings.followsInvalidKey') || 'Invalid public key. Please enter a valid npub or 64-character hex key.');
+                    return;
+                }
                 var hex = r.hex;
                 if (!state.followsPanelList) state.followsPanelList = [];
                 var exists = state.followsPanelList.some(function(x) { return (x.pubkey || '').toLowerCase() === hex.toLowerCase(); });
-                if (exists) return;
+                if (exists) {
+                    alert(t('settings.followsAlreadyExists') || 'This key is already in your follow list.');
+                    input.value = '';
+                    return;
+                }
                 state.followsPanelList.push({ pubkey: hex, checked: true, listOrder: state.followsPanelList.length });
                 input.value = '';
                 renderFollowsPanel();
+                // Fetch profile for the new entry so it shows name/avatar
+                ensureProfilesForNotes([{ pubkey: hex }]).then(function() {
+                    renderFollowsPanel();
+                });
+            }).catch(function(err) {
+                console.error('Follow add validation error:', err);
+                alert(t('settings.followsInvalidKey') || 'Invalid public key. Please enter a valid npub or 64-character hex key.');
             });
         });
         document.getElementById('muted-user-add-btn')?.addEventListener('click', function() {
@@ -3735,8 +4292,31 @@ async function init() {
 
         console.log('[Plume] all sync listeners attached, about to await i18n...');
         await (window.PlumeI18n && window.PlumeI18n.init ? window.PlumeI18n.init() : Promise.resolve());
-        console.log('[Plume] i18n done, about to await loadConfig...');
-        await loadConfig();
+        console.log('[Plume] i18n done');
+
+        // Load app-level config to determine active profile
+        var appConfig = null;
+        try {
+            var appConfigJson = await invoke('get_app_config');
+            appConfig = JSON.parse(appConfigJson);
+        } catch (e) {
+            console.log('[Plume] No app config, fresh start');
+            appConfig = { active_profile: null, known_profiles: [] };
+        }
+        state.appConfig = appConfig;
+        console.log('[Plume] App config loaded, active_profile:', appConfig.active_profile || 'none');
+
+        if (appConfig.active_profile) {
+            // Logged in – load profile config and go to feed
+            await loadConfig();
+            updateSidebarAuthState();
+            switchView('feed');
+        } else {
+            // Not logged in – show welcome screen
+            updateSidebarAuthState();
+            populateWelcomeProfiles(appConfig.known_profiles || []);
+            switchView('welcome');
+        }
         console.log('[Plume] loadConfig done');
 
         var noteDetailReplyBtn = document.getElementById('note-detail-reply-btn');
@@ -3758,7 +4338,7 @@ async function init() {
                     if (result.success_count > 0) {
                         noteDetailReplyContent.value = '';
                         var replyJson = await invoke('fetch_replies_to_event', {
-                            relay_urls: state.config.relays,
+                            relay_urls: getEffectiveRelays(),
                             event_id: state.noteDetailSubjectId,
                             limit: 500
                         });
@@ -3777,8 +4357,10 @@ async function init() {
             });
         }
 
-        console.log('[Plume] calling startInitialFeedFetch...');
-        startInitialFeedFetch();
+        if (state.appConfig && state.appConfig.active_profile) {
+            console.log('[Plume] calling startInitialFeedFetch...');
+            startInitialFeedFetch();
+        }
         console.log('[Plume] init() completed successfully');
     } catch (error) {
         console.error('[Plume] init() FAILED:', error);

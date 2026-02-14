@@ -14,6 +14,23 @@
     "newNote": "Nueva nota",
     "yourProfilePhoto": "Tu foto de perfil"
   },
+  "welcome": {
+    "title": "Bienvenido a Plume",
+    "subtitle": "Un cliente de escritorio ligero para Nostr",
+    "existingIdentity": "¿Ya tienes una identidad Nostr?",
+    "knownProfiles": "Tus perfiles",
+    "enterKeys": "Introduce tus claves para iniciar sesión:",
+    "publicKeyLabel": "Clave pública",
+    "publicKeyPlaceholder": "npub1... o hex de 64 caracteres",
+    "privateKeyLabel": "Clave privada (opcional)",
+    "privateKeyPlaceholder": "nsec1... o hex",
+    "privateKeyHint": "Una clave pública te permite explorar y seguir a otros. Una clave privada es necesaria para publicar notas, reaccionar o enviar mensajes directos.",
+    "logIn": "Iniciar sesión",
+    "or": "o",
+    "newIdentity": "¿Nuevo en Nostr?",
+    "newIdentityDesc": "Crea una nueva identidad para empezar a publicar y conectar con otros en la red social descentralizada.",
+    "createNewIdentity": "Crear nueva identidad"
+  },
   "feed": {
     "title": "Inicio",
     "welcomeTitle": "¡Bienvenido a Plume!",
@@ -48,10 +65,18 @@
   },
   "settings": {
     "title": "Ajustes",
-    "selectOption": "Selecciona una opción arriba",
+    "selectOption": "Selecciona una opción del menú",
     "account": "Cuenta",
+    "profile": "Perfil",
+    "keys": "Claves",
     "homeFeed": "Feed de inicio",
+    "homeFeedModalTitle": "Feed de inicio",
+    "homeFeedModalHint": "Elige qué aparece en tu página de inicio.",
+    "homeFeedFirehose": "Firehose – notas de todos (feed global)",
+    "homeFeedFollows": "Seguidos – solo notas de personas que sigues",
     "mediaUploads": "Subida de medios",
+    "mediaServerHint": "Un servidor de medios aloja las imágenes y archivos que subes. Algunos servidores pueden restringir quién puede subir.",
+    "mediaServerUrl": "URL del servidor de medios",
     "follows": "Seguidos",
     "followsSortBy": "Ordenar por:",
     "followsSortName": "Nombre",
@@ -63,15 +88,27 @@
     "followsEmpty": "Aún no sigues a nadie",
     "followsSaved": "Lista de seguidos guardada y publicada.",
     "mutedContent": "Contenido silenciado",
+    "mutedUsers": "Usuarios",
+    "mutedWords": "Palabras",
+    "mutedHashtags": "Hashtags",
     "mutedUsersHint": "Desmarca para quitar de la lista; añade con npub/hex abajo. Guardar para aplicar.",
     "mutedUsersEmpty": "Ningún usuario silenciado",
     "mutedUserAddPlaceholder": "npub1… o hex para añadir",
     "mutedUserAdd": "Añadir",
     "mutedSaved": "Listas silenciadas guardadas.",
+    "mutedWordPlaceholder": "Añade una palabra a silenciar…",
+    "mutedHashtagPlaceholder": "Añade un hashtag (sin #)…",
+    "comingSoon": "Próximamente.",
     "wallets": "Monederos",
+    "zapsDefaultAmount": "Cantidad de zap por defecto (sats)",
+    "zapsDefaultAmountHint": "Se usa al enviar un zap a una nota o perfil. Por defecto: 42 sats.",
     "relays": "Relays",
+    "relayAdd": "Añadir",
+    "relayAddPlaceholder": "wss://relay.ejemplo.com",
+    "relayDelete": "Eliminar",
     "zaps": "Zaps",
-    "logout": "Cerrar sesión"
+    "logout": "Cerrar sesión",
+    "logoutConfirm": "¿Seguro que deseas cerrar sesión? Los datos de tu perfil se conservarán localmente."
   },
   "profile": {
     "editProfile": "Editar perfil",
@@ -116,7 +153,8 @@
     "bannerUrl": "Banner (URL de imagen)",
     "bannerPlaceholder": "https://…",
     "cancel": "Cancelar",
-    "ok": "OK"
+    "ok": "OK",
+    "saving": "Guardando..."
   },
   "accountModal": {
     "title": "Cuenta",
@@ -129,6 +167,9 @@
     "privateKeyPlaceholder": "nsec1... o hex (opcional)",
     "privateKeyHint": "Solo hace falta para publicar notas",
     "save": "Guardar"
+  },
+  "likeModal": {
+    "title": "Elegir reacción"
   },
   "composeModal": {
     "title": "Nueva nota",
@@ -153,16 +194,28 @@
     "invalidSignature": "Firma no válida",
     "reply": "Responder",
     "zap": "Zap",
+    "zapNoWallet": "El zap requiere que tú y el autor tengáis una dirección Lightning",
     "like": "Me gusta",
     "repost": "Republicar",
+    "reposted": "Republicado",
+    "repostedNote": "Republicó una nota",
     "bookmark": "Marcador",
     "unbookmark": "Quitar marcador",
     "replyLabel": "(respuesta)",
     "replyingTo": "Respondiendo a"
   },
+  "noteDetail": {
+    "back": "← Atrás",
+    "title": "Nota",
+    "reply": "Responder",
+    "replyPlaceholder": "Escribe una respuesta…",
+    "loading": "Cargando…",
+    "noReplies": "Aún no hay respuestas"
+  },
   "relays": {
-    "test": "Probar",
-    "notTested": "No probado"
+    "statusUnknown": "No probado aún",
+    "statusConnected": "Conectado",
+    "statusFailed": "Error de conexión"
   },
   "content": {
     "image": "Imagen"

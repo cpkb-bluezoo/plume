@@ -25,6 +25,7 @@ use bytes::BytesMut;
 use tokio::sync::mpsc;
 use tokio::time::Duration;
 
+use crate::debug_log;
 use crate::json::{JsonContentHandler, JsonNumber, JsonParser};
 use crate::nostr;
 use crate::websocket::{WebSocketClient, WebSocketHandler};
@@ -287,14 +288,13 @@ impl WebSocketHandler for NostrRelayHandler {
                 return;
             }
         };
-        let preview: &str = match text.char_indices().nth(120) {
-            Some((idx, _)) => &text[..idx],
-            None => text,
-        };
-        println!("[relay] text frame ({} bytes): {}", text.len(), preview);
+        debug_log!("[relay] text frame ({} bytes): {}",
+            text.len(),
+            match text.char_indices().nth(120) { Some((idx, _)) => &text[..idx], None => text }
+        );
         match parse_relay_message(text) {
             Ok(RelayMessage::Event { event, .. }) => {
-                println!("[relay] EVENT kind={} id={}", event.kind, &event.id[..8.min(event.id.len())]);
+                debug_log!("[relay] EVENT kind={} id={}", event.kind, &event.id[..8.min(event.id.len())]);
                 let send = match self.filter_kind_dm {
                     Some(kind) => event.kind == kind,
                     None => true,
@@ -304,7 +304,7 @@ impl WebSocketHandler for NostrRelayHandler {
                 }
             }
             Ok(RelayMessage::EndOfStoredEvents { .. }) => {
-                println!("[relay] EOSE");
+                debug_log!("[relay] EOSE");
                 if self.exit_on_eose {
                     self.should_stop = true;
                 }
@@ -314,7 +314,7 @@ impl WebSocketHandler for NostrRelayHandler {
                 let _ = self.tx.send(StreamMessage::Notice(message));
             }
             Ok(_) => {
-                println!("[relay] other message type");
+                debug_log!("[relay] other message type");
             }
             Err(e) => {
                 println!("[relay] parse error: {}", e);
@@ -366,7 +366,7 @@ pub async fn run_relay_feed_stream(
         }
     };
 
-    println!("Connected to {}", relay_url);
+    debug_log!("Connected to {}", relay_url);
 
     let subscription_id = format!(
         "plume_{}",
@@ -379,12 +379,12 @@ pub async fn run_relay_feed_stream(
     let req_message = format!("[\"REQ\",\"{}\",{}]", subscription_id, filter_json);
 
     let mut conn = conn;
-    println!("[relay] sending REQ to {}: {}", relay_url, req_message);
+    debug_log!("[relay] sending REQ to {}: {}", relay_url, req_message);
     if let Err(e) = conn.send_text(req_message.as_bytes()).await {
         println!("[relay] failed to send REQ to {}: {}", relay_url, e);
         return;
     }
-    println!("[relay] REQ sent to {}, waiting for data (timeout {}s)...", relay_url, timeout_seconds);
+    debug_log!("[relay] REQ sent to {}, waiting for data (timeout {}s)...", relay_url, timeout_seconds);
 
     let mut handler = NostrRelayHandler {
         tx: tx.clone(),
@@ -395,9 +395,9 @@ pub async fn run_relay_feed_stream(
 
     let timeout_duration = Duration::from_secs(timeout_seconds as u64);
     match tokio::time::timeout(timeout_duration, conn.run(&mut handler)).await {
-        Ok(Ok(())) => println!("[relay] run completed normally for {}", relay_url),
+        Ok(Ok(())) => debug_log!("[relay] run completed normally for {}", relay_url),
         Ok(Err(e)) => println!("[relay] run error for {}: {}", relay_url, e),
-        Err(_) => println!("[relay] run timed out for {}", relay_url),
+        Err(_) => debug_log!("[relay] run timed out for {}", relay_url),
     }
 
     let _ = tx.send(StreamMessage::Eose);
@@ -481,12 +481,12 @@ pub async fn fetch_notes_from_relay(
                 break;
             }
             StreamMessage::Notice(msg) => {
-                println!("Notice from {}: {}", relay_url, msg);
+                debug_log!("Notice from {}: {}", relay_url, msg);
             }
         }
     }
 
-    println!("Fetched {} events from {}", events.len(), relay_url);
+    debug_log!("Fetched {} events from {}", events.len(), relay_url);
     Ok(events)
 }
 
@@ -803,7 +803,7 @@ pub async fn publish_event_to_relays(
     for relay_url in relay_urls {
         match publish_event_to_relay(relay_url, event, timeout_seconds).await {
             Ok(result) => {
-                println!("Publish to {}: success={}, message={}", 
+                debug_log!("Publish to {}: success={}, message={}", 
                          result.relay_url, result.success, result.message);
                 results.push(result);
             }

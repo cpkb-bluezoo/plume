@@ -24,6 +24,7 @@
 // Import our modules
 mod config;
 mod crypto;
+mod debug;
 mod json;
 mod keys;
 mod messages_store;
@@ -36,12 +37,24 @@ use tauri::{Emitter, Manager};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use qrcode::{QrCode, render::svg};
 
+use std::sync::RwLock;
+
 use bytes::BytesMut;
 use crate::json::{JsonContentHandler, JsonNumber, JsonParser};
 
 // Application state that persists while the app is running
 struct AppState {
-    config_dir: String,
+    base_dir: String,
+    active_config_dir: RwLock<String>,
+}
+
+impl AppState {
+    fn config_dir(&self) -> String {
+        self.active_config_dir.read().unwrap().clone()
+    }
+    fn set_config_dir(&self, dir: String) {
+        *self.active_config_dir.write().unwrap() = dir;
+    }
 }
 
 // ============================================================
@@ -50,13 +63,13 @@ struct AppState {
 
 #[tauri::command]
 fn get_config_dir(state: tauri::State<AppState>) -> String {
-    return state.config_dir.clone();
+    state.config_dir()
 }
 
 #[tauri::command]
 fn load_config(state: tauri::State<AppState>) -> Result<String, String> {
-    let config_dir = &state.config_dir;
-    match config::load_config(config_dir) {
+    let config_dir = state.config_dir();
+    match config::load_config(&config_dir) {
         Ok(cfg) => {
             let json = config::config_to_json(&cfg);
             return Ok(json);
@@ -69,20 +82,36 @@ fn load_config(state: tauri::State<AppState>) -> Result<String, String> {
 
 #[tauri::command]
 fn save_config(state: tauri::State<AppState>, config_json: String) -> Result<(), String> {
-    let config_dir = &state.config_dir;
+    let config_dir = state.config_dir();
     let mut cfg = match config::json_to_config(&config_json) {
         Ok(c) => c,
         Err(e) => return Err(format!("Invalid config JSON: {}", e)),
     };
-    if let Ok(existing) = config::load_config(config_dir) {
-        if cfg.profile_picture.is_none() && existing.profile_picture.is_some() {
-            cfg.profile_picture = existing.profile_picture.clone();
+    // Preserve existing profile fields if the incoming config doesn't set them
+    if let Ok(existing) = config::load_config(&config_dir) {
+        if cfg.name == "Anonymous" && existing.name != "Anonymous" {
+            cfg.name = existing.name.clone();
         }
-        if cfg.profile_metadata.is_none() && existing.profile_metadata.is_some() {
-            cfg.profile_metadata = existing.profile_metadata.clone();
+        if cfg.picture.is_none() && existing.picture.is_some() {
+            cfg.picture = existing.picture.clone();
+        }
+        if cfg.about.is_none() && existing.about.is_some() {
+            cfg.about = existing.about.clone();
+        }
+        if cfg.nip05.is_none() && existing.nip05.is_some() {
+            cfg.nip05 = existing.nip05.clone();
+        }
+        if cfg.banner.is_none() && existing.banner.is_some() {
+            cfg.banner = existing.banner.clone();
+        }
+        if cfg.website.is_none() && existing.website.is_some() {
+            cfg.website = existing.website.clone();
+        }
+        if cfg.lud16.is_none() && existing.lud16.is_some() {
+            cfg.lud16 = existing.lud16.clone();
         }
     }
-    match config::save_config(config_dir, &cfg) {
+    match config::save_config(&config_dir, &cfg) {
         Ok(()) => return Ok(()),
         Err(e) => return Err(format!("Failed to save config: {}", e)),
     }
@@ -159,7 +188,7 @@ fn parse_key(key: String) -> Result<String, String> {
 
 #[tauri::command]
 async fn fetch_notes(relay_url: String, limit: u32) -> Result<String, String> {
-    println!("Fetching {} notes from {}", limit, relay_url);
+    debug_log!("Fetching {} notes from {}", limit, relay_url);
     let filter = nostr::filter_recent_notes(limit);
     let events = relay::fetch_notes_from_relay(&relay_url, &filter, 10).await?;
     let json = events_to_json_array(&events);
@@ -294,7 +323,7 @@ fn start_feed_stream(
                         }
                     }
                     relay::StreamMessage::Notice(msg) => {
-                        println!("Relay notice: {}", msg);
+                        debug_log!("Relay notice: {}", msg);
                     }
                 }
             }
@@ -379,7 +408,7 @@ fn generate_qr_svg(data: String) -> Result<String, String> {
 
 #[tauri::command]
 async fn test_relay_connection(relay_url: String) -> Result<String, String> {
-    println!("Testing connection to: {}", relay_url);
+    debug_log!("Testing connection to: {}", relay_url);
     match tokio::time::timeout(
         std::time::Duration::from_secs(5),
         crate::websocket::WebSocketClient::connect(&relay_url),
@@ -409,8 +438,8 @@ async fn fetch_profile(pubkey: String, relay_urls: Vec<String>) -> Result<String
 
 #[tauri::command]
 async fn fetch_own_profile(state: tauri::State<'_, AppState>) -> Result<String, String> {
-    let config_dir = &state.config_dir;
-    let cfg = match config::load_config(config_dir) {
+    let config_dir = state.config_dir();
+    let cfg = match config::load_config(&config_dir) {
         Ok(c) => c,
         Err(e) => return Err(format!("Failed to load config: {}", e)),
     };
@@ -484,8 +513,8 @@ async fn fetch_following(pubkey: String, relay_urls: Vec<String>) -> Result<Stri
 
 #[tauri::command]
 async fn fetch_own_following(state: tauri::State<'_, AppState>) -> Result<String, String> {
-    let config_dir = &state.config_dir;
-    let cfg = match config::load_config(config_dir) {
+    let config_dir = state.config_dir();
+    let cfg = match config::load_config(&config_dir) {
         Ok(c) => c,
         Err(e) => return Err(format!("Failed to load config: {}", e)),
     };
@@ -493,7 +522,18 @@ async fn fetch_own_following(state: tauri::State<'_, AppState>) -> Result<String
         return Err(String::from("No public key configured"));
     }
     match relay::fetch_following_from_relays(&cfg.relays, &cfg.public_key, 10).await {
-        Ok(Some(contact_list)) => Ok(nostr::contact_list_to_json(&contact_list)),
+        Ok(Some(contact_list)) => {
+            // Sync the following list to local config for fast access by the feed
+            let pubkeys = nostr::get_following_pubkeys(&contact_list);
+            if !pubkeys.is_empty() {
+                let mut cfg = cfg;
+                cfg.following = pubkeys;
+                if let Err(e) = config::save_config(&config_dir, &cfg) {
+                    eprintln!("Warning: failed to cache following list locally: {}", e);
+                }
+            }
+            Ok(nostr::contact_list_to_json(&contact_list))
+        },
         Ok(None) => Ok(String::from("{\"owner_pubkey\":\"\",\"created_at\":0,\"count\":0,\"contacts\":[]}")),
         Err(e) => Err(format!("Failed to fetch following: {}", e)),
     }
@@ -505,8 +545,8 @@ async fn update_contact_list(
     add: bool,
     target_pubkey: String,
 ) -> Result<String, String> {
-    let config_dir = &state.config_dir;
-    let cfg = match config::load_config(config_dir) {
+    let config_dir = state.config_dir();
+    let cfg = match config::load_config(&config_dir) {
         Ok(c) => c,
         Err(e) => return Err(format!("Failed to load config: {}", e)),
     };
@@ -537,13 +577,19 @@ async fn update_contact_list(
     if success_count == 0 {
         return Err(String::from("Failed to publish contact list to any relay"));
     }
+    // Persist following list locally
+    let mut cfg = cfg;
+    cfg.following = pubkeys;
+    if let Err(e) = config::save_config(&config_dir, &cfg) {
+        eprintln!("Warning: published contact list but failed to save locally: {}", e);
+    }
     Ok(relay::publish_results_to_json(&results))
 }
 
 #[tauri::command(rename_all = "snake_case")]
 async fn set_contact_list(state: tauri::State<'_, AppState>, pubkeys: Vec<String>) -> Result<String, String> {
-    let config_dir = &state.config_dir;
-    let cfg = match config::load_config(config_dir) {
+    let config_dir = state.config_dir();
+    let mut cfg = match config::load_config(&config_dir) {
         Ok(c) => c,
         Err(e) => return Err(format!("Failed to load config: {}", e)),
     };
@@ -565,6 +611,11 @@ async fn set_contact_list(state: tauri::State<'_, AppState>, pubkeys: Vec<String
     if success_count == 0 {
         return Err(String::from("Failed to publish contact list to any relay"));
     }
+    // Persist following list locally so the feed can use it without fetching from relays
+    cfg.following = hex_pubkeys;
+    if let Err(e) = config::save_config(&config_dir, &cfg) {
+        eprintln!("Warning: published contact list but failed to save locally: {}", e);
+    }
     Ok(relay::publish_results_to_json(&results))
 }
 
@@ -582,8 +633,8 @@ async fn fetch_followers(pubkey: String, relay_urls: Vec<String>) -> Result<Stri
 
 #[tauri::command]
 async fn fetch_own_followers(state: tauri::State<'_, AppState>) -> Result<String, String> {
-    let config_dir = &state.config_dir;
-    let cfg = match config::load_config(config_dir) {
+    let config_dir = state.config_dir();
+    let cfg = match config::load_config(&config_dir) {
         Ok(c) => c,
         Err(e) => return Err(format!("Failed to load config: {}", e)),
     };
@@ -629,8 +680,8 @@ async fn post_note(
     reply_to_event_id: Option<String>,
     reply_to_pubkey: Option<String>,
 ) -> Result<String, String> {
-    let config_dir = &state.config_dir;
-    let cfg = match config::load_config(config_dir) {
+    let config_dir = state.config_dir();
+    let cfg = match config::load_config(&config_dir) {
         Ok(c) => c,
         Err(e) => return Err(format!("Failed to load config: {}", e)),
     };
@@ -667,8 +718,8 @@ async fn post_reaction(
     author_pubkey: String,
     emoji: Option<String>,
 ) -> Result<String, String> {
-    let config_dir = &state.config_dir;
-    let cfg = match config::load_config(config_dir) {
+    let config_dir = state.config_dir();
+    let cfg = match config::load_config(&config_dir) {
         Ok(c) => c,
         Err(e) => return Err(format!("Failed to load config: {}", e)),
     };
@@ -696,8 +747,8 @@ async fn post_repost(
     author_pubkey: String,
     content_optional: Option<String>,
 ) -> Result<String, String> {
-    let config_dir = &state.config_dir;
-    let cfg = match config::load_config(config_dir) {
+    let config_dir = state.config_dir();
+    let cfg = match config::load_config(&config_dir) {
         Ok(c) => c,
         Err(e) => return Err(format!("Failed to load config: {}", e)),
     };
@@ -724,28 +775,28 @@ async fn post_repost(
 
 #[tauri::command]
 fn get_conversations(state: tauri::State<AppState>) -> Result<String, String> {
-    let config_dir = &state.config_dir;
-    messages_store::ensure_messages_dir(config_dir).map_err(|e| e.to_string())?;
-    messages_store::list_conversations_json(config_dir)
+    let config_dir = state.config_dir();
+    messages_store::ensure_messages_dir(&config_dir).map_err(|e| e.to_string())?;
+    messages_store::list_conversations_json(&config_dir)
 }
 
 #[tauri::command(rename_all = "snake_case")]
 fn get_messages(state: tauri::State<AppState>, other_pubkey_hex: String) -> Result<String, String> {
-    let config_dir = &state.config_dir;
-    let cfg = config::load_config(config_dir).map_err(|e| format!("Config: {}", e))?;
+    let config_dir = state.config_dir();
+    let cfg = config::load_config(&config_dir).map_err(|e| format!("Config: {}", e))?;
     let secret_hex = cfg.private_key.as_ref()
         .ok_or("No private key configured. Add your nsec in Settings to read messages.")?;
     let our_pubkey = keys::public_key_to_hex(&cfg.public_key).map_err(|e| format!("Public key: {}", e))?;
     let other_hex = keys::public_key_to_hex(other_pubkey_hex.trim()).map_err(|e| format!("Invalid other_pubkey: {}", e))?;
-    let messages = messages_store::get_messages(config_dir, secret_hex, &our_pubkey, &other_hex)?;
+    let messages = messages_store::get_messages(&config_dir, secret_hex, &our_pubkey, &other_hex)?;
     Ok(messages_store::messages_to_json(&messages))
 }
 
 #[tauri::command(rename_all = "snake_case")]
 async fn send_dm(state: tauri::State<'_, AppState>, recipient_pubkey: String, plaintext: String) -> Result<String, String> {
-    let config_dir = &state.config_dir;
-    messages_store::ensure_messages_dir(config_dir).map_err(|e| e.to_string())?;
-    let cfg = config::load_config(config_dir).map_err(|e| format!("Config: {}", e))?;
+    let config_dir = state.config_dir();
+    messages_store::ensure_messages_dir(&config_dir).map_err(|e| e.to_string())?;
+    let cfg = config::load_config(&config_dir).map_err(|e| format!("Config: {}", e))?;
     let secret_hex = cfg.private_key.as_ref()
         .ok_or("No private key configured.")?
         .clone();
@@ -757,14 +808,14 @@ async fn send_dm(state: tauri::State<'_, AppState>, recipient_pubkey: String, pl
         return Err(String::from("Failed to publish DM to any relay"));
     }
     let raw_json = nostr::event_to_json(&event);
-    messages_store::append_raw_event(config_dir, &recipient_hex, &raw_json)
+    messages_store::append_raw_event(&config_dir, &recipient_hex, &raw_json)
         .map_err(|e| format!("Published but failed to save locally: {}", e))?;
     Ok(nostr::event_to_json(&event))
 }
 
 #[tauri::command(rename_all = "snake_case")]
 fn start_dm_stream(app: tauri::AppHandle, state: tauri::State<AppState>) -> Result<(), String> {
-    let config_dir = state.config_dir.clone();
+    let config_dir = state.config_dir();
     let cfg = config::load_config(&config_dir).map_err(|e| format!("Config: {}", e))?;
     let our_pubkey_hex = keys::public_key_to_hex(cfg.public_key.trim()).map_err(|e| format!("Public key: {}", e))?;
     if our_pubkey_hex.is_empty() || cfg.relays.is_empty() {
@@ -910,8 +961,8 @@ async fn request_zap_invoice(
     event_id: String,
     target_pubkey: String,
 ) -> Result<String, String> {
-    let config_dir = &state.config_dir;
-    let cfg = match config::load_config(config_dir) {
+    let config_dir = state.config_dir();
+    let cfg = match config::load_config(&config_dir) {
         Ok(c) => c,
         Err(e) => return Err(format!("Failed to load config: {}", e)),
     };
@@ -989,8 +1040,8 @@ async fn request_zap_invoice(
 
 #[tauri::command]
 async fn set_profile_metadata(state: tauri::State<'_, AppState>, profile_json: String) -> Result<String, String> {
-    let config_dir = &state.config_dir;
-    let mut cfg = match config::load_config(config_dir) {
+    let config_dir = state.config_dir();
+    let mut cfg = match config::load_config(&config_dir) {
         Ok(c) => c,
         Err(e) => return Err(format!("Failed to load config: {}", e)),
     };
@@ -1016,11 +1067,15 @@ async fn set_profile_metadata(state: tauri::State<'_, AppState>, profile_json: S
         return Err(String::from("Failed to publish profile to any relay"));
     }
     if let Some(ref name) = profile.name {
-        cfg.display_name = name.clone();
+        cfg.name = name.clone();
     }
-    cfg.profile_picture = profile.picture.clone();
-    cfg.profile_metadata = Some(content);
-    if let Err(e) = config::save_config(config_dir, &cfg) {
+    cfg.about = profile.about.clone();
+    cfg.picture = profile.picture.clone();
+    cfg.nip05 = profile.nip05.clone();
+    cfg.banner = profile.banner.clone();
+    cfg.website = profile.website.clone();
+    cfg.lud16 = profile.lud16.clone();
+    if let Err(e) = config::save_config(&config_dir, &cfg) {
         return Err(format!("Profile published but failed to save local config: {}", e));
     }
     Ok(relay::publish_results_to_json(&results))
@@ -1028,8 +1083,8 @@ async fn set_profile_metadata(state: tauri::State<'_, AppState>, profile_json: S
 
 #[tauri::command]
 fn sign_event(state: tauri::State<AppState>, event_json: String) -> Result<String, String> {
-    let config_dir = &state.config_dir;
-    let cfg = match config::load_config(config_dir) {
+    let config_dir = state.config_dir();
+    let cfg = match config::load_config(&config_dir) {
         Ok(c) => c,
         Err(e) => return Err(format!("Failed to load config: {}", e)),
     };
@@ -1050,8 +1105,8 @@ fn sign_event(state: tauri::State<AppState>, event_json: String) -> Result<Strin
 
 #[tauri::command]
 fn get_derived_public_key(state: tauri::State<AppState>) -> Result<String, String> {
-    let config_dir = &state.config_dir;
-    let cfg = match config::load_config(config_dir) {
+    let config_dir = state.config_dir();
+    let cfg = match config::load_config(&config_dir) {
         Ok(c) => c,
         Err(e) => return Err(format!("Failed to load config: {}", e)),
     };
@@ -1069,21 +1124,155 @@ fn generate_keypair(state: tauri::State<AppState>) -> Result<String, String> {
     let (secret_hex, pubkey_hex) = crypto::generate_keypair()?;
     let npub = keys::hex_to_npub(&pubkey_hex).unwrap_or_default();
     let nsec = keys::hex_to_nsec(&secret_hex).unwrap_or_default();
-    let config_dir = &state.config_dir;
-    let mut cfg = match config::load_config(config_dir) {
-        Ok(c) => c,
-        Err(_) => config::Config::new(),
-    };
+
+    // Create profile directory for the new identity
+    let profile_dir = config::ensure_profile_dir(&state.base_dir, &npub)?;
+
+    let mut cfg = config::Config::new();
     cfg.public_key = pubkey_hex.clone();
     cfg.private_key = Some(secret_hex.clone());
-    match config::save_config(config_dir, &cfg) {
-        Ok(()) => {}
-        Err(e) => return Err(format!("Failed to save config: {}", e)),
+    config::save_config(&profile_dir, &cfg)?;
+
+    // Update app config
+    let mut app_config = config::load_app_config(&state.base_dir)
+        .unwrap_or_else(|_| config::AppConfig::new());
+    app_config.active_profile = Some(npub.clone());
+    if !app_config.known_profiles.iter().any(|p| p.npub == npub) {
+        app_config.known_profiles.push(config::KnownProfile {
+            npub: npub.clone(),
+            name: None,
+            picture: None,
+        });
     }
+    config::save_app_config(&state.base_dir, &app_config)?;
+
+    // Switch to the new profile
+    state.set_config_dir(profile_dir.clone());
+    let _ = messages_store::ensure_messages_dir(&profile_dir);
+
     Ok(format!(
         "{{\"public_key_hex\":\"{}\",\"private_key_hex\":\"{}\",\"npub\":\"{}\",\"nsec\":\"{}\"}}",
         pubkey_hex, secret_hex, npub, nsec
     ))
+}
+
+// ============================================================
+// Multi-Profile / Auth Commands
+// ============================================================
+
+#[tauri::command]
+fn get_app_config(state: tauri::State<AppState>) -> Result<String, String> {
+    config::load_app_config(&state.base_dir)
+        .map(|c| config::app_config_to_json(&c))
+}
+
+#[tauri::command(rename_all = "snake_case")]
+fn login_with_keys(
+    state: tauri::State<AppState>,
+    public_key: String,
+    private_key: Option<String>,
+) -> Result<String, String> {
+    // Validate and convert public key
+    let pub_hex = keys::public_key_to_hex(&public_key)
+        .map_err(|e| format!("Invalid public key: {}", e))?;
+    let npub = keys::hex_to_npub(&pub_hex)
+        .map_err(|e| format!("Failed to convert to npub: {}", e))?;
+
+    // Validate private key if provided
+    let priv_hex = match &private_key {
+        Some(key) if !key.trim().is_empty() => {
+            Some(keys::secret_key_to_hex(key.trim())
+                .map_err(|e| format!("Invalid private key: {}", e))?)
+        }
+        _ => None,
+    };
+
+    // Create profile directory
+    let profile_dir = config::ensure_profile_dir(&state.base_dir, &npub)?;
+
+    // Load existing config or create new
+    let mut cfg = match config::load_config(&profile_dir) {
+        Ok(c) => c,
+        Err(_) => config::Config::new(),
+    };
+    cfg.public_key = pub_hex;
+    if let Some(ref hex) = priv_hex {
+        cfg.private_key = Some(hex.clone());
+    }
+    config::save_config(&profile_dir, &cfg)?;
+
+    // Update app config
+    let mut app_config = config::load_app_config(&state.base_dir)
+        .unwrap_or_else(|_| config::AppConfig::new());
+    app_config.active_profile = Some(npub.clone());
+    if !app_config.known_profiles.iter().any(|p| p.npub == npub) {
+        app_config.known_profiles.push(config::KnownProfile {
+            npub: npub.clone(),
+            name: if cfg.name != "Anonymous" { Some(cfg.name.clone()) } else { None },
+            picture: cfg.picture.clone(),
+        });
+    }
+    config::save_app_config(&state.base_dir, &app_config)?;
+
+    // Switch to this profile
+    state.set_config_dir(profile_dir.clone());
+    let _ = messages_store::ensure_messages_dir(&profile_dir);
+
+    Ok(config::config_to_json(&cfg))
+}
+
+#[tauri::command(rename_all = "snake_case")]
+fn switch_profile(state: tauri::State<AppState>, npub: String) -> Result<String, String> {
+    let profile_dir = config::get_profile_dir(&state.base_dir, &npub);
+    if !std::path::Path::new(&profile_dir).join("config.json").exists() {
+        return Err(format!("Profile not found: {}", npub));
+    }
+
+    let cfg = config::load_config(&profile_dir)?;
+
+    let mut app_config = config::load_app_config(&state.base_dir)
+        .unwrap_or_else(|_| config::AppConfig::new());
+    app_config.active_profile = Some(npub.clone());
+    config::save_app_config(&state.base_dir, &app_config)?;
+
+    state.set_config_dir(profile_dir.clone());
+    let _ = messages_store::ensure_messages_dir(&profile_dir);
+
+    Ok(config::config_to_json(&cfg))
+}
+
+#[tauri::command]
+fn logout(state: tauri::State<AppState>) -> Result<(), String> {
+    let mut app_config = config::load_app_config(&state.base_dir)
+        .unwrap_or_else(|_| config::AppConfig::new());
+    app_config.active_profile = None;
+    config::save_app_config(&state.base_dir, &app_config)?;
+    state.set_config_dir(state.base_dir.clone());
+    Ok(())
+}
+
+#[tauri::command(rename_all = "snake_case")]
+fn delete_profile(state: tauri::State<AppState>, npub: String) -> Result<(), String> {
+    let profile_dir = config::get_profile_dir(&state.base_dir, &npub);
+    if std::path::Path::new(&profile_dir).exists() {
+        std::fs::remove_dir_all(&profile_dir)
+            .map_err(|e| format!("Failed to delete profile directory: {}", e))?;
+    }
+    let mut app_config = config::load_app_config(&state.base_dir)
+        .unwrap_or_else(|_| config::AppConfig::new());
+    app_config.known_profiles.retain(|p| p.npub != npub);
+    if app_config.active_profile.as_deref() == Some(npub.as_str()) {
+        app_config.active_profile = None;
+        state.set_config_dir(state.base_dir.clone());
+    }
+    config::save_app_config(&state.base_dir, &app_config)?;
+    Ok(())
+}
+
+#[tauri::command]
+fn list_profiles(state: tauri::State<AppState>) -> Result<String, String> {
+    config::load_app_config(&state.base_dir)
+        .map(|c| config::app_config_to_json(&c))
 }
 
 // ============================================================
@@ -1110,24 +1299,47 @@ fn main() {
     // Install the rustls crypto provider before any TLS connections.
     websocket::stream::install_crypto_provider();
 
-    let config_dir: String = match config::get_config_dir() {
+    let base_dir: String = match config::get_config_dir() {
         Some(path) => path,
         None => {
             eprintln!("ERROR: Could not determine home directory");
             std::process::exit(1);
         }
     };
-    
-    match config::ensure_config_dir(&config_dir) {
-        Ok(()) => println!("Config directory ready: {}", config_dir),
+
+    match config::ensure_config_dir(&base_dir) {
+        Ok(()) => debug_log!("Base directory ready: {}", base_dir),
         Err(e) => {
-            eprintln!("ERROR: Could not create config directory: {}", e);
+            eprintln!("ERROR: Could not create base directory: {}", e);
             std::process::exit(1);
         }
     }
-    let _ = messages_store::ensure_messages_dir(&config_dir);
-    
-    let app_state = AppState { config_dir };
+
+    // Load app-level config to determine the active profile
+    let app_config = match config::load_app_config(&base_dir) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Warning: Could not load plume.json: {}", e);
+            config::AppConfig::new()
+        }
+    };
+
+    let config_dir = match &app_config.active_profile {
+        Some(npub) => {
+            let dir = config::get_profile_dir(&base_dir, npub);
+            if let Err(e) = config::ensure_profile_dir(&base_dir, npub) {
+                eprintln!("Warning: Could not create profile directory: {}", e);
+            }
+            let _ = messages_store::ensure_messages_dir(&dir);
+            dir
+        }
+        None => base_dir.clone(),
+    };
+
+    let app_state = AppState {
+        base_dir,
+        active_config_dir: RwLock::new(config_dir),
+    };
     
     tauri::Builder::default()
         .manage(app_state)
@@ -1172,6 +1384,12 @@ fn main() {
             sign_event,
             get_derived_public_key,
             generate_keypair,
+            get_app_config,
+            login_with_keys,
+            switch_profile,
+            logout,
+            delete_profile,
+            list_profiles,
         ])
         .setup(|app| {
             let _window = app.get_webview_window("main").unwrap();

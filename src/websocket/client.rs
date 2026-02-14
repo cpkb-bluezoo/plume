@@ -26,6 +26,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use url::Url;
 
+use crate::debug_log;
 use crate::websocket::connection::WebSocketConnection;
 use crate::websocket::handshake::{
     build_handshake_request, parse_101_response, verify_accept,
@@ -110,7 +111,7 @@ impl WebSocketClient {
         // Any bytes after the HTTP headers are the start of WebSocket frame data
         let leftover = &read_buf[body_offset..];
         if !leftover.is_empty() {
-            println!("[ws] handshake leftover: {} bytes", leftover.len());
+            debug_log!("[ws] handshake leftover: {} bytes", leftover.len());
         }
         Ok(WebSocketConnection::new(stream, leftover))
     }

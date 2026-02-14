@@ -9,3 +9,6 @@
 - zaps
   - zap amount on note card
   - zap item cards in profile
+
+- NIP-65 relay list
+- handle nostr:neventxxxx and nostr:nprofilexxxx

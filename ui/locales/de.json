@@ -14,6 +14,23 @@
     "newNote": "Neue Notiz",
     "yourProfilePhoto": "Ihr Profilfoto"
   },
+  "welcome": {
+    "title": "Willkommen bei Plume",
+    "subtitle": "Ein leichtgewichtiger Nostr-Desktop-Client",
+    "existingIdentity": "Sie haben bereits eine Nostr-Identität?",
+    "knownProfiles": "Ihre Profile",
+    "enterKeys": "Geben Sie Ihre Schlüssel ein, um sich anzumelden:",
+    "publicKeyLabel": "Öffentlicher Schlüssel",
+    "publicKeyPlaceholder": "npub1... oder 64-Zeichen-Hex",
+    "privateKeyLabel": "Privater Schlüssel (optional)",
+    "privateKeyPlaceholder": "nsec1... oder Hex",
+    "privateKeyHint": "Ein öffentlicher Schlüssel ermöglicht es Ihnen, andere zu durchsuchen und zu folgen. Ein privater Schlüssel ist erforderlich, um Notizen zu veröffentlichen, zu reagieren oder Direktnachrichten zu senden.",
+    "logIn": "Anmelden",
+    "or": "oder",
+    "newIdentity": "Neu bei Nostr?",
+    "newIdentityDesc": "Erstellen Sie eine neue Identität, um im dezentralen sozialen Netzwerk zu posten und sich mit anderen zu verbinden.",
+    "createNewIdentity": "Neue Identität erstellen"
+  },
   "feed": {
     "title": "Start",
     "welcomeTitle": "Willkommen bei Plume!",
@@ -48,10 +65,18 @@
   },
   "settings": {
     "title": "Einstellungen",
-    "selectOption": "Wählen Sie oben eine Option",
+    "selectOption": "Wählen Sie eine Option aus dem Menü",
     "account": "Konto",
+    "profile": "Profil",
+    "keys": "Schlüssel",
     "homeFeed": "Start-Feed",
+    "homeFeedModalTitle": "Start-Feed",
+    "homeFeedModalHint": "Wählen Sie, was auf Ihrer Startseite angezeigt wird.",
+    "homeFeedFirehose": "Firehose – Notizen von allen (globaler Feed)",
+    "homeFeedFollows": "Folgen – nur Notizen von Personen, denen Sie folgen",
     "mediaUploads": "Medien-Uploads",
+    "mediaServerHint": "Ein Medienserver hostet Bilder und Dateien, die Sie hochladen. Einige Server können einschränken, wer hochladen darf.",
+    "mediaServerUrl": "Medienserver-URL",
     "follows": "Folgen",
     "followsSortBy": "Sortieren nach:",
     "followsSortName": "Name",
@@ -63,15 +88,27 @@
     "followsEmpty": "Noch keine Folgen",
     "followsSaved": "Folgen-Liste gespeichert und veröffentlicht.",
     "mutedContent": "Stummgeschaltete Inhalte",
+    "mutedUsers": "Benutzer",
+    "mutedWords": "Wörter",
+    "mutedHashtags": "Hashtags",
     "mutedUsersHint": "Abwählen zum Entfernen; unten npub/hex hinzufügen. Speichern zum Übernehmen.",
     "mutedUsersEmpty": "Keine stummgeschalteten Nutzer",
     "mutedUserAddPlaceholder": "npub1… oder Hex zum Hinzufügen",
     "mutedUserAdd": "Hinzufügen",
     "mutedSaved": "Stumm-Listen gespeichert.",
+    "mutedWordPlaceholder": "Wort zum Stummschalten hinzufügen…",
+    "mutedHashtagPlaceholder": "Hashtag hinzufügen (ohne #)…",
+    "comingSoon": "Demnächst verfügbar.",
     "wallets": "Wallets",
+    "zapsDefaultAmount": "Standard-Zap-Betrag (sats)",
+    "zapsDefaultAmountHint": "Wird beim Zappen einer Notiz oder eines Profils verwendet. Standard: 42 Sats.",
     "relays": "Relays",
+    "relayAdd": "Hinzufügen",
+    "relayAddPlaceholder": "wss://relay.beispiel.com",
+    "relayDelete": "Entfernen",
     "zaps": "Zaps",
-    "logout": "Abmelden"
+    "logout": "Abmelden",
+    "logoutConfirm": "Möchten Sie sich wirklich abmelden? Ihre Profildaten werden lokal gespeichert."
   },
   "profile": {
     "editProfile": "Profil bearbeiten",
@@ -116,7 +153,8 @@
     "bannerUrl": "Banner (Bild-URL)",
     "bannerPlaceholder": "https://…",
     "cancel": "Abbrechen",
-    "ok": "OK"
+    "ok": "OK",
+    "saving": "Speichern..."
   },
   "accountModal": {
     "title": "Konto",
@@ -129,6 +167,9 @@
     "privateKeyPlaceholder": "nsec1... oder Hex (optional)",
     "privateKeyHint": "Nur zum Veröffentlichen von Notizen nötig",
     "save": "Speichern"
+  },
+  "likeModal": {
+    "title": "Reaktion wählen"
   },
   "composeModal": {
     "title": "Neue Notiz",
@@ -153,16 +194,28 @@
     "invalidSignature": "Ungültige Signatur",
     "reply": "Antworten",
     "zap": "Zap",
+    "zapNoWallet": "Zap erfordert, dass Sie und der Autor eine Lightning-Adresse haben",
     "like": "Gefällt mir",
     "repost": "Reposten",
+    "reposted": "Gepostet",
+    "repostedNote": "Hat eine Notiz repostet",
     "bookmark": "Lesezeichen",
     "unbookmark": "Lesezeichen entfernen",
     "replyLabel": "(Antwort)",
     "replyingTo": "Antwort an"
   },
+  "noteDetail": {
+    "back": "← Zurück",
+    "title": "Notiz",
+    "reply": "Antworten",
+    "replyPlaceholder": "Eine Antwort schreiben…",
+    "loading": "Laden…",
+    "noReplies": "Noch keine Antworten"
+  },
   "relays": {
-    "test": "Test",
-    "notTested": "Nicht getestet"
+    "statusUnknown": "Noch nicht getestet",
+    "statusConnected": "Verbunden",
+    "statusFailed": "Verbindung fehlgeschlagen"
   },
   "content": {
     "image": "Bild"

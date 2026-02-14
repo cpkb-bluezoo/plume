@@ -24,6 +24,7 @@ use bytes::BytesMut;
 use std::io;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+use crate::debug_log;
 use crate::websocket::frame::{encode_frame, FrameHandler, FrameParser, OP_BINARY, OP_CLOSE, OP_PING, OP_PONG, OP_TEXT};
 use crate::websocket::stream::WsStream;
 use crate::websocket::WebSocketHandler;
@@ -54,7 +55,7 @@ impl WebSocketConnection {
     pub async fn run(&mut self, handler: &mut (dyn WebSocketHandler + Send)) -> io::Result<()> {
         // Process any data already in the buffer (leftover from handshake)
         if !self.read_buf.is_empty() {
-            println!("[ws] processing {} leftover bytes", self.read_buf.len());
+            debug_log!("[ws] processing {} leftover bytes", self.read_buf.len());
             let mut adapter = FrameToHandlerAdapter { handler };
             if let Err(e) = self.frame_parser.receive(&mut self.read_buf, &mut adapter) {
                 println!("[ws] frame parse error on leftover: {}", e);
@@ -62,16 +63,16 @@ impl WebSocketConnection {
                 return Err(e);
             }
             if handler.should_stop() {
-                println!("[ws] handler stopped after leftover processing");
+                debug_log!("[ws] handler stopped after leftover processing");
                 return Ok(());
             }
         }
-        println!("[ws] entering read loop");
+        debug_log!("[ws] entering read loop");
         loop {
             let mut tmp = [0u8; 8192];
             let n = match self.stream.read(&mut tmp).await {
                 Ok(0) => {
-                    println!("[ws] stream EOF");
+                    debug_log!("[ws] stream EOF");
                     return Ok(());
                 }
                 Ok(n) => n,
@@ -81,7 +82,7 @@ impl WebSocketConnection {
                     return Err(e);
                 }
             };
-            println!("[ws] read {} bytes from stream (buf now {})", n, self.read_buf.len() + n);
+            debug_log!("[ws] read {} bytes from stream (buf now {})", n, self.read_buf.len() + n);
             self.read_buf.extend_from_slice(&tmp[..n]);
             {
                 let mut adapter = FrameToHandlerAdapter { handler };
@@ -91,9 +92,9 @@ impl WebSocketConnection {
                     return Err(e);
                 }
             }
-            println!("[ws] after frame parse, buf remaining: {}", self.read_buf.len());
+            debug_log!("[ws] after frame parse, buf remaining: {}", self.read_buf.len());
             if handler.should_stop() {
-                println!("[ws] handler requested stop");
+                debug_log!("[ws] handler requested stop");
                 return Ok(());
             }
         }
@@ -169,7 +170,7 @@ struct FrameToHandlerAdapter<'a> {
 
 impl FrameHandler for FrameToHandlerAdapter<'_> {
     fn frame(&mut self, opcode: u8, _fin: bool, data: &[u8]) {
-        println!("[ws] frame: opcode={} fin={} len={}", opcode, _fin, data.len());
+        debug_log!("[ws] frame: opcode={} fin={} len={}", opcode, _fin, data.len());
         match opcode {
             OP_TEXT => self.handler.text_frame(data),
             OP_BINARY => self.handler.binary_frame(data),

@@ -14,6 +14,23 @@
     "newNote": "New note",
     "yourProfilePhoto": "Your profile photo"
   },
+  "welcome": {
+    "title": "Welcome to Plume",
+    "subtitle": "A lightweight Nostr desktop client",
+    "existingIdentity": "Already have a Nostr identity?",
+    "knownProfiles": "Your profiles",
+    "enterKeys": "Enter your keys to log in:",
+    "publicKeyLabel": "Public Key",
+    "publicKeyPlaceholder": "npub1... or 64-char hex",
+    "privateKeyLabel": "Private Key (optional)",
+    "privateKeyPlaceholder": "nsec1... or hex",
+    "privateKeyHint": "A public key lets you browse and follow others. A private key is required to publish notes, react, or send direct messages.",
+    "logIn": "Log In",
+    "or": "or",
+    "newIdentity": "New to Nostr?",
+    "newIdentityDesc": "Create a fresh identity to start posting and connecting with others on the decentralised social network.",
+    "createNewIdentity": "Create New Identity"
+  },
   "feed": {
     "title": "Home",
     "welcomeTitle": "Welcome to Plume!",
@@ -90,7 +107,8 @@
     "relayAddPlaceholder": "wss://relay.example.com",
     "relayDelete": "Remove",
     "zaps": "Zaps",
-    "logout": "Log out"
+    "logout": "Log out",
+    "logoutConfirm": "Are you sure you want to log out? Your profile data will be kept locally."
   },
   "profile": {
     "editProfile": "Edit profile",
@@ -135,7 +153,8 @@
     "bannerUrl": "Banner (image URL)",
     "bannerPlaceholder": "https://...",
     "cancel": "Cancel",
-    "ok": "OK"
+    "ok": "OK",
+    "saving": "Saving..."
   },
   "accountModal": {
     "title": "Account",

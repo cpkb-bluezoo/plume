@@ -24,17 +24,27 @@ use std::path::Path;
 
 use bytes::BytesMut;
 use crate::json::{JsonContentHandler, JsonNumber, JsonParser};
+use crate::nostr;
 
-// The main configuration structure
+// The main configuration structure.
+// Profile fields (name, about, picture, nip05, banner, website, lud16) are stored
+// directly rather than embedded as a JSON string, matching the Nostr kind 0 field names.
 pub struct Config {
     pub public_key: String,
     pub private_key: Option<String>,
     pub relays: Vec<String>,
-    pub display_name: String,
-    pub profile_picture: Option<String>,
-    pub profile_metadata: Option<String>,
+    // Profile fields (Nostr kind 0)
+    pub name: String,
+    pub about: Option<String>,
+    pub picture: Option<String>,
+    pub nip05: Option<String>,
+    pub banner: Option<String>,
+    pub website: Option<String>,
+    pub lud16: Option<String>,
+    // App settings
     pub home_feed_mode: String,
     pub media_server_url: String,
+    pub following: Vec<String>,
     pub muted_users: Vec<String>,
     pub muted_words: Vec<String>,
     pub muted_hashtags: Vec<String>,
@@ -52,11 +62,16 @@ impl Config {
                 String::from("wss://nos.lol"),
                 String::from("wss://relay.nostr.band"),
             ],
-            display_name: String::from("Anonymous"),
-            profile_picture: None,
-            profile_metadata: None,
+            name: String::from("Anonymous"),
+            about: None,
+            picture: None,
+            nip05: None,
+            banner: None,
+            website: None,
+            lud16: None,
             home_feed_mode: String::from("firehose"),
             media_server_url: String::from("https://blossom.primal.net"),
+            following: Vec::new(),
             muted_users: Vec::new(),
             muted_words: Vec::new(),
             muted_hashtags: Vec::new(),
@@ -75,6 +90,7 @@ impl Config {
 enum ConfigArrayField {
     None,
     Relays,
+    Following,
     MutedUsers,
     MutedWords,
     MutedHashtags,
@@ -88,18 +104,25 @@ struct ConfigHandler {
     // Scalar fields
     public_key: String,
     private_key: Option<String>,
-    display_name: String,
-    profile_picture: Option<String>,
-    profile_metadata: Option<String>,
+    name: String,
+    about: Option<String>,
+    picture: Option<String>,
+    nip05: Option<String>,
+    banner: Option<String>,
+    website: Option<String>,
+    lud16: Option<String>,
     home_feed_mode: String,
     media_server_url: String,
     default_zap_amount: u32,
     // Array fields
     relays: Vec<String>,
+    following: Vec<String>,
     muted_users: Vec<String>,
     muted_words: Vec<String>,
     muted_hashtags: Vec<String>,
     bookmarks: Vec<String>,
+    // Legacy field for backward compatibility (old configs stored profile as embedded JSON string)
+    profile_metadata_raw: Option<String>,
 }
 
 impl ConfigHandler {
@@ -110,21 +133,27 @@ impl ConfigHandler {
             array_field: ConfigArrayField::None,
             public_key: String::new(),
             private_key: None,
-            display_name: String::from("Anonymous"),
-            profile_picture: None,
-            profile_metadata: None,
+            name: String::from("Anonymous"),
+            about: None,
+            picture: None,
+            nip05: None,
+            banner: None,
+            website: None,
+            lud16: None,
             home_feed_mode: String::from("firehose"),
             media_server_url: String::from("https://blossom.primal.net"),
             default_zap_amount: 42,
             relays: Vec::new(),
+            following: Vec::new(),
             muted_users: Vec::new(),
             muted_words: Vec::new(),
             muted_hashtags: Vec::new(),
             bookmarks: Vec::new(),
+            profile_metadata_raw: None,
         }
     }
 
-    fn take_config(self) -> Config {
+    fn take_config(mut self) -> Config {
         let mut relays = self.relays;
         if relays.is_empty() {
             relays.push(String::from("wss://relay.damus.io"));
@@ -136,16 +165,52 @@ impl ConfigHandler {
         } else {
             String::from("firehose")
         };
+
+        // Backward compatibility: if an old config had profile_metadata (embedded JSON string),
+        // parse it and fill in any profile fields that are still at defaults.
+        if let Some(ref raw) = self.profile_metadata_raw {
+            if let Ok(profile) = nostr::parse_profile(raw) {
+                if self.name == "Anonymous" {
+                    if let Some(ref n) = profile.name {
+                        self.name = n.clone();
+                    }
+                }
+                if self.about.is_none() {
+                    self.about = profile.about.clone();
+                }
+                if self.picture.is_none() {
+                    self.picture = profile.picture.clone();
+                }
+                if self.nip05.is_none() {
+                    self.nip05 = profile.nip05.clone();
+                }
+                if self.banner.is_none() {
+                    self.banner = profile.banner.clone();
+                }
+                if self.website.is_none() {
+                    self.website = profile.website.clone();
+                }
+                if self.lud16.is_none() {
+                    self.lud16 = profile.lud16.clone();
+                }
+            }
+        }
+
         Config {
             public_key: self.public_key,
             private_key: self.private_key,
             relays,
-            display_name: self.display_name,
-            profile_picture: self.profile_picture,
-            profile_metadata: self.profile_metadata,
+            name: self.name,
+            about: self.about,
+            picture: self.picture,
+            nip05: self.nip05,
+            banner: self.banner,
+            website: self.website,
+            lud16: self.lud16,
             home_feed_mode,
             media_server_url: self.media_server_url,
             default_zap_amount: self.default_zap_amount,
+            following: self.following,
             muted_users: self.muted_users,
             muted_words: self.muted_words,
             muted_hashtags: self.muted_hashtags,
@@ -167,6 +232,7 @@ impl JsonContentHandler for ConfigHandler {
             if let Some(ref f) = self.current_field {
                 self.array_field = match f.as_str() {
                     "relays" => ConfigArrayField::Relays,
+                    "following" => ConfigArrayField::Following,
                     "muted_users" => ConfigArrayField::MutedUsers,
                     "muted_words" => ConfigArrayField::MutedWords,
                     "muted_hashtags" => ConfigArrayField::MutedHashtags,
@@ -192,6 +258,7 @@ impl JsonContentHandler for ConfigHandler {
         if self.depth == 2 && self.array_field != ConfigArrayField::None {
             let vec = match self.array_field {
                 ConfigArrayField::Relays => &mut self.relays,
+                ConfigArrayField::Following => &mut self.following,
                 ConfigArrayField::MutedUsers => &mut self.muted_users,
                 ConfigArrayField::MutedWords => &mut self.muted_words,
                 ConfigArrayField::MutedHashtags => &mut self.muted_hashtags,
@@ -207,9 +274,29 @@ impl JsonContentHandler for ConfigHandler {
                 match f.as_str() {
                     "public_key" => self.public_key = value.to_string(),
                     "private_key" => self.private_key = Some(value.to_string()),
-                    "display_name" => self.display_name = value.to_string(),
-                    "profile_picture" => self.profile_picture = Some(value.to_string()),
-                    "profile_metadata" => self.profile_metadata = Some(value.to_string()),
+                    // New field names (Nostr kind 0)
+                    "name" => self.name = value.to_string(),
+                    "about" => self.about = Some(value.to_string()),
+                    "picture" => self.picture = Some(value.to_string()),
+                    "nip05" => self.nip05 = Some(value.to_string()),
+                    "banner" => self.banner = Some(value.to_string()),
+                    "website" => self.website = Some(value.to_string()),
+                    "lud16" => self.lud16 = Some(value.to_string()),
+                    // Legacy field names (old configs): map to new names
+                    "display_name" => {
+                        if self.name == "Anonymous" {
+                            self.name = value.to_string();
+                        }
+                    }
+                    "profile_picture" => {
+                        if self.picture.is_none() {
+                            self.picture = Some(value.to_string());
+                        }
+                    }
+                    // Legacy embedded JSON string: store raw for parsing in take_config()
+                    "profile_metadata" => {
+                        self.profile_metadata_raw = Some(value.to_string());
+                    }
                     "home_feed_mode" => self.home_feed_mode = value.to_string(),
                     "media_server_url" => self.media_server_url = value.to_string(),
                     _ => {}
@@ -268,24 +355,30 @@ pub fn config_to_json(config: &Config) -> String {
     }
     json.push_str("  ],\n");
 
-    json.push_str("  \"display_name\": \"");
-    json.push_str(&escape_json_string(&config.display_name));
+    // Profile fields (Nostr kind 0 names)
+    json.push_str("  \"name\": \"");
+    json.push_str(&escape_json_string(&config.name));
     json.push_str("\",\n");
 
-    json.push_str("  \"profile_picture\": ");
-    match &config.profile_picture {
-        Some(url) => { json.push_str("\""); json.push_str(&escape_json_string(url)); json.push_str("\""); }
-        None => json.push_str("null"),
-    }
+    write_optional_string(&mut json, "about", &config.about);
     json.push_str(",\n");
 
-    json.push_str("  \"profile_metadata\": ");
-    match &config.profile_metadata {
-        Some(s) => { json.push_str("\""); json.push_str(&escape_json_string(s)); json.push_str("\""); }
-        None => json.push_str("null"),
-    }
+    write_optional_string(&mut json, "picture", &config.picture);
     json.push_str(",\n");
 
+    write_optional_string(&mut json, "nip05", &config.nip05);
+    json.push_str(",\n");
+
+    write_optional_string(&mut json, "banner", &config.banner);
+    json.push_str(",\n");
+
+    write_optional_string(&mut json, "website", &config.website);
+    json.push_str(",\n");
+
+    write_optional_string(&mut json, "lud16", &config.lud16);
+    json.push_str(",\n");
+
+    // App settings
     json.push_str("  \"home_feed_mode\": \"");
     json.push_str(&escape_json_string(&config.home_feed_mode));
     json.push_str("\",\n");
@@ -294,6 +387,8 @@ pub fn config_to_json(config: &Config) -> String {
     json.push_str(&escape_json_string(&config.media_server_url));
     json.push_str("\",\n");
 
+    write_string_array(&mut json, "following", &config.following);
+    json.push_str(",\n");
     write_string_array(&mut json, "muted_users", &config.muted_users);
     json.push_str(",\n");
     write_string_array(&mut json, "muted_words", &config.muted_words);
@@ -309,6 +404,20 @@ pub fn config_to_json(config: &Config) -> String {
 
     json.push_str("}");
     return json;
+}
+
+fn write_optional_string(json: &mut String, name: &str, value: &Option<String>) {
+    json.push_str("  \"");
+    json.push_str(name);
+    json.push_str("\": ");
+    match value {
+        Some(s) => {
+            json.push_str("\"");
+            json.push_str(&escape_json_string(s));
+            json.push_str("\"");
+        }
+        None => json.push_str("null"),
+    }
 }
 
 fn write_string_array(json: &mut String, name: &str, items: &[String]) {
@@ -403,4 +512,212 @@ pub fn save_config(config_dir: &str, config: &Config) -> Result<(), String> {
             return Err(format!("Could not write config file: {}", e));
         }
     }
+}
+
+// ============================================================
+// App-level configuration (plume.json) - multi-profile support
+// ============================================================
+
+pub struct KnownProfile {
+    pub npub: String,
+    pub name: Option<String>,
+    pub picture: Option<String>,
+}
+
+pub struct AppConfig {
+    pub active_profile: Option<String>,
+    pub known_profiles: Vec<KnownProfile>,
+}
+
+impl AppConfig {
+    pub fn new() -> Self {
+        Self {
+            active_profile: None,
+            known_profiles: Vec::new(),
+        }
+    }
+}
+
+struct AppConfigHandler {
+    depth: i32,
+    current_field: Option<String>,
+    active_profile: Option<String>,
+    known_profiles: Vec<KnownProfile>,
+    in_profiles_array: bool,
+    cur_npub: String,
+    cur_name: Option<String>,
+    cur_picture: Option<String>,
+}
+
+impl AppConfigHandler {
+    fn new() -> Self {
+        Self {
+            depth: 0,
+            current_field: None,
+            active_profile: None,
+            known_profiles: Vec::new(),
+            in_profiles_array: false,
+            cur_npub: String::new(),
+            cur_name: None,
+            cur_picture: None,
+        }
+    }
+
+    fn take(self) -> AppConfig {
+        AppConfig {
+            active_profile: self.active_profile,
+            known_profiles: self.known_profiles,
+        }
+    }
+}
+
+impl JsonContentHandler for AppConfigHandler {
+    fn start_object(&mut self) {
+        self.depth += 1;
+        if self.depth == 3 && self.in_profiles_array {
+            self.cur_npub = String::new();
+            self.cur_name = None;
+            self.cur_picture = None;
+        }
+    }
+    fn end_object(&mut self) {
+        if self.depth == 3 && self.in_profiles_array && !self.cur_npub.is_empty() {
+            self.known_profiles.push(KnownProfile {
+                npub: std::mem::take(&mut self.cur_npub),
+                name: self.cur_name.take(),
+                picture: self.cur_picture.take(),
+            });
+        }
+        self.depth -= 1;
+    }
+    fn start_array(&mut self) {
+        self.depth += 1;
+        if self.depth == 2 {
+            if let Some(ref f) = self.current_field {
+                if f == "known_profiles" {
+                    self.in_profiles_array = true;
+                }
+            }
+        }
+    }
+    fn end_array(&mut self) {
+        if self.depth == 2 {
+            self.in_profiles_array = false;
+        }
+        self.depth -= 1;
+    }
+    fn key(&mut self, key: &str) {
+        self.current_field = Some(key.to_string());
+    }
+    fn string_value(&mut self, value: &str) {
+        if self.depth == 3 && self.in_profiles_array {
+            if let Some(ref f) = self.current_field {
+                match f.as_str() {
+                    "npub" => self.cur_npub = value.to_string(),
+                    "name" => self.cur_name = Some(value.to_string()),
+                    "picture" => self.cur_picture = Some(value.to_string()),
+                    _ => {}
+                }
+            }
+            return;
+        }
+        if self.depth == 1 {
+            if let Some(ref f) = self.current_field {
+                if f == "active_profile" {
+                    self.active_profile = Some(value.to_string());
+                }
+            }
+        }
+    }
+    fn number_value(&mut self, _number: JsonNumber) {}
+    fn boolean_value(&mut self, _value: bool) {}
+    fn null_value(&mut self) {}
+}
+
+pub fn app_config_to_json(config: &AppConfig) -> String {
+    let mut json = String::new();
+    json.push_str("{\n");
+    json.push_str("  \"active_profile\": ");
+    match &config.active_profile {
+        Some(npub) => {
+            json.push_str("\"");
+            json.push_str(&escape_json_string(npub));
+            json.push_str("\"");
+        }
+        None => json.push_str("null"),
+    }
+    json.push_str(",\n");
+    json.push_str("  \"known_profiles\": [\n");
+    for (i, profile) in config.known_profiles.iter().enumerate() {
+        json.push_str("    {\n");
+        json.push_str("      \"npub\": \"");
+        json.push_str(&escape_json_string(&profile.npub));
+        json.push_str("\",\n");
+        json.push_str("      \"name\": ");
+        match &profile.name {
+            Some(name) => {
+                json.push_str("\"");
+                json.push_str(&escape_json_string(name));
+                json.push_str("\"");
+            }
+            None => json.push_str("null"),
+        }
+        json.push_str(",\n");
+        json.push_str("      \"picture\": ");
+        match &profile.picture {
+            Some(pic) => {
+                json.push_str("\"");
+                json.push_str(&escape_json_string(pic));
+                json.push_str("\"");
+            }
+            None => json.push_str("null"),
+        }
+        json.push_str("\n    }");
+        if i < config.known_profiles.len() - 1 { json.push_str(","); }
+        json.push_str("\n");
+    }
+    json.push_str("  ]\n");
+    json.push_str("}");
+    json
+}
+
+fn json_to_app_config(json_str: &str) -> Result<AppConfig, String> {
+    let mut handler = AppConfigHandler::new();
+    let mut parser = JsonParser::new();
+    let mut buf = BytesMut::from(json_str.as_bytes());
+    parser.receive(&mut buf, &mut handler).map_err(|e| format!("Invalid JSON: {}", e))?;
+    parser.close(&mut handler).map_err(|e| format!("Invalid JSON: {}", e))?;
+    Ok(handler.take())
+}
+
+pub fn get_profile_dir(base_dir: &str, npub: &str) -> String {
+    Path::new(base_dir).join("profiles").join(npub).to_string_lossy().to_string()
+}
+
+pub fn ensure_profile_dir(base_dir: &str, npub: &str) -> Result<String, String> {
+    let dir = get_profile_dir(base_dir, npub);
+    let path = Path::new(&dir);
+    if !path.exists() {
+        fs::create_dir_all(path).map_err(|e| format!("Could not create profile directory: {}", e))?;
+        println!("Created profile directory: {}", dir);
+    }
+    Ok(dir)
+}
+
+pub fn load_app_config(base_dir: &str) -> Result<AppConfig, String> {
+    let config_file = Path::new(base_dir).join("plume.json");
+    if !config_file.exists() {
+        return Ok(AppConfig::new());
+    }
+    let contents = fs::read_to_string(&config_file)
+        .map_err(|e| format!("Could not read plume.json: {}", e))?;
+    json_to_app_config(&contents)
+}
+
+pub fn save_app_config(base_dir: &str, config: &AppConfig) -> Result<(), String> {
+    let config_file = Path::new(base_dir).join("plume.json");
+    let json = app_config_to_json(config);
+    fs::write(&config_file, json).map_err(|e| format!("Could not write plume.json: {}", e))?;
+    println!("Saved app config to: {}", config_file.display());
+    Ok(())
 }

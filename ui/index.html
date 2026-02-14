@@ -22,7 +22,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self' ipc: tauri:; img-src 'self' https: data:; media-src 'self' https:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self' ipc: tauri: https:">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self' ipc: tauri:; img-src 'self' https: data:; media-src 'self' https:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: tauri: https:">
     <title>Plume</title>
     <link rel="stylesheet" href="style.css">
     <link rel="icon" type="image/svg+xml" href="plume.svg">
@@ -55,7 +55,7 @@
             </nav>
 
             <section id="content">
-                <div id="view-feed" class="view active">
+                <div id="view-feed" class="view">
                     <div class="view-header view-header-border">
                         <h2 class="view-title" data-i18n="feed.title"></h2>
                     </div>
@@ -194,6 +194,7 @@
                                         <span id="settings-keys-nsec-error" class="validation-error"></span>
                                     </div>
                                     <div class="form-actions form-actions-end">
+                                        <button type="button" id="settings-keys-copy-nsec" class="btn btn-ghost" style="display: none;" data-i18n="accountModal.copyNsec">Copy nsec</button>
                                         <button type="submit" class="btn btn-primary" data-i18n="accountModal.save">Save</button>
                                     </div>
                                 </form>
@@ -306,6 +307,50 @@
                         </div>
                     </div>
                 </div>
+
+                <section id="view-welcome" class="view">
+                    <div class="welcome-container">
+                        <div class="welcome-header">
+                            <img src="plume.svg" class="welcome-logo" alt="Plume">
+                            <h1 class="welcome-title" data-i18n="welcome.title">Welcome to Plume</h1>
+                            <p class="welcome-subtitle" data-i18n="welcome.subtitle">A lightweight Nostr desktop client</p>
+                        </div>
+
+                        <div class="welcome-section" id="welcome-existing">
+                            <h2 data-i18n="welcome.existingIdentity">Already have a Nostr identity?</h2>
+
+                            <div id="welcome-known-profiles" class="known-profiles-list" style="display: none;">
+                                <h3 class="known-profiles-heading" data-i18n="welcome.knownProfiles">Your profiles</h3>
+                                <ul id="welcome-profiles-list"></ul>
+                            </div>
+
+                            <div class="welcome-login-form">
+                                <p class="welcome-login-prompt" data-i18n="welcome.enterKeys">Enter your keys to log in:</p>
+                                <div class="form-group">
+                                    <label for="welcome-npub" data-i18n="welcome.publicKeyLabel">Public Key</label>
+                                    <input type="text" id="welcome-npub" placeholder="npub1... or 64-char hex" data-i18n-placeholder="welcome.publicKeyPlaceholder">
+                                </div>
+                                <div class="form-group">
+                                    <label for="welcome-nsec" data-i18n="welcome.privateKeyLabel">Private Key (optional)</label>
+                                    <input type="password" id="welcome-nsec" placeholder="nsec1... or hex" data-i18n-placeholder="welcome.privateKeyPlaceholder">
+                                    <small class="form-hint" data-i18n="welcome.privateKeyHint">A public key lets you browse and follow others. A private key is required to publish notes, react, or send direct messages.</small>
+                                </div>
+                                <span id="welcome-login-error" class="validation-error"></span>
+                                <button type="button" id="welcome-login-btn" class="btn btn-primary" data-i18n="welcome.logIn">Log In</button>
+                            </div>
+                        </div>
+
+                        <div class="welcome-divider">
+                            <span data-i18n="welcome.or">or</span>
+                        </div>
+
+                        <div class="welcome-section" id="welcome-new">
+                            <h2 data-i18n="welcome.newIdentity">New to Nostr?</h2>
+                            <p data-i18n="welcome.newIdentityDesc">Create a fresh identity to start posting and connecting with others on the decentralised social network.</p>
+                            <button type="button" id="welcome-generate-btn" class="btn btn-secondary" data-i18n="welcome.createNewIdentity">Create New Identity</button>
+                        </div>
+                    </div>
+                </section>
 
                 <div id="view-profile" class="view">
                     <div class="profile-page">
@@ -458,6 +503,16 @@
                 </div>
                 <div class="modal-body like-emoji-list-wrap">
                     <div id="like-emoji-list" class="like-emoji-list"></div>
+                </div>
+            </div>
+        </div>
+
+        <div id="confirm-dialog" class="modal" aria-hidden="true">
+            <div class="modal-content modal-confirm">
+                <p id="confirm-dialog-message"></p>
+                <div class="form-actions form-actions-end">
+                    <button type="button" id="confirm-dialog-cancel" class="btn btn-ghost">Cancel</button>
+                    <button type="button" id="confirm-dialog-ok" class="btn btn-primary">OK</button>
                 </div>
             </div>
         </div>

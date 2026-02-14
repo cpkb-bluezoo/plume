@@ -1877,6 +1877,20 @@ html, body {
     max-width: 600px;
 }
 
+.modal-confirm {
+    max-width: 400px;
+    padding: 24px;
+}
+
+.modal-confirm p {
+    margin: 0 0 20px;
+    line-height: 1.5;
+}
+
+.modal-confirm .form-actions {
+    margin: 0;
+}
+
 .modal-compose textarea {
     resize: vertical;
     min-height: 120px;
@@ -1965,6 +1979,232 @@ html, body {
 
 ::-webkit-scrollbar-thumb:hover {
     background: var(--text-muted);
+}
+
+/* ============================================================
+   Muted nav items (logged-out or no-nsec states)
+   ============================================================ */
+
+.nav-item.nav-muted,
+.compose-btn.nav-muted {
+    opacity: 0.25;
+    cursor: not-allowed;
+    pointer-events: auto; /* keep clickable for tooltip */
+}
+
+.nav-item.nav-muted:hover,
+.compose-btn.nav-muted:hover {
+    opacity: 0.35;
+    background: transparent;
+}
+
+/* ============================================================
+   Welcome / Login View
+   ============================================================ */
+
+#view-welcome {
+    align-items: flex-start;
+    justify-content: center;
+    padding: 24px 24px;
+    overflow-y: auto;
+}
+
+.welcome-container {
+    max-width: 480px;
+    width: 100%;
+}
+
+.welcome-header {
+    text-align: center;
+    margin-bottom: 20px;
+}
+
+.welcome-logo {
+    width: 56px;
+    height: 56px;
+    margin-bottom: 10px;
+}
+
+.welcome-title {
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    margin-bottom: 4px;
+}
+
+.welcome-subtitle {
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+}
+
+.welcome-section {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-lg);
+    padding: 20px;
+    margin-bottom: 0;
+}
+
+.welcome-section h2 {
+    font-size: 1.05rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 12px;
+}
+
+.welcome-section p {
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    line-height: 1.4;
+    margin-bottom: 12px;
+}
+
+.welcome-divider {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    margin: 14px 0;
+}
+
+.welcome-divider::before,
+.welcome-divider::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--border-color);
+}
+
+.welcome-divider span {
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+/* Known profiles list */
+
+.known-profiles-list {
+    margin-bottom: 20px;
+}
+
+.known-profiles-heading {
+    font-size: 0.85rem;
+    font-weight: 500;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 10px;
+}
+
+.known-profiles-list ul {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+
+.known-profile-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 12px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius);
+    margin-bottom: 8px;
+    cursor: pointer;
+    transition: background 0.15s;
+}
+
+.known-profile-item:hover {
+    background: var(--bg-tertiary);
+}
+
+.known-profile-avatar {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    object-fit: cover;
+    flex-shrink: 0;
+}
+
+.known-profile-placeholder {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    background: var(--bg-tertiary);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+}
+
+.known-profile-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.known-profile-name {
+    font-weight: 500;
+    color: var(--text-primary);
+    font-size: 0.9rem;
+}
+
+.known-profile-npub {
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Login form within welcome */
+
+.welcome-login-form {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.welcome-login-prompt {
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    margin-bottom: 2px;
+}
+
+.welcome-login-form .form-group {
+    margin-bottom: 0;
+}
+
+.welcome-login-form .btn-primary {
+    margin-top: 8px;
+    align-self: flex-start;
+}
+
+#welcome-new .btn-secondary {
+    margin-top: 4px;
+}
+
+/* Nav muted tooltip */
+
+.nav-muted-tooltip {
+    position: fixed;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    padding: 6px 12px;
+    border-radius: var(--radius);
+    border: 1px solid var(--border-color);
+    box-shadow: var(--shadow);
+    pointer-events: none;
+    z-index: 9999;
+    white-space: nowrap;
+    opacity: 0;
+    transition: opacity 0.2s;
+}
+
+.nav-muted-tooltip.visible {
+    opacity: 1;
 }
 
 /* Responsive adjustments */

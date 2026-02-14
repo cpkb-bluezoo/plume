@@ -27,6 +27,8 @@ use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpStream;
 use tokio_rustls::client::TlsStream;
+
+use crate::debug_log;
 use tokio_rustls::rustls::ClientConfig;
 use tokio_rustls::rustls::pki_types::ServerName;
 use tokio_rustls::TlsConnector;
@@ -97,7 +99,7 @@ pub fn ws_tls_config() -> Arc<ClientConfig> {
                 println!("Warning: failed to add a native root cert: {}", e);
             }
         }
-        println!("Loaded {} root certificates from system store", root_store.len());
+        debug_log!("Loaded {} root certificates from system store", root_store.len());
         let config = ClientConfig::builder()
             .with_root_certificates(root_store)
             .with_no_client_auth();
