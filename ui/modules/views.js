@@ -306,8 +306,8 @@ export function switchView(viewName) {
         }
     }
     if (viewName === 'messages') {
-        state.unreadMessageCount = 0;
-        updateMessagesNavUnread();
+        // Don't clear unread badge here — it is cleared when the user actually
+        // opens a conversation (selectConversation), not just by clicking the icon.
         loadMessagesView();
     }
     if (viewName === 'bookmarks') {

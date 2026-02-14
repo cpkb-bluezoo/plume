@@ -295,6 +295,8 @@ async fn fetch_notes_from_relays(
     };
 
     let mut all_events: Vec<nostr::Event> = Vec::new();
+    let relay_count = relay_urls.len();
+    let mut fail_count: usize = 0;
 
     for relay_url in relay_urls {
         match relay::fetch_notes_from_relay(&relay_url, &filter, 10).await {
@@ -304,9 +306,17 @@ async fn fetch_notes_from_relays(
                 }
             }
             Err(e) => {
-                println!("Error fetching from {}: {}", relay_url, e);
+                fail_count += 1;
+                debug_log!("Error fetching from {}: {}", relay_url, e);
             }
         }
+    }
+
+    if fail_count == relay_count {
+        return Err(format!(
+            "Could not reach any of the {} configured relays. Check your connection and relay settings.",
+            relay_count
+        ));
     }
 
     all_events.sort_by(|a, b| b.created_at.cmp(&a.created_at));
@@ -368,7 +378,7 @@ fn start_feed_stream(
         let rt = match tokio::runtime::Runtime::new() {
             Ok(r) => r,
             Err(e) => {
-                println!("Failed to create Tokio runtime: {}", e);
+                warn_log!("Failed to create Tokio runtime: {}", e);
                 return;
             }
         };
@@ -426,7 +436,7 @@ async fn fetch_replies_to_event(relay_urls: Vec<String>, event_id: String, limit
                 }
             }
             Err(e) => {
-                println!("Error fetching replies from {}: {}", relay_url, e);
+                debug_log!("Error fetching replies from {}: {}", relay_url, e);
             }
         }
     }
@@ -459,7 +469,7 @@ async fn fetch_events_by_ids(relay_urls: Vec<String>, ids: Vec<String>) -> Resul
                 }
             }
             Err(e) => {
-                println!("Error fetching by ids from {}: {}", relay_url, e);
+                debug_log!("Error fetching by ids from {}: {}", relay_url, e);
             }
         }
     }
@@ -484,14 +494,40 @@ fn generate_qr_svg(data: String) -> Result<String, String> {
 #[tauri::command]
 async fn test_relay_connection(relay_url: String) -> Result<String, String> {
     debug_log!("Testing connection to: {}", relay_url);
+    // Explicit user test — bypass backoff, but clear it on success
     match tokio::time::timeout(
         std::time::Duration::from_secs(5),
         crate::websocket::WebSocketClient::connect(&relay_url),
     ).await {
-        Ok(Ok(_conn)) => Ok(String::from("Connection successful")),
+        Ok(Ok(_conn)) => {
+            relay::record_relay_success(&relay_url);
+            Ok(String::from("Connection successful"))
+        }
         Ok(Err(e)) => Err(format!("Failed to connect: {}", e)),
         Err(_) => Err(String::from("Connection timeout")),
     }
+}
+
+/// Return backoff status for a list of relay URLs.
+/// Returns JSON: {"wss://relay.example.com": 42, ...}  (remaining seconds, absent = not in backoff)
+#[tauri::command(rename_all = "snake_case")]
+fn get_relay_backoff_status(relay_urls: Vec<String>) -> String {
+    let mut json = String::from("{");
+    let mut first = true;
+    for url in &relay_urls {
+        if let Some(remaining) = relay::check_relay_backoff(url) {
+            if !first {
+                json.push(',');
+            }
+            json.push('"');
+            json.push_str(&config::escape_json_string(url));
+            json.push_str("\":");
+            json.push_str(&remaining.to_string());
+            first = false;
+        }
+    }
+    json.push('}');
+    json
 }
 
 // ============================================================
@@ -604,7 +640,7 @@ async fn fetch_own_following(state: tauri::State<'_, AppState>) -> Result<String
                 let mut cfg = cfg;
                 cfg.following = pubkeys;
                 if let Err(e) = config::save_config(&config_dir, &cfg) {
-                    eprintln!("Warning: failed to cache following list locally: {}", e);
+                    debug_log!("Warning: failed to cache following list locally: {}", e);
                 }
             }
             Ok(nostr::contact_list_to_json(&contact_list))
@@ -656,7 +692,7 @@ async fn update_contact_list(
     let mut cfg = cfg;
     cfg.following = pubkeys;
     if let Err(e) = config::save_config(&config_dir, &cfg) {
-        eprintln!("Warning: published contact list but failed to save locally: {}", e);
+        warn_log!("Warning: published contact list but failed to save locally: {}", e);
     }
     Ok(relay::publish_results_to_json(&results))
 }
@@ -689,7 +725,7 @@ async fn set_contact_list(state: tauri::State<'_, AppState>, pubkeys: Vec<String
     // Persist following list locally so the feed can use it without fetching from relays
     cfg.following = hex_pubkeys;
     if let Err(e) = config::save_config(&config_dir, &cfg) {
-        eprintln!("Warning: published contact list but failed to save locally: {}", e);
+        warn_log!("Warning: published contact list but failed to save locally: {}", e);
     }
     Ok(relay::publish_results_to_json(&results))
 }
@@ -857,6 +893,26 @@ fn get_conversations(state: tauri::State<AppState>) -> Result<String, String> {
     messages_store::list_conversations_json(&config_dir)
 }
 
+/// Count conversations with unread messages (messages newer than dm_last_read_at).
+#[tauri::command]
+fn count_unread_dms(state: tauri::State<AppState>) -> Result<u32, String> {
+    let config_dir = state.config_dir();
+    let cfg = config::load_config(&config_dir).map_err(|e| format!("Config: {}", e))?;
+    Ok(messages_store::count_unread_conversations(&config_dir, cfg.dm_last_read_at))
+}
+
+/// Mark DMs as read by updating dm_last_read_at to the current time.
+#[tauri::command]
+fn mark_dms_read(state: tauri::State<AppState>) -> Result<(), String> {
+    let config_dir = state.config_dir();
+    let mut cfg = config::load_config(&config_dir).map_err(|e| format!("Config: {}", e))?;
+    cfg.dm_last_read_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    config::save_config(&config_dir, &cfg)
+}
+
 #[tauri::command(rename_all = "snake_case")]
 fn get_messages(state: tauri::State<AppState>, other_pubkey_hex: String) -> Result<String, String> {
     let config_dir = state.config_dir();
@@ -905,11 +961,12 @@ fn start_dm_stream(app: tauri::AppHandle, state: tauri::State<AppState>) -> Resu
         let rt = match tokio::runtime::Runtime::new() {
             Ok(r) => r,
             Err(e) => {
-                println!("DM stream: failed to create runtime: {}", e);
+                warn_log!("DM stream: failed to create runtime: {}", e);
                 return;
             }
         };
         rt.block_on(async move {
+            let num_relays = cfg.relays.len() as u32;
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
             for relay_url in &cfg.relays {
                 let tx = tx.clone();
@@ -922,15 +979,39 @@ fn start_dm_stream(app: tauri::AppHandle, state: tauri::State<AppState>) -> Resu
             }
             drop(tx);
 
+            let mut eose_count = 0u32;
+            let mut initial_sync = true;
+
             while let Some(msg) = rx.recv().await {
                 match msg {
                     relay::StreamMessage::Event(event) => {
                         if let Some(other) = nostr::other_pubkey_in_dm(&event, &our_pubkey_hex) {
                             let raw = nostr::event_to_json(&event);
-                            if let Err(e) = messages_store::append_raw_event(&config_dir, &other, &raw) {
-                                println!("DM store append error: {}", e);
+                            match messages_store::append_raw_event(&config_dir, &other, &raw) {
+                                Ok(true) => {
+                                    if initial_sync {
+                                        // During initial sync, don't emit per-event notifications.
+                                        // The frontend will re-count unread after dm-sync-done.
+                                    } else {
+                                        // Live message — notify frontend
+                                        let _ = app.emit("dm-received", (other.clone(), raw));
+                                    }
+                                }
+                                Ok(false) => {
+                                    // Duplicate from another relay — skip emit
+                                }
+                                Err(e) => {
+                                    warn_log!("DM store append error: {}", e);
+                                }
                             }
-                            let _ = app.emit("dm-received", (other.clone(), raw));
+                        }
+                    }
+                    relay::StreamMessage::Eose => {
+                        eose_count += 1;
+                        if initial_sync && eose_count >= num_relays {
+                            initial_sync = false;
+                            // Tell the frontend the initial DM sync is complete
+                            let _ = app.emit("dm-sync-done", ());
                         }
                     }
                     _ => {}
@@ -1220,9 +1301,8 @@ fn generate_keypair(state: tauri::State<AppState>) -> Result<String, String> {
     cfg.private_key = Some(secret_hex.clone());
     config::save_config(&profile_dir, &cfg)?;
 
-    // Update app config
-    let mut app_config = config::load_app_config(&state.base_dir)
-        .unwrap_or_else(|_| config::AppConfig::new());
+    // Update app config — use unwrap_or for missing file (Ok path), propagate parse errors
+    let mut app_config = config::load_app_config(&state.base_dir)?;
     app_config.active_profile = Some(npub.clone());
     if !app_config.known_profiles.iter().any(|p| p == &npub) {
         app_config.known_profiles.push(npub.clone());
@@ -1284,9 +1364,8 @@ fn login_with_keys(
     }
     config::save_config(&profile_dir, &cfg)?;
 
-    // Update app config
-    let mut app_config = config::load_app_config(&state.base_dir)
-        .unwrap_or_else(|_| config::AppConfig::new());
+    // Update app config — propagate errors instead of silently creating empty config
+    let mut app_config = config::load_app_config(&state.base_dir)?;
     app_config.active_profile = Some(npub.clone());
     if !app_config.known_profiles.iter().any(|p| p == &npub) {
         app_config.known_profiles.push(npub.clone());
@@ -1309,9 +1388,11 @@ fn switch_profile(state: tauri::State<AppState>, npub: String) -> Result<String,
 
     let cfg = config::load_config(&profile_dir)?;
 
-    let mut app_config = config::load_app_config(&state.base_dir)
-        .unwrap_or_else(|_| config::AppConfig::new());
+    let mut app_config = config::load_app_config(&state.base_dir)?;
     app_config.active_profile = Some(npub.clone());
+    if !app_config.known_profiles.iter().any(|p| p == &npub) {
+        app_config.known_profiles.push(npub.clone());
+    }
     config::save_app_config(&state.base_dir, &app_config)?;
 
     state.set_config_dir(profile_dir.clone());
@@ -1322,10 +1403,12 @@ fn switch_profile(state: tauri::State<AppState>, npub: String) -> Result<String,
 
 #[tauri::command]
 fn logout(state: tauri::State<AppState>) -> Result<(), String> {
-    let mut app_config = config::load_app_config(&state.base_dir)
-        .unwrap_or_else(|_| config::AppConfig::new());
+    let mut app_config = config::load_app_config(&state.base_dir)?;
+    debug_log!("[logout] Loaded app config: active_profile={:?}, known_profiles={:?}",
+        app_config.active_profile, app_config.known_profiles);
     app_config.active_profile = None;
     config::save_app_config(&state.base_dir, &app_config)?;
+    debug_log!("[logout] Saved app config, known_profiles preserved: {:?}", app_config.known_profiles);
     state.set_config_dir(state.base_dir.clone());
     Ok(())
 }
@@ -1337,8 +1420,7 @@ fn delete_profile(state: tauri::State<AppState>, npub: String) -> Result<(), Str
         std::fs::remove_dir_all(&profile_dir)
             .map_err(|e| format!("Failed to delete profile directory: {}", e))?;
     }
-    let mut app_config = config::load_app_config(&state.base_dir)
-        .unwrap_or_else(|_| config::AppConfig::new());
+    let mut app_config = config::load_app_config(&state.base_dir)?;
     app_config.known_profiles.retain(|p| p != &npub);
     if app_config.active_profile.as_deref() == Some(npub.as_str()) {
         app_config.active_profile = None;
@@ -1426,7 +1508,7 @@ fn main() {
     let base_dir: String = match config::get_config_dir() {
         Some(path) => path,
         None => {
-            eprintln!("ERROR: Could not determine home directory");
+            warn_log!("ERROR: Could not determine home directory");
             std::process::exit(1);
         }
     };
@@ -1434,25 +1516,53 @@ fn main() {
     match config::ensure_config_dir(&base_dir) {
         Ok(()) => debug_log!("Base directory ready: {}", base_dir),
         Err(e) => {
-            eprintln!("ERROR: Could not create base directory: {}", e);
+            warn_log!("ERROR: Could not create base directory: {}", e);
             std::process::exit(1);
         }
     }
 
     // Load app-level config to determine the active profile
-    let app_config = match config::load_app_config(&base_dir) {
+    let mut app_config = match config::load_app_config(&base_dir) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("Warning: Could not load plume.json: {}", e);
+            warn_log!("Warning: Could not load plume.json: {}", e);
             config::AppConfig::new()
         }
     };
+
+    // Migration: if known_profiles is empty but there is a legacy config.json in the base
+    // directory with a public key, migrate that profile into the multi-profile structure.
+    if app_config.known_profiles.is_empty() {
+        if let Ok(legacy_cfg) = config::load_config(&base_dir) {
+            if !legacy_cfg.public_key.is_empty() {
+                if let Ok(npub) = keys::hex_to_npub(&legacy_cfg.public_key) {
+                    warn_log!("[migration] Found legacy config.json with public key, migrating to profile: {}", npub);
+                    if let Ok(profile_dir) = config::ensure_profile_dir(&base_dir, &npub) {
+                        // Copy config to profile directory (only if one doesn't already exist there)
+                        let profile_config_path = std::path::Path::new(&profile_dir).join("config.json");
+                        if !profile_config_path.exists() {
+                            if let Err(e) = config::save_config(&profile_dir, &legacy_cfg) {
+                                warn_log!("[migration] Failed to save profile config: {}", e);
+                            }
+                        }
+                        app_config.known_profiles.push(npub.clone());
+                        app_config.active_profile = Some(npub);
+                        if let Err(e) = config::save_app_config(&base_dir, &app_config) {
+                            warn_log!("[migration] Failed to save app config: {}", e);
+                        } else {
+                            warn_log!("[migration] Migration complete");
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     let config_dir = match &app_config.active_profile {
         Some(npub) => {
             let dir = config::get_profile_dir(&base_dir, npub);
             if let Err(e) = config::ensure_profile_dir(&base_dir, npub) {
-                eprintln!("Warning: Could not create profile directory: {}", e);
+                warn_log!("Warning: Could not create profile directory: {}", e);
             }
             let _ = messages_store::ensure_messages_dir(&dir);
             dir
@@ -1484,6 +1594,7 @@ fn main() {
             generate_qr_svg,
             fetch_replies_to_event,
             test_relay_connection,
+            get_relay_backoff_status,
             fetch_profile,
             fetch_own_profile,
             set_profile_metadata,
@@ -1505,6 +1616,8 @@ fn main() {
             get_messages,
             send_dm,
             start_dm_stream,
+            count_unread_dms,
+            mark_dms_read,
             request_zap_invoice,
             sign_event,
             get_derived_public_key,
@@ -1522,7 +1635,7 @@ fn main() {
             {
                 _window.open_devtools();
             }
-            println!("Plume is starting...");
+            warn_log!("Plume is starting...");
             Ok(())
         })
         .run(tauri::generate_context!())

@@ -22,6 +22,8 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
+use crate::debug_log;
+
 use bytes::BytesMut;
 use crate::json::{JsonContentHandler, JsonNumber, JsonParser};
 use crate::nostr;
@@ -51,6 +53,9 @@ pub struct Config {
     pub bookmarks: Vec<String>,
     pub default_zap_amount: u32,
     pub hide_encrypted_notes: bool,
+    /// Unix timestamp of the last time the user read their DMs.
+    /// Messages with created_at > this value are considered unread.
+    pub dm_last_read_at: u64,
 }
 
 impl Config {
@@ -79,6 +84,7 @@ impl Config {
             bookmarks: Vec::new(),
             default_zap_amount: 42,
             hide_encrypted_notes: true,
+            dm_last_read_at: 0,
         }
     }
 }
@@ -117,6 +123,7 @@ struct ConfigHandler {
     media_server_url: String,
     default_zap_amount: u32,
     hide_encrypted_notes: bool,
+    dm_last_read_at: u64,
     // Array fields
     relays: Vec<String>,
     following: Vec<String>,
@@ -147,6 +154,7 @@ impl ConfigHandler {
             media_server_url: String::from("https://blossom.primal.net"),
             default_zap_amount: 42,
             hide_encrypted_notes: true,
+            dm_last_read_at: 0,
             relays: Vec::new(),
             following: Vec::new(),
             muted_users: Vec::new(),
@@ -220,6 +228,7 @@ impl ConfigHandler {
             muted_hashtags: self.muted_hashtags,
             bookmarks: self.bookmarks,
             hide_encrypted_notes: self.hide_encrypted_notes,
+            dm_last_read_at: self.dm_last_read_at,
         }
     }
 }
@@ -318,6 +327,8 @@ impl JsonContentHandler for ConfigHandler {
                     if n >= 1 && n <= 1_000_000 {
                         self.default_zap_amount = n;
                     }
+                } else if f == "dm_last_read_at" {
+                    self.dm_last_read_at = number.as_f64().max(0.0) as u64;
                 }
             }
         }
@@ -419,6 +430,10 @@ pub fn config_to_json(config: &Config) -> String {
 
     json.push_str("  \"hide_encrypted_notes\": ");
     json.push_str(if config.hide_encrypted_notes { "true" } else { "false" });
+    json.push_str(",\n");
+
+    json.push_str("  \"dm_last_read_at\": ");
+    json.push_str(&config.dm_last_read_at.to_string());
     json.push_str("\n");
 
     json.push_str("}");
@@ -464,7 +479,7 @@ pub fn json_to_config(json_str: &str) -> Result<Config, String> {
     Ok(handler.take_config())
 }
 
-fn escape_json_string(input: &str) -> String {
+pub fn escape_json_string(input: &str) -> String {
     let mut output = String::new();
     for character in input.chars() {
         match character {
@@ -499,7 +514,7 @@ pub fn ensure_config_dir(config_dir: &str) -> Result<(), io::Error> {
         return Ok(());
     }
     fs::create_dir_all(path)?;
-    println!("Created config directory: {}", config_dir);
+    debug_log!("Created config directory: {}", config_dir);
     return Ok(());
 }
 
@@ -511,7 +526,7 @@ pub fn load_config(config_dir: &str) -> Result<Config, String> {
     let config_file = get_config_file_path(config_dir);
     let path = Path::new(&config_file);
     if !path.exists() {
-        println!("No config file found, using defaults");
+        debug_log!("No config file found, using defaults");
         return Ok(Config::new());
     }
     let contents = match fs::read_to_string(path) {
@@ -526,7 +541,7 @@ pub fn save_config(config_dir: &str, config: &Config) -> Result<(), String> {
     let json = config_to_json(config);
     match fs::write(&config_file, json) {
         Ok(()) => {
-            println!("Saved config to: {}", config_file);
+            debug_log!("Saved config to: {}", config_file);
             return Ok(());
         }
         Err(e) => {
@@ -671,7 +686,7 @@ pub fn ensure_profile_dir(base_dir: &str, npub: &str) -> Result<String, String> 
     let path = Path::new(&dir);
     if !path.exists() {
         fs::create_dir_all(path).map_err(|e| format!("Could not create profile directory: {}", e))?;
-        println!("Created profile directory: {}", dir);
+        debug_log!("Created profile directory: {}", dir);
     }
     Ok(dir)
 }
@@ -690,6 +705,6 @@ pub fn save_app_config(base_dir: &str, config: &AppConfig) -> Result<(), String>
     let config_file = Path::new(base_dir).join("plume.json");
     let json = app_config_to_json(config);
     fs::write(&config_file, json).map_err(|e| format!("Could not write plume.json: {}", e))?;
-    println!("Saved app config to: {}", config_file.display());
+    debug_log!("Saved app config to: {}", config_file.display());
     Ok(())
 }

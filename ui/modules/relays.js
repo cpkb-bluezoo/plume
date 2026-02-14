@@ -127,7 +127,8 @@ export function handleRelayListClick(e) {
     }
 }
 
-// Test all relays asynchronously when the relay list panel is visible; update status dots (grey=unknown, green=ok, red=failed)
+// Test all relays asynchronously when the relay list panel is visible; update status dots (grey=unknown, green=ok, red=failed).
+// Relays currently in the connection backoff list are immediately shown as red without a connection test.
 export function runRelayTests() {
     var t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
     var connectedTitle = t('relays.statusConnected');
@@ -135,32 +136,87 @@ export function runRelayTests() {
     if (!state.config || !Array.isArray(state.config.relays)) {
         return;
     }
-    state.config.relays.forEach(function(relayUrl, index) {
-        var el = document.getElementById('relay-status-' + index);
-        if (!el) {
-            return;
-        }
-        el.classList.remove('connected', 'failed');
-        el.title = t('relays.statusUnknown');
-        el.setAttribute('aria-label', t('relays.statusUnknown'));
-        invoke('test_relay_connection', { relayUrl: relayUrl })
-            .then(function(result) {
-                if (!el.parentNode) {
+    var relays = state.config.relays.slice();
+
+    // First, check which relays are in the backoff list and mark them red immediately
+    invoke('get_relay_backoff_status', { relay_urls: relays })
+        .then(function(json) {
+            var backoff = {};
+            try {
+                backoff = JSON.parse(json);
+            }
+            catch (e) {}
+
+            relays.forEach(function(relayUrl, index) {
+                var el = document.getElementById('relay-status-' + index);
+                if (!el) {
                     return;
                 }
-                el.classList.remove('failed');
-                el.classList.add('connected');
-                el.title = connectedTitle;
-                el.setAttribute('aria-label', connectedTitle);
-            })
-            .catch(function(err) {
-                if (!el.parentNode) {
-                    return;
+                var remaining = backoff[relayUrl];
+                if (typeof remaining === 'number' && remaining > 0) {
+                    // Relay is in backoff — mark red immediately with retry info
+                    el.classList.remove('connected');
+                    el.classList.add('failed');
+                    var backoffTitle = (failedTitle || 'Failed') + ' (retry in ' + remaining + 's)';
+                    el.title = backoffTitle;
+                    el.setAttribute('aria-label', backoffTitle);
                 }
-                el.classList.remove('connected');
-                el.classList.add('failed');
-                el.title = failedTitle;
-                el.setAttribute('aria-label', failedTitle);
+                else {
+                    // Not in backoff — run actual connection test
+                    el.classList.remove('connected', 'failed');
+                    el.title = t('relays.statusUnknown');
+                    el.setAttribute('aria-label', t('relays.statusUnknown'));
+                    invoke('test_relay_connection', { relayUrl: relayUrl })
+                        .then(function() {
+                            if (!el.parentNode) {
+                                return;
+                            }
+                            el.classList.remove('failed');
+                            el.classList.add('connected');
+                            el.title = connectedTitle;
+                            el.setAttribute('aria-label', connectedTitle);
+                        })
+                        .catch(function() {
+                            if (!el.parentNode) {
+                                return;
+                            }
+                            el.classList.remove('connected');
+                            el.classList.add('failed');
+                            el.title = failedTitle;
+                            el.setAttribute('aria-label', failedTitle);
+                        });
+                }
             });
-    });
+        })
+        .catch(function() {
+            // If backoff check fails, fall back to testing all relays
+            relays.forEach(function(relayUrl, index) {
+                var el = document.getElementById('relay-status-' + index);
+                if (!el) {
+                    return;
+                }
+                el.classList.remove('connected', 'failed');
+                el.title = t('relays.statusUnknown');
+                el.setAttribute('aria-label', t('relays.statusUnknown'));
+                invoke('test_relay_connection', { relayUrl: relayUrl })
+                    .then(function() {
+                        if (!el.parentNode) {
+                            return;
+                        }
+                        el.classList.remove('failed');
+                        el.classList.add('connected');
+                        el.title = connectedTitle;
+                        el.setAttribute('aria-label', connectedTitle);
+                    })
+                    .catch(function() {
+                        if (!el.parentNode) {
+                            return;
+                        }
+                        el.classList.remove('connected');
+                        el.classList.add('failed');
+                        el.title = failedTitle;
+                        el.setAttribute('aria-label', failedTitle);
+                    });
+            });
+        });
 }

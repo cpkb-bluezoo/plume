@@ -228,6 +228,7 @@
     "failedToGenerateKeys": "Échec de la génération de la paire de clés",
     "initError": "Erreur d'initialisation",
     "loadFailed": "Échec du chargement des favoris",
-    "failedToPublish": "Échec de la publication"
+    "failedToPublish": "Échec de la publication",
+    "allRelaysUnreachable": "Impossible de contacter les relais. Vérifiez votre connexion et vos paramètres de relais."
   }
 }

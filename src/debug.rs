@@ -18,9 +18,16 @@
  * along with Plume.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-//! Debug logging controlled by the `PLUME_DEBUG` environment variable.
-//! Set `PLUME_DEBUG=1` to enable verbose WebSocket and relay protocol logging.
-//! Defaults to off.
+//! Logging macros with two levels:
+//!
+//!  - `warn_log!`  — Always printed.  Serious problems that may affect the user
+//!    (e.g. every relay unreachable, migration failures, startup errors).
+//!  - `debug_log!` — Only printed when `PLUME_DEBUG=1` (or `true`).  Verbose
+//!    protocol chatter: per-relay connection attempts, backoff messages, frame
+//!    parse details, individual relay errors that are expected/recoverable.
+//!
+//! Nothing is printed for routine, per-relay, per-message operations unless
+//! `PLUME_DEBUG` is enabled.
 
 use std::sync::OnceLock;
 
@@ -32,6 +39,15 @@ pub fn is_debug() -> bool {
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false)
     })
+}
+
+/// Always printed.  Use for serious / user-visible issues only.
+/// Usage is identical to `println!`.
+#[macro_export]
+macro_rules! warn_log {
+    ($($arg:tt)*) => {
+        eprintln!($($arg)*);
+    };
 }
 
 /// Print a message only when `PLUME_DEBUG` is enabled.

@@ -228,6 +228,7 @@
     "failedToGenerateKeys": "Generazione coppia di chiavi fallita",
     "initError": "Errore di inizializzazione",
     "loadFailed": "Impossibile caricare i segnalibri",
-    "failedToPublish": "Pubblicazione non riuscita"
+    "failedToPublish": "Pubblicazione non riuscita",
+    "allRelaysUnreachable": "Impossibile raggiungere i relay. Controlla la connessione e le impostazioni dei relay."
   }
 }

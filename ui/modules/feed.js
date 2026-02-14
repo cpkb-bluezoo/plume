@@ -20,7 +20,7 @@
 
 import { state, getEffectiveRelays, FEED_LIMIT, POLL_INTERVAL_MS } from './state.js';
 import { invoke } from './tauri.js';
-import { escapeHtml } from './utils.js';
+import { escapeHtml, showRelayHealthBanner } from './utils.js';
 import { isNoteMuted, isContentUnreadable } from './muting.js';
 import { createNoteCard, getReplyToPubkey, verifyNote, ensureProfilesForNotes, resolveNostrEmbeds, displayNotes } from './notes.js';
 import { updateFeedInitialState } from './config.js';
@@ -238,6 +238,9 @@ export async function pollForNewNotes() {
         displayNotes(state.notes);
     } catch (e) {
         console.error('Feed poll failed:', e);
+        if (typeof e === 'string' && e.indexOf('Could not reach any') !== -1) {
+            showRelayHealthBanner();
+        }
     }
 }
 
@@ -259,6 +262,9 @@ export async function fetchNotesFirehoseOnHomeClick() {
         }
     } catch (e) {
         console.error('Firehose fetch failed:', e);
+        if (typeof e === 'string' && e.indexOf('Could not reach any') !== -1) {
+            showRelayHealthBanner();
+        }
     } finally {
         state.loading = false;
     }

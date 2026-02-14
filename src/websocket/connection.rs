@@ -58,7 +58,7 @@ impl WebSocketConnection {
             debug_log!("[ws] processing {} leftover bytes", self.read_buf.len());
             let mut adapter = FrameToHandlerAdapter { handler };
             if let Err(e) = self.frame_parser.receive(&mut self.read_buf, &mut adapter) {
-                println!("[ws] frame parse error on leftover: {}", e);
+                debug_log!("[ws] frame parse error on leftover: {}", e);
                 handler.failed(&e);
                 return Err(e);
             }
@@ -77,7 +77,7 @@ impl WebSocketConnection {
                 }
                 Ok(n) => n,
                 Err(e) => {
-                    println!("[ws] stream read error: {}", e);
+                    debug_log!("[ws] stream read error: {}", e);
                     handler.failed(&e);
                     return Err(e);
                 }
@@ -87,7 +87,7 @@ impl WebSocketConnection {
             {
                 let mut adapter = FrameToHandlerAdapter { handler };
                 if let Err(e) = self.frame_parser.receive(&mut self.read_buf, &mut adapter) {
-                    println!("[ws] frame parse error: {}", e);
+                    debug_log!("[ws] frame parse error: {}", e);
                     handler.failed(&e);
                     return Err(e);
                 }

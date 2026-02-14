@@ -351,6 +351,9 @@ export async function handleLogout() {
             clearInterval(state.feedPollIntervalId);
             state.feedPollIntervalId = null;
         }
+        state.dmStreamStarted = false;
+        state.unreadMessageCount = 0;
+        state.selectedConversation = null;
 
         // Refresh app config for known profiles list
         try {

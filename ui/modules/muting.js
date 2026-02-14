@@ -92,6 +92,28 @@ export function isContentUnreadable(content) {
     if (/^[A-Za-z0-9+\/]+=*$/.test(trimmed)) {
         return true;
     }
+    // Raw JSON blob (WebRTC signaling, SDP offers, machine-to-machine payloads)
+    if ((trimmed[0] === '{' && trimmed[trimmed.length - 1] === '}') ||
+        (trimmed[0] === '[' && trimmed[trimmed.length - 1] === ']')) {
+        try {
+            JSON.parse(trimmed);
+            return true;
+        }
+        catch (e) {
+            // Not valid JSON — fall through
+        }
+    }
+    // Tagged machine payload: "[broadcast:[#id]] {json...}" or similar bracketed-prefix protocols
+    var taggedMatch = trimmed.match(/^\[[\w:.#\[\]-]+\]\s*(\{[\s\S]*\})$/);
+    if (taggedMatch) {
+        try {
+            JSON.parse(taggedMatch[1]);
+            return true;
+        }
+        catch (e) {
+            // Not valid JSON after tag — fall through
+        }
+    }
     return false;
 }
 

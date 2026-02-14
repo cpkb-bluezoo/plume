@@ -96,7 +96,7 @@ pub fn ws_tls_config() -> Arc<ClientConfig> {
         let cert_result = rustls_native_certs::load_native_certs();
         for cert in cert_result.certs {
             if let Err(e) = root_store.add(cert) {
-                println!("Warning: failed to add a native root cert: {}", e);
+                debug_log!("Warning: failed to add a native root cert: {}", e);
             }
         }
         debug_log!("Loaded {} root certificates from system store", root_store.len());

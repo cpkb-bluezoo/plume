@@ -22,6 +22,18 @@ import { state, getEffectiveRelays } from './state.js';
 import { invoke } from './tauri.js';
 import { escapeHtml } from './utils.js';
 
+// Guard against concurrent sendMessage calls
+var sendInProgress = false;
+
+/// Start the DM stream (background sync of messages from relays).
+/// Safe to call multiple times — only starts once.
+export function startDmStream() {
+    if (!state.dmStreamStarted && getEffectiveRelays().length > 0) {
+        state.dmStreamStarted = true;
+        invoke('start_dm_stream').catch(function(e) { console.warn('start_dm_stream:', e); });
+    }
+}
+
 function shortenPubkey(pubkey) {
     if (!pubkey || pubkey.length < 20) {
         return pubkey || '';
@@ -35,6 +47,19 @@ export async function loadMessagesView() {
     const paneEl = document.querySelector('.messages-chat-pane');
     if (!listEl) {
         return;
+    }
+
+    // Reset stale state from previous profile / session
+    state.selectedConversation = null;
+    if (paneEl) {
+        paneEl.style.display = 'none';
+        var msgContainer = document.getElementById('messages-chat-messages');
+        if (msgContainer) {
+            msgContainer.innerHTML = '';
+        }
+    }
+    if (emptyEl) {
+        emptyEl.style.display = 'flex';
     }
 
     if (!state.config || !state.config.public_key) {
@@ -56,20 +81,75 @@ export async function loadMessagesView() {
         } else {
             const t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
             let html = '';
+            var uncachedPubkeys = [];
             for (let i = 0; i < conversations.length; i++) {
                 const c = conversations[i];
                 const other = c.other_pubkey || '';
-                const name = (state.profileCache && state.profileCache[other] && state.profileCache[other].name) ? escapeHtml(state.profileCache[other].name) : shortenPubkey(other);
+                const cached = state.profileCache && state.profileCache[other] ? state.profileCache[other] : null;
+                const name = (cached && cached.name) ? escapeHtml(cached.name) : shortenPubkey(other);
+                const picture = cached && cached.picture ? cached.picture : null;
                 const ts = c.last_created_at ? new Date(c.last_created_at * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : '';
-                html += '<div class="conversation-item" role="button" tabindex="0" data-other-pubkey="' + escapeHtml(other) + '" title="' + escapeHtml(other) + '"><span class="conversation-item-name">' + name + '</span><span class="conversation-item-meta">' + escapeHtml(ts) + '</span></div>';
+                var avatarHtml = picture
+                    ? '<img src="' + escapeHtml(picture) + '" alt="" class="conversation-avatar" onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'flex\'">'
+                      + '<span class="conversation-avatar conversation-avatar-placeholder" style="display:none"><img src="icons/user.svg" alt="" class="icon-sm"></span>'
+                    : '<span class="conversation-avatar conversation-avatar-placeholder"><img src="icons/user.svg" alt="" class="icon-sm"></span>';
+                html += '<div class="conversation-item" role="button" tabindex="0" data-other-pubkey="' + escapeHtml(other) + '" title="' + escapeHtml(other) + '">'
+                    + avatarHtml
+                    + '<div class="conversation-item-info"><span class="conversation-item-name">' + name + '</span>'
+                    + (ts ? '<span class="conversation-item-meta">' + escapeHtml(ts) + '</span>' : '')
+                    + '</div></div>';
+                if (!cached && other) {
+                    uncachedPubkeys.push(other);
+                }
             }
             listEl.innerHTML = html;
+
+            // Fetch profiles for conversation partners not yet in cache,
+            // then update the DOM items in-place once they arrive.
+            if (uncachedPubkeys.length > 0) {
+                var relays = getEffectiveRelays();
+                uncachedPubkeys.forEach(function(pubkey) {
+                    invoke('fetch_profile', { pubkey: pubkey, relay_urls: relays })
+                        .then(function(profileJson) {
+                            if (!profileJson || profileJson === '{}') {
+                                return;
+                            }
+                            var profile = JSON.parse(profileJson);
+                            state.profileCache[pubkey] = {
+                                name: profile.name || null,
+                                nip05: profile.nip05 || null,
+                                picture: profile.picture || null,
+                                lud16: profile.lud16 || null
+                            };
+                            // Update the conversation item in the DOM
+                            var item = listEl.querySelector('[data-other-pubkey="' + pubkey.replace(/"/g, '\\"') + '"]');
+                            if (item) {
+                                var nameEl = item.querySelector('.conversation-item-name');
+                                if (nameEl && profile.name) {
+                                    nameEl.textContent = profile.name;
+                                }
+                                if (profile.picture) {
+                                    // Remove all existing avatar elements and insert fresh img + fallback
+                                    var oldAvatars = item.querySelectorAll('.conversation-avatar');
+                                    var insertBefore = oldAvatars.length > 0 ? oldAvatars[0] : null;
+                                    var newHtml = '<img src="' + escapeHtml(profile.picture) + '" alt="" class="conversation-avatar" onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'flex\'">'
+                                        + '<span class="conversation-avatar conversation-avatar-placeholder" style="display:none"><img src="icons/user.svg" alt="" class="icon-sm"></span>';
+                                    if (insertBefore) {
+                                        insertBefore.insertAdjacentHTML('beforebegin', newHtml);
+                                    }
+                                    oldAvatars.forEach(function(el) { el.remove(); });
+                                }
+                            }
+                        })
+                        .catch(function(e) {
+                            console.warn('Failed to fetch profile for conversation partner:', pubkey, e);
+                        });
+                });
+            }
         }
 
-        if (!state.dmStreamStarted && getEffectiveRelays().length > 0) {
-            state.dmStreamStarted = true;
-            invoke('start_dm_stream').catch(function(e) { console.warn('start_dm_stream:', e); });
-        }
+        // Ensure DM stream is running (in case it wasn't started at app init)
+        startDmStream();
 
         state.openConversationWith = null;
         if (openWith) {
@@ -83,6 +163,14 @@ export async function loadMessagesView() {
 
 export function selectConversation(otherPubkeyHex) {
     state.selectedConversation = otherPubkeyHex;
+    // User is actively reading messages — clear the unread badge and persist the read timestamp
+    if (otherPubkeyHex) {
+        state.unreadMessageCount = 0;
+        updateMessagesNavUnread();
+        invoke('mark_dms_read').catch(function(e) {
+            console.warn('mark_dms_read:', e);
+        });
+    }
     const paneEl = document.querySelector('.messages-chat-pane');
     const emptyEl = document.querySelector('.messages-chat-empty');
     document.querySelectorAll('.conversation-item').forEach(function(el) {
@@ -103,6 +191,12 @@ export function selectConversation(otherPubkeyHex) {
     if (paneEl) {
         paneEl.style.display = 'flex';
     }
+    // Clear any leftover text and enforce disabled state for the send button
+    var msgInput = document.getElementById('message-input');
+    if (msgInput) {
+        msgInput.value = '';
+    }
+    updateSendButtonState();
     loadConversationMessages(otherPubkeyHex);
 }
 
@@ -113,7 +207,7 @@ export async function loadConversationMessages(otherPubkeyHex) {
     }
     container.innerHTML = '<p class="placeholder-message">' + (window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t('noteDetail.loading') : 'Loading…') + '</p>';
     try {
-        const json = await invoke('get_messages', { otherPubkeyHex: otherPubkeyHex });
+        const json = await invoke('get_messages', { other_pubkey_hex: otherPubkeyHex });
         const messages = json ? JSON.parse(json) : [];
         renderMessages(container, messages);
     } catch (e) {
@@ -142,6 +236,9 @@ export function renderMessages(container, messages) {
 }
 
 export async function sendMessage() {
+    if (sendInProgress) {
+        return;
+    }
     const other = state.selectedConversation;
     const input = document.getElementById('message-input');
     if (!other || !input) {
@@ -151,23 +248,67 @@ export async function sendMessage() {
     if (!text) {
         return;
     }
+
+    // Lock immediately — disable button and clear field before the async send
+    // so a second click/Enter cannot produce a duplicate.
+    sendInProgress = true;
+    var sendBtn = document.getElementById('message-send-btn');
+    if (sendBtn) {
+        sendBtn.disabled = true;
+    }
+    input.value = '';
+    updateSendButtonState();
+
     try {
-        await invoke('send_dm', { recipientPubkey: other, plaintext: text });
-        input.value = '';
-        const container = document.getElementById('messages-chat-messages');
-        if (container && container.querySelector('.message-bubble')) {
-            const m = { id: '', content: text, created_at: Math.floor(Date.now() / 1000), is_outgoing: true };
-            const t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
-            const html = '<div class="message-bubble message-outgoing" data-id=""><div class="message-content">' + escapeHtml(text) + '</div><div class="message-meta">' + escapeHtml(new Date().toLocaleString()) + '</div></div>';
-            container.insertAdjacentHTML('beforeend', html);
-            container.scrollTop = container.scrollHeight;
-        } else {
-            loadConversationMessages(other);
-        }
+        await invoke('send_dm', { recipient_pubkey: other, plaintext: text });
+        // Reload the full conversation from the local store so the new message
+        // appears exactly once (no optimistic append that would duplicate with
+        // the relay echo arriving via the DM stream).
+        await loadConversationMessages(other);
     } catch (e) {
         console.error('send_dm failed:', e);
-        alert(e && e.message ? e.message : String(e));
+        // Put the text back so the user can retry
+        input.value = text;
+        updateSendButtonState();
+        var errMsg = e && e.message ? e.message : String(e);
+        var container = document.getElementById('messages-chat-messages');
+        if (container) {
+            var errDiv = document.createElement('div');
+            errDiv.className = 'message-error';
+            errDiv.textContent = errMsg;
+            container.appendChild(errDiv);
+            container.scrollTop = container.scrollHeight;
+        }
+    } finally {
+        sendInProgress = false;
+        if (sendBtn) {
+            sendBtn.disabled = !input.value.trim();
+        }
     }
+}
+
+/// Enable/disable the send button based on whether the input has text.
+export function updateSendButtonState() {
+    var input = document.getElementById('message-input');
+    var sendBtn = document.getElementById('message-send-btn');
+    if (sendBtn && !sendInProgress) {
+        sendBtn.disabled = !input || !input.value.trim();
+    }
+}
+
+/// Check for unread DMs on startup by comparing conversation timestamps
+/// against the persisted dm_last_read_at.  Sets the badge accordingly.
+export function checkUnreadDmsOnStartup() {
+    invoke('count_unread_dms')
+        .then(function(count) {
+            if (count > 0) {
+                state.unreadMessageCount = count;
+                updateMessagesNavUnread();
+            }
+        })
+        .catch(function(e) {
+            console.warn('count_unread_dms:', e);
+        });
 }
 
 // Update Messages nav item: filled icon and unread badge when state.unreadMessageCount > 0.

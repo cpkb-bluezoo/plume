@@ -20,9 +20,19 @@ run:
 run-release:
 	cargo run --release
 
-# Build distributable packages for the current platform
-bundle:
+# Build macOS .app bundle (generates icons if missing, then builds)
+app: icons-ensure
 	cargo tauri build
+
+# Build distributable packages for the current platform (alias for app)
+bundle: app
+
+# Generate icons only if the .icns file is missing
+icons-ensure:
+	@if [ ! -f icons/icon.icns ]; then \
+		echo "App icons not found, generating from icons/app-icon.svg..."; \
+		$(MAKE) icons; \
+	fi
 
 # Clean build artifacts
 clean:
@@ -63,16 +73,16 @@ help:
 	@echo "Available targets:"
 	@echo "  make build      - Build debug version"
 	@echo "  make release    - Build optimized release version"
+	@echo "  make app        - Build macOS .app bundle (generates icons if needed)"
 	@echo "  make run        - Run in development mode (with hot reload)"
-	@echo "  make bundle     - Create distributable packages"
 	@echo "  make clean      - Remove build artifacts"
 	@echo "  make check      - Quick syntax/type check"
 	@echo "  make fmt        - Format source code"
 	@echo "  make lint       - Run clippy linter"
 	@echo "  make test       - Run tests"
 	@echo "  make icons      - Regenerate app icons from icons/app-icon.svg"
-	@echo "  make setup      - Install required tools"
+	@echo "  make setup      - Install required tools (tauri-cli)"
 	@echo ""
 
-.PHONY: all build release run run-release bundle clean check fmt lint test setup icons help
+.PHONY: all build release run run-release app bundle icons-ensure clean check fmt lint test setup icons help
 

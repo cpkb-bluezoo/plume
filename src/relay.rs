@@ -22,16 +22,143 @@
 //! All functions are async; no blocking code.
 
 use bytes::BytesMut;
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+use std::time::Instant;
 use tokio::sync::mpsc;
 use tokio::time::Duration;
 
 use crate::debug_log;
 use crate::json::{JsonContentHandler, JsonNumber, JsonParser};
 use crate::nostr;
+use crate::websocket::connection::WebSocketConnection;
 use crate::websocket::{WebSocketClient, WebSocketHandler};
 
 /// Connection timeout for WebSocket connect (seconds).
 const CONNECT_TIMEOUT_SECS: u64 = 5;
+
+/// Minimum backoff wait after a connection failure (seconds).
+const BACKOFF_BASE_SECS: u64 = 10;
+
+/// Maximum backoff wait (seconds) — caps the exponential growth.
+const BACKOFF_MAX_SECS: u64 = 300; // 5 minutes
+
+// ============================================================
+// Relay connection backoff
+// ============================================================
+
+struct RelayBackoffState {
+    last_failure: Instant,
+    consecutive_failures: u32,
+}
+
+fn relay_backoff_map() -> &'static Mutex<HashMap<String, RelayBackoffState>> {
+    static INSTANCE: OnceLock<Mutex<HashMap<String, RelayBackoffState>>> = OnceLock::new();
+    INSTANCE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Calculate how many seconds to wait given a failure count.
+/// 10, 20, 40, 80, 160, 300, 300, ...
+fn backoff_seconds(failures: u32) -> u64 {
+    if failures == 0 {
+        return 0;
+    }
+    let exp = (failures - 1).min(31);
+    let secs = BACKOFF_BASE_SECS.saturating_mul(1u64 << exp);
+    secs.min(BACKOFF_MAX_SECS)
+}
+
+/// Check if a relay is in backoff.
+/// Returns `None` if OK to connect, or `Some(remaining_seconds)` if in backoff.
+pub fn check_relay_backoff(relay_url: &str) -> Option<u64> {
+    let map = relay_backoff_map().lock().unwrap();
+    if let Some(state) = map.get(relay_url) {
+        let wait = backoff_seconds(state.consecutive_failures);
+        let elapsed = state.last_failure.elapsed().as_secs();
+        if elapsed < wait {
+            return Some(wait - elapsed);
+        }
+    }
+    None
+}
+
+/// Record a connection failure for a relay.
+/// Only escalates the backoff counter when the previous backoff period has
+/// expired (i.e. this is a fresh retry that failed).  Concurrent failures
+/// during the same backoff window are ignored to prevent rapid escalation.
+pub fn record_relay_failure(relay_url: &str) {
+    let mut map = relay_backoff_map().lock().unwrap();
+    if let Some(state) = map.get_mut(relay_url) {
+        let wait = backoff_seconds(state.consecutive_failures);
+        let elapsed = state.last_failure.elapsed().as_secs();
+        if elapsed >= wait {
+            // Backoff expired and we tried again — this is a genuinely new failure
+            state.consecutive_failures += 1;
+            state.last_failure = Instant::now();
+            let new_wait = backoff_seconds(state.consecutive_failures);
+            debug_log!("[backoff] {} failed (attempt {}), next retry in {}s",
+                relay_url, state.consecutive_failures, new_wait);
+        }
+        // else: still in backoff period — concurrent failure, don't escalate
+    } else {
+        // First failure for this relay
+        map.insert(relay_url.to_string(), RelayBackoffState {
+            last_failure: Instant::now(),
+            consecutive_failures: 1,
+        });
+        debug_log!("[backoff] {} failed (attempt 1), next retry in {}s",
+            relay_url, BACKOFF_BASE_SECS);
+    }
+}
+
+/// Record a successful connection, clearing backoff state for the relay.
+pub fn record_relay_success(relay_url: &str) {
+    let mut map = relay_backoff_map().lock().unwrap();
+    if map.remove(relay_url).is_some() {
+        debug_log!("[backoff] {} connected successfully, backoff cleared", relay_url);
+    }
+}
+
+/// Connect to a relay with timeout and backoff.
+/// Multiple operations (feed, DM, profile fetch) may connect to the same relay
+/// concurrently — each gets its own WebSocket connection.  The backoff system
+/// only prevents retries while a relay is in its cooldown window after a failure.
+pub async fn connect_to_relay(relay_url: &str) -> Result<WebSocketConnection, String> {
+    // Check backoff — if the relay recently failed, skip it
+    {
+        let map = relay_backoff_map().lock().unwrap();
+        if let Some(state) = map.get(relay_url) {
+            let wait = backoff_seconds(state.consecutive_failures);
+            let elapsed = state.last_failure.elapsed().as_secs();
+            if elapsed < wait {
+                return Err(format!(
+                    "Relay {} in backoff ({} seconds remaining)",
+                    relay_url, wait - elapsed
+                ));
+            }
+        }
+    }
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(CONNECT_TIMEOUT_SECS),
+        WebSocketClient::connect(relay_url),
+    ).await;
+
+    match result {
+        Ok(Ok(conn)) => {
+            record_relay_success(relay_url);
+            Ok(conn)
+        }
+        Ok(Err(e)) => {
+            record_relay_failure(relay_url);
+            Err(format!("Failed to connect to {}: {}", relay_url, e))
+        }
+        Err(_) => {
+            record_relay_failure(relay_url);
+            Err(format!("Connection timeout to {}", relay_url))
+        }
+    }
+}
 
 // ============================================================
 // Relay Message Types
@@ -284,7 +411,7 @@ impl WebSocketHandler for NostrRelayHandler {
         let text = match std::str::from_utf8(data) {
             Ok(t) => t,
             Err(e) => {
-                println!("[relay] invalid UTF-8 in text frame ({} bytes): {}", data.len(), e);
+                debug_log!("[relay] invalid UTF-8 in text frame ({} bytes): {}", data.len(), e);
                 return;
             }
         };
@@ -305,19 +432,20 @@ impl WebSocketHandler for NostrRelayHandler {
             }
             Ok(RelayMessage::EndOfStoredEvents { .. }) => {
                 debug_log!("[relay] EOSE");
+                let _ = self.tx.send(StreamMessage::Eose);
                 if self.exit_on_eose {
                     self.should_stop = true;
                 }
             }
             Ok(RelayMessage::Notice { message }) => {
-                println!("[relay] NOTICE: {}", message);
+                debug_log!("[relay] NOTICE: {}", message);
                 let _ = self.tx.send(StreamMessage::Notice(message));
             }
             Ok(_) => {
                 debug_log!("[relay] other message type");
             }
             Err(e) => {
-                println!("[relay] parse error: {}", e);
+                debug_log!("[relay] parse error: {}", e);
             }
         }
     }
@@ -351,17 +479,11 @@ pub async fn run_relay_feed_stream(
     timeout_seconds: u32,
     tx: mpsc::UnboundedSender<StreamMessage>,
 ) {
-    let conn = match tokio::time::timeout(
-        Duration::from_secs(CONNECT_TIMEOUT_SECS),
-        WebSocketClient::connect(&relay_url),
-    ).await {
-        Ok(Ok(c)) => c,
-        Ok(Err(e)) => {
-            println!("Failed to connect to {}: {}", relay_url, e);
-            return;
-        }
-        Err(_) => {
-            println!("Connection timeout to {}", relay_url);
+    let conn = match connect_to_relay(&relay_url).await {
+        Ok(c) => c,
+        Err(e) => {
+            debug_log!("[relay] feed stream: {}", e);
+            let _ = tx.send(StreamMessage::Eose); // signal completion so EOSE count isn't stuck
             return;
         }
     };
@@ -381,7 +503,8 @@ pub async fn run_relay_feed_stream(
     let mut conn = conn;
     debug_log!("[relay] sending REQ to {}: {}", relay_url, req_message);
     if let Err(e) = conn.send_text(req_message.as_bytes()).await {
-        println!("[relay] failed to send REQ to {}: {}", relay_url, e);
+        debug_log!("[relay] failed to send REQ to {}: {}", relay_url, e);
+        let _ = tx.send(StreamMessage::Eose);
         return;
     }
     debug_log!("[relay] REQ sent to {}, waiting for data (timeout {}s)...", relay_url, timeout_seconds);
@@ -396,11 +519,15 @@ pub async fn run_relay_feed_stream(
     let timeout_duration = Duration::from_secs(timeout_seconds as u64);
     match tokio::time::timeout(timeout_duration, conn.run(&mut handler)).await {
         Ok(Ok(())) => debug_log!("[relay] run completed normally for {}", relay_url),
-        Ok(Err(e)) => println!("[relay] run error for {}: {}", relay_url, e),
-        Err(_) => debug_log!("[relay] run timed out for {}", relay_url),
+        Ok(Err(e)) => {
+            debug_log!("[relay] run error for {}: {}", relay_url, e);
+            let _ = tx.send(StreamMessage::Eose); // ensure count isn't stuck on error
+        }
+        Err(_) => {
+            debug_log!("[relay] run timed out for {}", relay_url);
+            let _ = tx.send(StreamMessage::Eose); // ensure count isn't stuck on timeout
+        }
     }
-
-    let _ = tx.send(StreamMessage::Eose);
 }
 
 /// Run a long-lived DM subscription (kind 4) with two filters. Does not exit on EOSE.
@@ -410,17 +537,10 @@ pub async fn run_relay_dm_stream(
     filter_sent: nostr::Filter,
     tx: mpsc::UnboundedSender<StreamMessage>,
 ) {
-    let conn = match tokio::time::timeout(
-        Duration::from_secs(CONNECT_TIMEOUT_SECS),
-        WebSocketClient::connect(&relay_url),
-    ).await {
-        Ok(Ok(c)) => c,
-        Ok(Err(e)) => {
-            println!("DM stream: failed to connect to {}: {}", relay_url, e);
-            return;
-        }
-        Err(_) => {
-            println!("DM stream: connection timeout to {}", relay_url);
+    let conn = match connect_to_relay(&relay_url).await {
+        Ok(c) => c,
+        Err(e) => {
+            debug_log!("[relay] DM stream: {}", e);
             return;
         }
     };
@@ -538,7 +658,7 @@ pub async fn fetch_profile_from_relays(
             Ok(Some(profile)) => return Ok(Some(profile)),
             Ok(None) => continue,
             Err(e) => {
-                println!("Error fetching profile from {}: {}", relay_url, e);
+                debug_log!("Error fetching profile from {}: {}", relay_url, e);
                 continue;
             }
         }
@@ -586,7 +706,7 @@ pub async fn fetch_following_from_relays(
             Ok(Some(contact_list)) => return Ok(Some(contact_list)),
             Ok(None) => continue,
             Err(e) => {
-                println!("Error fetching following from {}: {}", relay_url, e);
+                debug_log!("Error fetching following from {}: {}", relay_url, e);
                 continue;
             }
         }
@@ -633,7 +753,7 @@ pub async fn fetch_followers_from_relays(
                 }
             }
             Err(e) => {
-                println!("Error fetching followers from {}: {}", relay_url, e);
+                debug_log!("Error fetching followers from {}: {}", relay_url, e);
                 continue;
             }
         }
@@ -666,7 +786,7 @@ pub async fn fetch_relay_list_from_relay(
         Some(event) => match nostr::parse_relay_list(event) {
             Ok(urls) => Ok(Some(urls)),
             Err(e) => {
-                println!("Failed to parse relay list: {}", e);
+                debug_log!("Failed to parse relay list: {}", e);
                 Ok(None)
             }
         },
@@ -685,7 +805,7 @@ pub async fn fetch_relay_list_from_relays(
             Ok(Some(urls)) if !urls.is_empty() => return Ok(urls),
             Ok(_) => continue,
             Err(e) => {
-                println!("Error fetching relay list from {}: {}", relay_url, e);
+                debug_log!("Error fetching relay list from {}: {}", relay_url, e);
                 continue;
             }
         }
@@ -709,15 +829,8 @@ pub async fn publish_event_to_relay(
     event: &nostr::Event,
     timeout_seconds: u32,
 ) -> Result<PublishResult, String> {
-    // Connect with timeout
-    let mut conn = match tokio::time::timeout(
-        Duration::from_secs(CONNECT_TIMEOUT_SECS),
-        WebSocketClient::connect(relay_url),
-    ).await {
-        Ok(Ok(c)) => c,
-        Ok(Err(e)) => return Err(format!("Failed to connect to {}: {}", relay_url, e)),
-        Err(_) => return Err(format!("Connection timeout to {}", relay_url)),
-    };
+    // Connect with timeout and backoff
+    let mut conn = connect_to_relay(relay_url).await?;
 
     // Send the EVENT message
     let event_json = nostr::event_to_json(event);
@@ -808,7 +921,7 @@ pub async fn publish_event_to_relays(
                 results.push(result);
             }
             Err(e) => {
-                println!("Error publishing to {}: {}", relay_url, e);
+                debug_log!("Error publishing to {}: {}", relay_url, e);
                 results.push(PublishResult {
                     relay_url: relay_url.to_string(),
                     success: false,

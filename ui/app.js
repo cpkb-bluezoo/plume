@@ -53,7 +53,8 @@ import {
 } from './modules/follows.js';
 import {
     loadMessagesView, selectConversation, loadConversationMessages,
-    sendMessage, updateMessagesNavUnread
+    sendMessage, updateMessagesNavUnread, updateSendButtonState,
+    checkUnreadDmsOnStartup, startDmStream
 } from './modules/messages.js';
 import {
     openCompose, closeCompose, updateCharCount, handleComposeSubmit
@@ -213,8 +214,12 @@ async function init() {
                 }
             });
         }
-        document.getElementById('message-send-btn')?.addEventListener('click', sendMessage);
+        var messageSendBtn = document.getElementById('message-send-btn');
         var messageInput = document.getElementById('message-input');
+        if (messageSendBtn) {
+            messageSendBtn.disabled = true; // disabled until text is entered
+            messageSendBtn.addEventListener('click', sendMessage);
+        }
         if (messageInput) {
             messageInput.addEventListener('keydown', function(e) {
                 if (e.key === 'Enter') {
@@ -222,6 +227,7 @@ async function init() {
                     sendMessage();
                 }
             });
+            messageInput.addEventListener('input', updateSendButtonState);
         }
         document.getElementById('message-user-btn')?.addEventListener('click', function() {
             var pk = state.viewedProfilePubkey;
@@ -232,6 +238,8 @@ async function init() {
         });
 
         if (window.__TAURI__ && window.__TAURI__.event && typeof window.__TAURI__.event.listen === 'function') {
+            var dmReloadTimer = null;
+            // Live DM notifications (only fires AFTER initial sync completes)
             window.__TAURI__.event.listen('dm-received', function(ev) {
                 var payload = ev.payload;
                 var otherPubkey = Array.isArray(payload) ? payload[0] : (payload && payload.other_pubkey);
@@ -241,10 +249,29 @@ async function init() {
                 var norm = (state.selectedConversation || '').toLowerCase();
                 var otherNorm = (otherPubkey || '').toLowerCase();
                 if (state.currentView === 'messages' && norm === otherNorm) {
-                    loadConversationMessages(state.selectedConversation);
+                    if (dmReloadTimer) {
+                        clearTimeout(dmReloadTimer);
+                    }
+                    dmReloadTimer = setTimeout(function() {
+                        dmReloadTimer = null;
+                        loadConversationMessages(state.selectedConversation);
+                    }, 500);
                 } else {
                     state.unreadMessageCount = (state.unreadMessageCount || 0) + 1;
                     updateMessagesNavUnread();
+                }
+            });
+
+            // Initial DM sync complete — re-count unread and refresh messages view
+            window.__TAURI__.event.listen('dm-sync-done', function() {
+                checkUnreadDmsOnStartup();
+                // If the user is viewing messages, refresh to pick up newly synced messages
+                if (state.currentView === 'messages') {
+                    if (state.selectedConversation) {
+                        loadConversationMessages(state.selectedConversation);
+                    } else {
+                        loadMessagesView();
+                    }
                 }
             });
         }
@@ -702,6 +729,11 @@ async function init() {
             await loadConfig();
             updateSidebarAuthState();
             switchView('feed');
+            // Check for unread DMs already in the local store
+            checkUnreadDmsOnStartup();
+            // Start the DM stream early so messages sync in the background.
+            // When sync completes, dm-sync-done re-counts unread for accuracy.
+            startDmStream();
             // Fetch profile from relays in background to update sidebar avatar and local config
             fetchProfile();
         } else {

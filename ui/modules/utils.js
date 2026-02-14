@@ -166,3 +166,30 @@ export function showValidationError(inputId, message) {
         errorEl.style.display = 'block';
     }
 }
+
+/// Show a non-intrusive, dismissible banner when all relays are unreachable.
+/// The banner appears at the top of the main content area and auto-dismisses after 15 seconds.
+export function showRelayHealthBanner() {
+    // Don't stack multiple banners
+    if (document.getElementById('relay-health-banner')) {
+        return;
+    }
+    var t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
+    var banner = document.createElement('div');
+    banner.id = 'relay-health-banner';
+    banner.className = 'relay-health-banner';
+    banner.innerHTML = '<span>' + escapeHtml(t('errors.allRelaysUnreachable') || 'Could not reach any relays. Check your connection and relay settings.') + '</span>'
+        + '<button type="button" class="relay-health-dismiss" aria-label="Dismiss">&times;</button>';
+    banner.querySelector('.relay-health-dismiss').addEventListener('click', function() {
+        banner.remove();
+    });
+    // Insert at the top of the main content area
+    var main = document.querySelector('.main-content') || document.body;
+    main.insertBefore(banner, main.firstChild);
+    // Auto-dismiss after 15 seconds
+    setTimeout(function() {
+        if (banner.parentNode) {
+            banner.remove();
+        }
+    }, 15000);
+}

@@ -228,6 +228,7 @@
     "failedToGenerateKeys": "Error al generar el par de claves",
     "initError": "Error de inicialización",
     "loadFailed": "Error al cargar los marcadores",
-    "failedToPublish": "Error al publicar"
+    "failedToPublish": "Error al publicar",
+    "allRelaysUnreachable": "No se pudo conectar a ningún relay. Verifica tu conexión y la configuración de relays."
   }
 }

@@ -21,13 +21,28 @@
 // One file per conversation: ~/.plume/messages/{other_pubkey_hex}.json
 // Each file = JSON array of raw kind 4 events (wire format, encrypted content).
 
+use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::path::Path;
+use std::sync::{Mutex, OnceLock};
 
 use bytes::BytesMut;
 use crate::crypto;
+use crate::debug_log;
 use crate::json::{JsonContentHandler, JsonNumber, JsonParser};
+
+/// Per-conversation file lock to prevent concurrent read-modify-write races
+/// (e.g. multiple relay DM stream tasks appending the same event).
+fn conversation_locks() -> &'static Mutex<HashMap<String, std::sync::Arc<Mutex<()>>>> {
+    static INSTANCE: OnceLock<Mutex<HashMap<String, std::sync::Arc<Mutex<()>>>>> = OnceLock::new();
+    INSTANCE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn lock_conversation(path: &str) -> std::sync::Arc<Mutex<()>> {
+    let mut map = conversation_locks().lock().unwrap();
+    map.entry(path.to_string()).or_insert_with(|| std::sync::Arc::new(Mutex::new(()))).clone()
+}
 use crate::nostr;
 
 fn messages_dir(config_dir: &str) -> String {
@@ -42,7 +57,7 @@ pub fn ensure_messages_dir(config_dir: &str) -> Result<(), io::Error> {
         return Ok(());
     }
     fs::create_dir_all(path)?;
-    println!("Created messages directory: {}", path.display());
+    debug_log!("Created messages directory: {}", path.display());
     Ok(())
 }
 
@@ -262,8 +277,14 @@ pub fn get_messages(
     let events = parse_event_array(&contents)?;
 
     let mut messages: Vec<DecryptedMessage> = Vec::new();
+    let mut seen_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
     for event in &events {
         if event.kind != nostr::KIND_DM {
+            continue;
+        }
+        // Deduplicate by event ID (safety net for any races that wrote dupes)
+        let id_lower = event.id.to_lowercase();
+        if !seen_ids.insert(id_lower) {
             continue;
         }
         let is_outgoing = event.pubkey.to_lowercase() == our;
@@ -283,12 +304,12 @@ pub fn get_messages(
 }
 
 /// Append a raw kind 4 event to the conversation file (dedupe by event id).
-/// Uses text manipulation instead of DOM parsing for efficiency.
+/// Returns Ok(true) if the event was actually appended, Ok(false) if duplicate.
 pub fn append_raw_event(
     config_dir: &str,
     other_pubkey_hex: &str,
     raw_event_json: &str,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let path = conversation_file_path(config_dir, other_pubkey_hex);
     let new_event = nostr::parse_event(raw_event_json).map_err(|e| format!("Parse event: {}", e))?;
     if new_event.kind != nostr::KIND_DM {
@@ -297,12 +318,17 @@ pub fn append_raw_event(
 
     let new_id = new_event.id.to_lowercase();
 
+    // Hold a per-conversation lock for the entire read-check-write cycle
+    // to prevent concurrent relay stream tasks from duplicating events.
+    let lock = lock_conversation(&path);
+    let _guard = lock.lock().unwrap();
+
     if Path::new(&path).exists() {
         let contents = fs::read_to_string(&path).map_err(|e| format!("Read file: {}", e))?;
         // Dedup: search for the event ID in the raw file text
         let search_pattern = format!("\"id\":\"{}\"", new_id);
         if contents.to_lowercase().contains(&search_pattern) {
-            return Ok(()); // already present
+            return Ok(false); // already present — duplicate
         }
         // Append: strip trailing ] and add ,event]
         let trimmed = contents.trim_end();
@@ -327,7 +353,7 @@ pub fn append_raw_event(
         fs::write(&path, out).map_err(|e| format!("Write file: {}", e))?;
     }
 
-    Ok(())
+    Ok(true) // genuinely new event
 }
 
 /// Get last event's created_at from a conversation file. Scans for the last "created_at": number.
@@ -341,6 +367,25 @@ fn last_created_at(config_dir: &str, other_pubkey_hex: &str) -> Option<u64> {
     let after = after.trim_start();
     let digits: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
     digits.parse::<u64>().ok()
+}
+
+/// Count conversations with messages newer than `since` (unix timestamp).
+/// Returns the number of conversations that have at least one event with
+/// created_at > since.  This gives a "conversations with unread" count.
+pub fn count_unread_conversations(config_dir: &str, since: u64) -> u32 {
+    let convos = match list_conversations(config_dir) {
+        Ok(c) => c,
+        Err(_) => return 0,
+    };
+    let mut count = 0u32;
+    for pk in &convos {
+        if let Some(ts) = last_created_at(config_dir, pk) {
+            if ts > since {
+                count += 1;
+            }
+        }
+    }
+    count
 }
 
 /// List conversations with last_created_at for sorting.

@@ -812,18 +812,40 @@ html, body {
 }
 
 .conversation-item {
-    padding: 12px 16px;
+    padding: 10px 14px;
     border-bottom: 1px solid var(--border-color);
     cursor: pointer;
     display: flex;
-    justify-content: space-between;
     align-items: center;
-    gap: 8px;
+    gap: 10px;
 }
 
 .conversation-item:hover,
 .conversation-item.active {
     background: var(--bg-tertiary);
+}
+
+.conversation-avatar {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    object-fit: cover;
+    flex-shrink: 0;
+}
+
+.conversation-avatar-placeholder {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg-tertiary);
+}
+
+.conversation-item-info {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
 }
 
 .conversation-item-name {
@@ -834,9 +856,8 @@ html, body {
 }
 
 .conversation-item-meta {
-    font-size: 0.875rem;
+    font-size: 0.75rem;
     color: var(--text-muted);
-    flex-shrink: 0;
 }
 
 .message-bubble {
@@ -860,9 +881,57 @@ html, body {
 }
 
 .message-meta {
-    font-size: 0.75rem;
-    opacity: 0.85;
+    font-size: 0.7rem;
     margin-top: 4px;
+}
+
+.message-outgoing .message-meta {
+    color: rgba(255, 255, 255, 0.7);
+}
+
+.message-incoming .message-meta {
+    color: var(--text-muted);
+}
+
+.message-error {
+    padding: 8px 12px;
+    margin-bottom: 8px;
+    border-radius: 8px;
+    background: rgba(220, 53, 69, 0.15);
+    color: var(--error-color, #dc3545);
+    font-size: 0.85rem;
+}
+
+/* Relay health banner — non-intrusive warning at top of main content */
+.relay-health-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 16px;
+    background: rgba(220, 53, 69, 0.12);
+    color: var(--error-color, #dc3545);
+    font-size: 0.85rem;
+    border-bottom: 1px solid rgba(220, 53, 69, 0.25);
+    animation: bannerSlideIn 0.3s ease-out;
+}
+
+.relay-health-banner .relay-health-dismiss {
+    background: none;
+    border: none;
+    color: var(--error-color, #dc3545);
+    font-size: 1.2rem;
+    cursor: pointer;
+    padding: 0 4px;
+    opacity: 0.7;
+}
+
+.relay-health-banner .relay-health-dismiss:hover {
+    opacity: 1;
+}
+
+@keyframes bannerSlideIn {
+    from { transform: translateY(-100%); opacity: 0; }
+    to { transform: translateY(0); opacity: 1; }
 }
 
 .messages-chat {
@@ -928,8 +997,13 @@ html, body {
     justify-content: center;
 }
 
-.send-btn:hover {
+.send-btn:hover:not(:disabled) {
     opacity: 0.9;
+}
+
+.send-btn:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
 }
 
 .send-btn .icon-sm {
@@ -1951,6 +2025,19 @@ html, body {
     margin-bottom: 8px;
     font-weight: 500;
     color: var(--text-primary);
+}
+
+.form-group label.checkbox-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+}
+
+.form-group label.checkbox-label input[type="checkbox"] {
+    width: auto;
+    margin: 0;
+    flex-shrink: 0;
 }
 
 .form-group input,

@@ -228,6 +228,7 @@
     "failedToGenerateKeys": "Failed to generate key pair",
     "initError": "Initialization error",
     "loadFailed": "Failed to load bookmarks",
-    "failedToPublish": "Failed to publish"
+    "failedToPublish": "Failed to publish",
+    "allRelaysUnreachable": "Could not reach any relays. Check your connection and relay settings."
   }
 }

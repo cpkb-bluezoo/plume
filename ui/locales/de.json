@@ -228,6 +228,7 @@
     "failedToGenerateKeys": "Schlüsselpaar konnte nicht erstellt werden",
     "initError": "Initialisierungsfehler",
     "loadFailed": "Lesezeichen konnten nicht geladen werden",
-    "failedToPublish": "Veröffentlichung fehlgeschlagen"
+    "failedToPublish": "Veröffentlichung fehlgeschlagen",
+    "allRelaysUnreachable": "Keine Relais erreichbar. Überprüfen Sie Ihre Verbindung und Relay-Einstellungen."
   }
 }

@@ -98,11 +98,29 @@ cargo install tauri-cli
 # Development build (faster, with debug symbols)
 make build
 
-# Release build (optimized)
+# Release build (optimized binary only)
 make release
 
-# Create distributable packages
-make bundle
+# Build macOS .app bundle (generates icons if needed, then packages)
+make app
+```
+
+`make app` will:
+
+1. Check for app icons — if `icons/icon.icns` is missing, automatically generates all required sizes from `icons/app-icon.svg` (requires ImageMagick, librsvg, or Python cairosvg)
+2. Run `cargo tauri build` to compile an optimised release binary and package it
+
+The output is:
+
+| Artifact | Path |
+|----------|------|
+| macOS app bundle | `target/release/bundle/macos/Plume.app` |
+| macOS disk image | `target/release/bundle/dmg/Plume_<version>_<arch>.dmg` |
+
+To regenerate icons manually (e.g. after changing the source SVG):
+
+```bash
+make icons
 ```
 
 ## Running
@@ -113,19 +131,42 @@ make run
 
 # Or directly with cargo
 cargo tauri dev
+
+# Run the release binary directly (without .app bundle)
+make run-release
+```
+
+### Debug logging
+
+Connection-level and protocol-level logging is silent by default. To enable verbose output for troubleshooting relay connections, WebSocket frames, and backoff behaviour:
+
+```bash
+PLUME_DEBUG=1 cargo tauri dev
 ```
 
 ## Configuration
 
-Plume stores configuration and user-related data in `~/.plume/`. This includes:
+Plume stores all data under `~/.plume/`:
 
-- Your Nostr public key (required for following/viewing)
-- Your Nostr private key (optional, for posting)
-- List of relay URLs to connect to
-- Display name, profile metadata (name, about, picture, nip05, banner, website, lud16), and other preferences
-- Bookmarks and other user data are intended to live in config as well (see TODO)
+```
+~/.plume/
+├── plume.json                        # App-level config (active profile, known profiles)
+└── profiles/
+    └── <npub>/
+        ├── config.json               # Profile config (keys, relays, settings, contacts)
+        └── messages/
+            └── <hex-pubkey>.json     # Cached DM conversation (raw kind 4 events)
+```
 
-**Messages** are expected to be cached locally and synced with relays; this is not yet implemented.
+Each profile's `config.json` holds:
+
+- Nostr public key (required) and private key (optional, for posting)
+- Relay URLs
+- Profile metadata (name, about, picture, nip05, banner, website, lud16)
+- Following list, muted users/words/hashtags, bookmarks
+- App preferences (feed mode, default zap amount, etc.)
+
+**Messages** (NIP-04 encrypted DMs) are cached locally and synced with relays on startup. Unread status persists across sessions.
 
 ## License
 
@@ -134,6 +175,8 @@ GPL-3.0 - See [COPYING](COPYING) for details.
 ## Contributing
 
 Contributions are welcome! Please feel free to submit issues and pull requests.
+
+Offers to translate into other languages are especially welcome!
 
 ## Nostr Resources
 
