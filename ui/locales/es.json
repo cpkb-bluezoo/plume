@@ -12,7 +12,8 @@
     "settings": "Ajustes",
     "profile": "Perfil",
     "newNote": "Nueva nota",
-    "yourProfilePhoto": "Tu foto de perfil"
+    "yourProfilePhoto": "Tu foto de perfil",
+    "search": "Buscar"
   },
   "welcome": {
     "title": "Bienvenido a Plume",
@@ -107,6 +108,10 @@
     "relayAdd": "Añadir",
     "relayAddPlaceholder": "wss://relay.ejemplo.com",
     "relayDelete": "Eliminar",
+    "relayTabMain": "Relés principales",
+    "relayTabDM": "Relés de mensajes",
+    "relayMainHint": "Relés utilizados para tu feed, perfil y notas públicas. Conéctate a varios para mayor disponibilidad.",
+    "relayDMHint": "Relés utilizados para recibir mensajes privados. Mantén la lista pequeña (1\u20133 relés). Otros usuarios descubren estos relés para enviarte mensajes cifrados.",
     "zaps": "Zaps",
     "logout": "Cerrar sesión",
     "logoutConfirm": "¿Seguro que deseas cerrar sesión? Los datos de tu perfil se conservarán localmente."
@@ -119,7 +124,7 @@
     "mute": "Silenciar",
     "following": "siguiendo",
     "followers": "seguidores",
-    "joined": "Se unió el",
+    "lastModified": "Perfil actualizado el",
     "website": "Sitio web",
     "notConfigured": "Sin configurar",
     "noIdentityYet": "Aún no tienes una identidad Nostr.",
@@ -128,6 +133,7 @@
     "replies": "Respuestas",
     "zaps": "Zaps",
     "relays": "Relays",
+    "noZaps": "Aún no hay zaps",
     "notesAppearHere": "Las notas aparecen aquí",
     "profilePhoto": "Foto de perfil",
     "anonymous": "Anónimo",
@@ -205,7 +211,8 @@
     "bookmark": "Marcador",
     "unbookmark": "Quitar marcador",
     "replyLabel": "(respuesta)",
-    "replyingTo": "Respondiendo a"
+    "replyingTo": "Respondiendo a",
+    "untitledArticle": "Artículo sin título"
   },
   "noteDetail": {
     "back": "← Atrás",
@@ -222,6 +229,34 @@
   },
   "content": {
     "image": "Imagen"
+  },
+  "search": {
+    "placeholder": "Buscar notas...",
+    "clear": "Borrar",
+    "hashtags": "Hashtags",
+    "advanced": "Búsqueda avanzada",
+    "includeWords": "Incluir estas palabras",
+    "includeWordsHint": "ej. bitcoin lightning",
+    "excludeWords": "Excluir estas palabras",
+    "excludeWordsHint": "ej. spam estafa",
+    "searchKind": "Tipo de búsqueda",
+    "kindAll": "Todos",
+    "kindNotes": "Notas",
+    "kindReplies": "Respuestas",
+    "postedBy": "Publicado por",
+    "replyingTo": "En respuesta a",
+    "anyAuthor": "Cualquiera",
+    "timePosted": "Fecha de publicación",
+    "timeAny": "Cualquier momento",
+    "timePastHour": "Última hora",
+    "timePastDay": "Últimas 24 horas",
+    "timePastWeek": "Última semana",
+    "timePastMonth": "Último mes",
+    "searchBtn": "Buscar",
+    "backToSearch": "← Volver",
+    "searching": "Buscando...",
+    "noResults": "No se encontraron resultados",
+    "failed": "La búsqueda falló"
   },
   "errors": {
     "failedToSaveSettings": "Error al guardar la configuración",

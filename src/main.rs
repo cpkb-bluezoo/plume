@@ -338,6 +338,162 @@ async fn fetch_notes_from_relays(
     Ok(json)
 }
 
+/// Search notes by hashtag across relays.
+#[tauri::command(rename_all = "snake_case")]
+async fn search_hashtag(
+    relay_urls: Vec<String>,
+    hashtag: String,
+    limit: u32,
+) -> Result<String, String> {
+    if relay_urls.is_empty() {
+        return Err(String::from("No relays provided."));
+    }
+    let tag = hashtag.trim().trim_start_matches('#').to_lowercase();
+    if tag.is_empty() {
+        return Err(String::from("Hashtag is empty."));
+    }
+    let filter = nostr::filter_notes_by_hashtag(&tag, limit);
+
+    let mut all_events: Vec<nostr::Event> = Vec::new();
+    let relay_count = relay_urls.len();
+    let mut fail_count: usize = 0;
+
+    for relay_url in &relay_urls {
+        match relay::fetch_notes_from_relay(relay_url, &filter, 10).await {
+            Ok(events) => {
+                for event in events {
+                    all_events.push(event);
+                }
+            }
+            Err(e) => {
+                fail_count += 1;
+                debug_log!("search_hashtag: error from {}: {}", relay_url, e);
+            }
+        }
+    }
+
+    if fail_count == relay_count {
+        return Err(String::from("Could not reach any relay."));
+    }
+
+    all_events.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    let mut seen_ids: Vec<String> = Vec::new();
+    let mut unique: Vec<nostr::Event> = Vec::new();
+    for event in all_events {
+        if !seen_ids.contains(&event.id) {
+            seen_ids.push(event.id.clone());
+            unique.push(event);
+        }
+    }
+    if unique.len() > limit as usize {
+        unique.truncate(limit as usize);
+    }
+    Ok(events_to_json_array(&unique))
+}
+
+/// NIP-50 full-text search across relays. Falls back to client-side content filtering
+/// for relays that don't support NIP-50.
+#[tauri::command(rename_all = "snake_case")]
+async fn search_notes(
+    relay_urls: Vec<String>,
+    query: String,
+    limit: u32,
+    authors: Option<Vec<String>>,
+    since: Option<u64>,
+    until: Option<u64>,
+    kind_filter: Option<String>,
+) -> Result<String, String> {
+    if relay_urls.is_empty() {
+        return Err(String::from("No relays provided."));
+    }
+    let q = query.trim().to_string();
+    if q.is_empty() {
+        return Err(String::from("Search query is empty."));
+    }
+
+    let author_list = authors.filter(|a| !a.is_empty());
+    let filter = nostr::filter_notes_by_search(&q, limit, author_list.clone(), since, until);
+
+    let mut all_events: Vec<nostr::Event> = Vec::new();
+    let relay_count = relay_urls.len();
+    let mut fail_count: usize = 0;
+
+    for relay_url in &relay_urls {
+        match relay::fetch_notes_from_relay(relay_url, &filter, 10).await {
+            Ok(events) => {
+                for event in events {
+                    all_events.push(event);
+                }
+            }
+            Err(e) => {
+                fail_count += 1;
+                debug_log!("search_notes: error from {}: {}", relay_url, e);
+            }
+        }
+    }
+
+    // If NIP-50 search yielded nothing (relay may not support it), fall back to
+    // fetching recent notes and filtering client-side.
+    if all_events.is_empty() {
+        let fallback_filter = if let Some(ref auths) = author_list {
+            nostr::filter_notes_by_authors_since(auths.clone(), limit * 4, since)
+        } else {
+            nostr::filter_recent_notes_since(limit * 4, since)
+        };
+        for relay_url in &relay_urls {
+            match relay::fetch_notes_from_relay(relay_url, &fallback_filter, 10).await {
+                Ok(events) => {
+                    let lower_q = q.to_lowercase();
+                    for event in events {
+                        if event.content.to_lowercase().contains(&lower_q) {
+                            all_events.push(event);
+                        }
+                    }
+                }
+                Err(_) => {}
+            }
+        }
+    }
+
+    if fail_count == relay_count && all_events.is_empty() {
+        return Err(String::from("Could not reach any relay."));
+    }
+
+    // Apply kind filter (notes vs replies)
+    if let Some(ref kf) = kind_filter {
+        match kf.as_str() {
+            "notes" => {
+                all_events.retain(|e| {
+                    e.kind == nostr::KIND_TEXT_NOTE
+                        && !e.tags.iter().any(|t| t.len() >= 2 && t[0] == "e")
+                        || e.kind == nostr::KIND_LONG_FORM
+                });
+            }
+            "replies" => {
+                all_events.retain(|e| {
+                    e.kind == nostr::KIND_TEXT_NOTE
+                        && e.tags.iter().any(|t| t.len() >= 2 && t[0] == "e")
+                });
+            }
+            _ => {}
+        }
+    }
+
+    all_events.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    let mut seen_ids: Vec<String> = Vec::new();
+    let mut unique: Vec<nostr::Event> = Vec::new();
+    for event in all_events {
+        if !seen_ids.contains(&event.id) {
+            seen_ids.push(event.id.clone());
+            unique.push(event);
+        }
+    }
+    if unique.len() > limit as usize {
+        unique.truncate(limit as usize);
+    }
+    Ok(events_to_json_array(&unique))
+}
+
 #[tauri::command(rename_all = "snake_case")]
 fn start_feed_stream(
     app: tauri::AppHandle,
@@ -925,6 +1081,7 @@ fn get_messages(state: tauri::State<AppState>, other_pubkey_hex: String) -> Resu
     Ok(messages_store::messages_to_json(&messages))
 }
 
+/// Send a DM: NIP-17 (gift wrap) if recipient has kind 10050 DM relays, else NIP-04 fallback.
 #[tauri::command(rename_all = "snake_case")]
 async fn send_dm(state: tauri::State<'_, AppState>, recipient_pubkey: String, plaintext: String) -> Result<String, String> {
     let config_dir = state.config_dir();
@@ -933,29 +1090,85 @@ async fn send_dm(state: tauri::State<'_, AppState>, recipient_pubkey: String, pl
     let secret_hex = cfg.private_key.as_ref()
         .ok_or("No private key configured.")?
         .clone();
-    let recipient_hex = keys::public_key_to_hex(recipient_pubkey.trim()).map_err(|e| format!("Invalid recipient: {}", e))?;
-    let event = crypto::create_signed_dm(&recipient_hex, &plaintext, &secret_hex)?;
-    let results = relay::publish_event_to_relays(&cfg.relays, &event, 10).await;
-    let success_count = results.iter().filter(|r| r.success).count();
-    if success_count == 0 {
-        return Err(String::from("Failed to publish DM to any relay"));
+    let recipient_hex = keys::public_key_to_hex(recipient_pubkey.trim())
+        .map_err(|e| format!("Invalid recipient: {}", e))?;
+
+    // Check if recipient supports NIP-17 by looking up their kind 10050 DM relay list
+    let recipient_dm_relays = relay::fetch_dm_relay_list_from_relays(&cfg.relays, &recipient_hex, 10).await
+        .unwrap_or_default();
+
+    if !recipient_dm_relays.is_empty() {
+        // NIP-17 path: create gift wraps
+        let (wrap_for_recipient, wrap_for_self) =
+            crypto::create_nip17_dm(&plaintext, &secret_hex, &recipient_hex)?;
+
+        // Publish recipient's gift wrap to their DM relays
+        let results_recipient = relay::publish_event_to_relays(
+            &recipient_dm_relays, &wrap_for_recipient, 10,
+        ).await;
+        let recip_ok = results_recipient.iter().any(|r| r.success);
+        if !recip_ok {
+            return Err(String::from("Failed to publish NIP-17 DM to any of recipient's DM relays"));
+        }
+
+        // Publish self-copy to our own DM relays (or regular relays if none configured)
+        let our_dm_relays = if cfg.dm_relays.is_empty() { &cfg.relays } else { &cfg.dm_relays };
+        let _ = relay::publish_event_to_relays(our_dm_relays, &wrap_for_self, 10).await;
+
+        // Store raw gift wraps locally
+        let raw_recip = nostr::event_to_json(&wrap_for_recipient);
+        let raw_self = nostr::event_to_json(&wrap_for_self);
+        let _ = messages_store::append_raw_event(&config_dir, &recipient_hex, &raw_recip);
+        let _ = messages_store::append_raw_event(&config_dir, &recipient_hex, &raw_self);
+
+        Ok(nostr::event_to_json(&wrap_for_recipient))
+    } else {
+        // NIP-04 fallback: existing kind 4 path
+        let event = crypto::create_signed_dm(&recipient_hex, &plaintext, &secret_hex)?;
+        let results = relay::publish_event_to_relays(&cfg.relays, &event, 10).await;
+        let success_count = results.iter().filter(|r| r.success).count();
+        if success_count == 0 {
+            return Err(String::from("Failed to publish DM to any relay"));
+        }
+        let raw_json = nostr::event_to_json(&event);
+        messages_store::append_raw_event(&config_dir, &recipient_hex, &raw_json)
+            .map_err(|e| format!("Published but failed to save locally: {}", e))?;
+        Ok(nostr::event_to_json(&event))
     }
-    let raw_json = nostr::event_to_json(&event);
-    messages_store::append_raw_event(&config_dir, &recipient_hex, &raw_json)
-        .map_err(|e| format!("Published but failed to save locally: {}", e))?;
-    Ok(nostr::event_to_json(&event))
 }
 
+/// Start the DM stream: subscribes to both kind 4 (NIP-04) and kind 1059 (NIP-17 gift wraps).
+/// Uses incremental sync with dm_sync_since (2-day safety margin for NIP-17 timestamp randomization).
 #[tauri::command(rename_all = "snake_case")]
 fn start_dm_stream(app: tauri::AppHandle, state: tauri::State<AppState>) -> Result<(), String> {
     let config_dir = state.config_dir();
     let cfg = config::load_config(&config_dir).map_err(|e| format!("Config: {}", e))?;
     let our_pubkey_hex = keys::public_key_to_hex(cfg.public_key.trim()).map_err(|e| format!("Public key: {}", e))?;
+    let our_secret_hex = cfg.private_key.clone();
     if our_pubkey_hex.is_empty() || cfg.relays.is_empty() {
         return Ok(());
     }
-    let filter_received = nostr::filter_dms_received(&our_pubkey_hex, 500, None);
-    let filter_sent = nostr::filter_dms_sent(&our_pubkey_hex, 500, None);
+
+    // Incremental sync: 2-day safety margin for NIP-17 timestamp randomization
+    let since = if cfg.dm_sync_since > 0 {
+        Some(cfg.dm_sync_since.saturating_sub(172800))
+    } else {
+        None
+    };
+
+    // NIP-04 filters (kind 4)
+    let filter_received = nostr::filter_dms_received(&our_pubkey_hex, 500, since);
+    let filter_sent = nostr::filter_dms_sent(&our_pubkey_hex, 500, since);
+    // NIP-17 filter (kind 1059 gift wraps addressed to us)
+    let filter_gift_wraps = nostr::filter_gift_wraps_received(&our_pubkey_hex, 500, since);
+
+    // Collect all relay URLs (regular + DM relays, deduplicated)
+    let mut all_relays: Vec<String> = cfg.relays.clone();
+    for dm_relay in &cfg.dm_relays {
+        if !all_relays.iter().any(|r| r == dm_relay) {
+            all_relays.push(dm_relay.clone());
+        }
+    }
 
     std::thread::spawn(move || {
         let rt = match tokio::runtime::Runtime::new() {
@@ -966,40 +1179,70 @@ fn start_dm_stream(app: tauri::AppHandle, state: tauri::State<AppState>) -> Resu
             }
         };
         rt.block_on(async move {
-            let num_relays = cfg.relays.len() as u32;
+            let num_relays = all_relays.len() as u32;
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-            for relay_url in &cfg.relays {
+            for relay_url in &all_relays {
                 let tx = tx.clone();
                 let url = relay_url.clone();
                 let f1 = filter_received.clone();
                 let f2 = filter_sent.clone();
+                let f3 = filter_gift_wraps.clone();
                 tokio::spawn(async move {
-                    relay::run_relay_dm_stream(url, f1, f2, tx).await;
+                    relay::run_relay_dm_stream_nip17(url, f1, f2, f3, tx).await;
                 });
             }
             drop(tx);
 
             let mut eose_count = 0u32;
             let mut initial_sync = true;
+            let mut max_created_at = cfg.dm_sync_since;
 
             while let Some(msg) = rx.recv().await {
                 match msg {
                     relay::StreamMessage::Event(event) => {
-                        if let Some(other) = nostr::other_pubkey_in_dm(&event, &our_pubkey_hex) {
+                        // Track max created_at for incremental sync
+                        if event.created_at > max_created_at {
+                            max_created_at = event.created_at;
+                        }
+
+                        let other = if event.kind == nostr::KIND_GIFT_WRAP {
+                            // NIP-17: lightweight unwrap to determine conversation partner
+                            if let Some(ref secret) = our_secret_hex {
+                                match crypto::unwrap_gift_wrap(&event, secret) {
+                                    Ok((_seal, rumor)) => {
+                                        let rumor_pubkey = rumor.pubkey.to_lowercase();
+                                        let our = our_pubkey_hex.to_lowercase();
+                                        if rumor_pubkey == our {
+                                            // Outgoing: get "p" tag from rumor
+                                            rumor.tags.iter()
+                                                .find(|t| t.len() >= 2 && t[0] == "p")
+                                                .map(|t| t[1].to_lowercase())
+                                        } else {
+                                            Some(rumor_pubkey)
+                                        }
+                                    }
+                                    Err(e) => {
+                                        debug_log!("Gift wrap unwrap failed: {}", e);
+                                        None
+                                    }
+                                }
+                            } else {
+                                None
+                            }
+                        } else {
+                            // NIP-04: use existing logic
+                            nostr::other_pubkey_in_dm(&event, &our_pubkey_hex)
+                        };
+
+                        if let Some(other) = other {
                             let raw = nostr::event_to_json(&event);
                             match messages_store::append_raw_event(&config_dir, &other, &raw) {
                                 Ok(true) => {
-                                    if initial_sync {
-                                        // During initial sync, don't emit per-event notifications.
-                                        // The frontend will re-count unread after dm-sync-done.
-                                    } else {
-                                        // Live message — notify frontend
+                                    if !initial_sync {
                                         let _ = app.emit("dm-received", (other.clone(), raw));
                                     }
                                 }
-                                Ok(false) => {
-                                    // Duplicate from another relay — skip emit
-                                }
+                                Ok(false) => {}
                                 Err(e) => {
                                     warn_log!("DM store append error: {}", e);
                                 }
@@ -1010,16 +1253,70 @@ fn start_dm_stream(app: tauri::AppHandle, state: tauri::State<AppState>) -> Resu
                         eose_count += 1;
                         if initial_sync && eose_count >= num_relays {
                             initial_sync = false;
-                            // Tell the frontend the initial DM sync is complete
+                            // Persist dm_sync_since for next startup
+                            if max_created_at > 0 {
+                                if let Ok(mut cfg) = config::load_config(&config_dir) {
+                                    if max_created_at > cfg.dm_sync_since {
+                                        cfg.dm_sync_since = max_created_at;
+                                        let _ = config::save_config(&config_dir, &cfg);
+                                    }
+                                }
+                            }
                             let _ = app.emit("dm-sync-done", ());
                         }
                     }
                     _ => {}
                 }
             }
+
+            // Persist dm_sync_since on stream end
+            if max_created_at > 0 {
+                if let Ok(mut cfg) = config::load_config(&config_dir) {
+                    if max_created_at > cfg.dm_sync_since {
+                        cfg.dm_sync_since = max_created_at;
+                        let _ = config::save_config(&config_dir, &cfg);
+                    }
+                }
+            }
         });
     });
     Ok(())
+}
+
+/// Save DM relay list locally and publish kind 10050 event to relays.
+#[tauri::command(rename_all = "snake_case")]
+async fn save_dm_relays(state: tauri::State<'_, AppState>, dm_relays: Vec<String>) -> Result<String, String> {
+    let config_dir = state.config_dir();
+    let mut cfg = config::load_config(&config_dir).map_err(|e| format!("Config: {}", e))?;
+    let secret_hex = cfg.private_key.as_ref()
+        .ok_or("No private key configured.")?
+        .clone();
+    cfg.dm_relays = dm_relays.clone();
+    config::save_config(&config_dir, &cfg)?;
+    let event = crypto::create_signed_dm_relay_list(&dm_relays, &secret_hex)?;
+    let results = relay::publish_event_to_relays(&cfg.relays, &event, 10).await;
+    let success_count = results.iter().filter(|r| r.success).count();
+    if success_count == 0 {
+        return Err(String::from("DM relays saved locally but failed to publish to any relay"));
+    }
+    Ok(relay::publish_results_to_json(&results))
+}
+
+/// Fetch a user's DM relay list (kind 10050) from relays.
+#[tauri::command(rename_all = "snake_case")]
+async fn fetch_dm_relay_list(pubkey: String, relay_urls: Vec<String>) -> Result<String, String> {
+    let hex_pubkey = keys::public_key_to_hex(&pubkey)
+        .map_err(|e| format!("Invalid public key: {}", e))?;
+    let urls = relay::fetch_dm_relay_list_from_relays(&relay_urls, &hex_pubkey, 10).await?;
+    let mut json = String::from("[");
+    for (i, url) in urls.iter().enumerate() {
+        if i > 0 { json.push(','); }
+        json.push('"');
+        json.push_str(&url.replace('\\', "\\\\").replace('"', "\\\""));
+        json.push('"');
+    }
+    json.push(']');
+    Ok(json)
 }
 
 // ============================================================
@@ -1247,6 +1544,58 @@ async fn set_profile_metadata(state: tauri::State<'_, AppState>, profile_json: S
         return Err(format!("Profile published but failed to save local config: {}", e));
     }
     Ok(relay::publish_results_to_json(&results))
+}
+
+/// Fetch zap receipts (kind 9735) for a given pubkey (for profile zaps tab).
+#[tauri::command(rename_all = "snake_case")]
+async fn fetch_zap_receipts(pubkey: String, relay_urls: Vec<String>, limit: Option<u32>) -> Result<String, String> {
+    let hex_pubkey = keys::public_key_to_hex(&pubkey)
+        .map_err(|e| format!("Invalid public key: {}", e))?;
+    let filter = nostr::filter_zap_receipts_by_pubkey(&hex_pubkey, limit.unwrap_or(50));
+    let mut all_events: Vec<nostr::Event> = Vec::new();
+    for relay_url in &relay_urls {
+        match relay::fetch_notes_from_relay(relay_url, &filter, 10).await {
+            Ok(events) => all_events.extend(events),
+            Err(_) => continue,
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut receipts: Vec<nostr::ZapReceiptInfo> = Vec::new();
+    all_events.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    for event in &all_events {
+        if seen.insert(event.id.to_lowercase()) {
+            if let Some(info) = nostr::parse_zap_receipt(event) {
+                receipts.push(info);
+            }
+        }
+    }
+    Ok(nostr::zap_receipts_to_json(&receipts))
+}
+
+/// Fetch zap totals (sats) per event ID for displaying amounts on note cards.
+#[tauri::command(rename_all = "snake_case")]
+async fn fetch_note_zap_totals(event_ids: Vec<String>, relay_urls: Vec<String>) -> Result<String, String> {
+    if event_ids.is_empty() {
+        return Ok(String::from("{}"));
+    }
+    let filter = nostr::filter_zap_receipts_by_events(event_ids, 500);
+    let mut all_events: Vec<nostr::Event> = Vec::new();
+    for relay_url in &relay_urls {
+        match relay::fetch_notes_from_relay(relay_url, &filter, 10).await {
+            Ok(events) => all_events.extend(events),
+            Err(_) => continue,
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut receipts: Vec<nostr::ZapReceiptInfo> = Vec::new();
+    for event in &all_events {
+        if seen.insert(event.id.to_lowercase()) {
+            if let Some(info) = nostr::parse_zap_receipt(event) {
+                receipts.push(info);
+            }
+        }
+    }
+    Ok(nostr::zap_totals_to_json(&receipts))
 }
 
 #[tauri::command]
@@ -1589,6 +1938,8 @@ fn main() {
             decode_nostr_uri,
             fetch_notes,
             fetch_notes_from_relays,
+            search_notes,
+            search_hashtag,
             start_feed_stream,
             fetch_events_by_ids,
             generate_qr_svg,
@@ -1618,7 +1969,11 @@ fn main() {
             start_dm_stream,
             count_unread_dms,
             mark_dms_read,
+            save_dm_relays,
+            fetch_dm_relay_list,
             request_zap_invoice,
+            fetch_zap_receipts,
+            fetch_note_zap_totals,
             sign_event,
             get_derived_public_key,
             generate_keypair,

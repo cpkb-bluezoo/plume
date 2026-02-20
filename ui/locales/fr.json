@@ -12,7 +12,8 @@
     "settings": "Paramètres",
     "profile": "Profil",
     "newNote": "Nouvelle note",
-    "yourProfilePhoto": "Votre photo de profil"
+    "yourProfilePhoto": "Votre photo de profil",
+    "search": "Rechercher"
   },
   "welcome": {
     "title": "Bienvenue sur Plume",
@@ -107,6 +108,10 @@
     "relayAdd": "Ajouter",
     "relayAddPlaceholder": "wss://relais.exemple.com",
     "relayDelete": "Supprimer",
+    "relayTabMain": "Relais principaux",
+    "relayTabDM": "Relais de messages",
+    "relayMainHint": "Relais utilisés pour votre fil, profil et notes publiques. Connectez-vous à plusieurs pour une meilleure disponibilité.",
+    "relayDMHint": "Relais utilisés pour recevoir des messages privés. Limitez la liste (1\u20133 relais). Les autres utilisateurs découvrent ces relais pour vous envoyer des messages chiffrés.",
     "zaps": "Zaps",
     "logout": "Se déconnecter",
     "logoutConfirm": "Voulez-vous vraiment vous déconnecter ? Vos données de profil seront conservées localement."
@@ -119,7 +124,7 @@
     "mute": "Masquer",
     "following": "abonnements",
     "followers": "abonnés",
-    "joined": "Inscrit le",
+    "lastModified": "Profil mis à jour le",
     "website": "Site web",
     "notConfigured": "Non configuré",
     "noIdentityYet": "Vous n'avez pas encore d'identité Nostr.",
@@ -128,6 +133,7 @@
     "replies": "Réponses",
     "zaps": "Zaps",
     "relays": "Relais",
+    "noZaps": "Pas encore de zaps",
     "notesAppearHere": "Les notes apparaissent ici",
     "profilePhoto": "Photo de profil",
     "anonymous": "Anonyme",
@@ -205,7 +211,8 @@
     "bookmark": "Favori",
     "unbookmark": "Retirer des favoris",
     "replyLabel": "(réponse)",
-    "replyingTo": "En réponse à"
+    "replyingTo": "En réponse à",
+    "untitledArticle": "Article sans titre"
   },
   "noteDetail": {
     "back": "← Retour",
@@ -222,6 +229,34 @@
   },
   "content": {
     "image": "Image"
+  },
+  "search": {
+    "placeholder": "Rechercher des notes...",
+    "clear": "Effacer",
+    "hashtags": "Hashtags",
+    "advanced": "Recherche avancée",
+    "includeWords": "Inclure ces mots",
+    "includeWordsHint": "ex. bitcoin lightning",
+    "excludeWords": "Exclure ces mots",
+    "excludeWordsHint": "ex. spam arnaque",
+    "searchKind": "Type de recherche",
+    "kindAll": "Tous",
+    "kindNotes": "Notes",
+    "kindReplies": "Réponses",
+    "postedBy": "Publié par",
+    "replyingTo": "En réponse à",
+    "anyAuthor": "N'importe qui",
+    "timePosted": "Date de publication",
+    "timeAny": "Toute période",
+    "timePastHour": "Dernière heure",
+    "timePastDay": "Dernières 24 heures",
+    "timePastWeek": "Dernière semaine",
+    "timePastMonth": "Dernier mois",
+    "searchBtn": "Rechercher",
+    "backToSearch": "← Retour",
+    "searching": "Recherche en cours...",
+    "noResults": "Aucun résultat",
+    "failed": "La recherche a échoué"
   },
   "errors": {
     "failedToSaveSettings": "Échec de l'enregistrement des paramètres",

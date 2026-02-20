@@ -279,6 +279,39 @@ export function updateZapButtons() {
     });
 }
 
+/// Fetch zap totals for all visible note cards and update the zap-count spans.
+export function fetchAndDisplayZapTotals() {
+    var spans = document.querySelectorAll('.zap-count[data-event-id]');
+    var ids = [];
+    var seen = {};
+    spans.forEach(function(span) {
+        var eid = span.getAttribute('data-event-id');
+        if (eid && !seen[eid]) {
+            seen[eid] = true;
+            ids.push(eid);
+        }
+    });
+    if (ids.length === 0) return;
+    var relays = state.config && state.config.relays ? state.config.relays : [];
+    if (relays.length === 0) return;
+    invoke('fetch_note_zap_totals', { event_ids: ids, relay_urls: relays })
+        .then(function(json) {
+            var totals = {};
+            try { totals = JSON.parse(json); } catch (e) { return; }
+            document.querySelectorAll('.zap-count[data-event-id]').forEach(function(span) {
+                var eid = span.getAttribute('data-event-id');
+                var sats = totals[eid];
+                if (sats && sats > 0) {
+                    var str = sats >= 1000000 ? (sats / 1000000).toFixed(1).replace(/\.0$/, '') + 'M'
+                            : sats >= 1000 ? (sats / 1000).toFixed(1).replace(/\.0$/, '') + 'k'
+                            : String(sats);
+                    span.textContent = str;
+                }
+            });
+        })
+        .catch(function() {});
+}
+
 // Request a zap invoice and open it with the user's wallet (lightning: URL).
 export function performZap(targetPubkey, eventId, zapBtn) {
     if (!targetPubkey || !state.config || !state.profileCache) {
@@ -502,7 +535,7 @@ export function createNoteCard(note, noteIndex, idPrefix, replyToPubkey, isBookm
                 <div class="note-content">${processedContent}</div>
                 <div class="note-actions">
                     <button type="button" class="note-action" title="${escapeHtml(t('note.reply'))}" aria-label="${escapeHtml(t('note.reply'))}" data-action="reply" data-note-id="${safeId}" data-pubkey="${safePubkey}"><img src="icons/reply.svg" alt="${escapeHtml(t('note.reply'))}" class="icon-reply"></button>
-                    <button type="button" class="note-action zap-muted" title="${escapeHtml(t('note.zapNoWallet'))}" aria-label="${escapeHtml(t('note.zap'))}" data-action="zap" data-zap-target-pubkey="${safePubkey}" data-zap-event-id="${safeId}" disabled><img src="icons/zap.svg" alt="${escapeHtml(t('note.zap'))}" class="icon-zap"></button>
+                    <button type="button" class="note-action zap-muted" title="${escapeHtml(t('note.zapNoWallet'))}" aria-label="${escapeHtml(t('note.zap'))}" data-action="zap" data-zap-target-pubkey="${safePubkey}" data-zap-event-id="${safeId}" disabled><img src="icons/zap.svg" alt="${escapeHtml(t('note.zap'))}" class="icon-zap"><span class="zap-count" data-event-id="${safeId}"></span></button>
                     <button type="button" class="note-action${liked ? ' liked' : ''}" title="${escapeHtml(t('note.like'))}" aria-label="${escapeHtml(t('note.like'))}" data-action="like" data-note-id="${safeId}" data-pubkey="${safePubkey}"><img src="icons/${liked ? 'heart-filled' : 'heart'}.svg" alt="${escapeHtml(t('note.like'))}" class="icon-heart"></button>
                     <button type="button" class="note-action" title="${escapeHtml(t('note.repost'))}" aria-label="${escapeHtml(t('note.repost'))}" data-action="repost" data-note-id="${safeId}" data-pubkey="${safePubkey}"><img src="icons/repost.svg" alt="${escapeHtml(t('note.repost'))}" class="icon-repost"></button>
                     <button type="button" class="note-action" title="${escapeHtml(isBookmarked ? (t('note.unbookmark') || 'Unbookmark') : t('note.bookmark'))}" aria-label="${escapeHtml(isBookmarked ? (t('note.unbookmark') || 'Unbookmark') : t('note.bookmark'))}" data-action="bookmark" data-note-id="${safeId}"><img src="icons/${isBookmarked ? 'bookmark-filled' : 'bookmark'}.svg" alt="${escapeHtml(isBookmarked ? (t('note.unbookmark') || 'Unbookmark') : t('note.bookmark'))}" class="icon-bookmark"></button>
@@ -588,8 +621,199 @@ export function createRepostCard(repostEvent, noteIndex, idPrefix) {
         <div class="note-content">${innerContent}</div>
         <div class="note-actions">
             <button type="button" class="note-action" title="${escapeHtml(t('note.reply'))}" aria-label="${escapeHtml(t('note.reply'))}" data-action="reply" data-note-id="${safeId}" data-pubkey="${safePubkey}"><img src="icons/reply.svg" alt="${escapeHtml(t('note.reply'))}" class="icon-reply"></button>
-            <button type="button" class="note-action zap-muted" title="${escapeHtml(t('note.zapNoWallet'))}" aria-label="${escapeHtml(t('note.zap'))}" data-action="zap" data-zap-target-pubkey="${safeOrigPubkey || ''}" data-zap-event-id="${parsed && parsed.id ? escapeHtml(parsed.id) : ''}" disabled><img src="icons/zap.svg" alt="${escapeHtml(t('note.zap'))}" class="icon-zap"></button>
+            <button type="button" class="note-action zap-muted" title="${escapeHtml(t('note.zapNoWallet'))}" aria-label="${escapeHtml(t('note.zap'))}" data-action="zap" data-zap-target-pubkey="${safeOrigPubkey || ''}" data-zap-event-id="${parsed && parsed.id ? escapeHtml(parsed.id) : ''}" disabled><img src="icons/zap.svg" alt="${escapeHtml(t('note.zap'))}" class="icon-zap"><span class="zap-count" data-event-id="${parsed && parsed.id ? escapeHtml(parsed.id) : ''}"></span></button>
             <button type="button" class="note-action" title="${escapeHtml(t('note.repost'))}" aria-label="${escapeHtml(t('note.repost'))}" data-action="repost" data-note-id="${safeId}" data-pubkey="${safePubkey}"><img src="icons/repost.svg" alt="${escapeHtml(t('note.repost'))}" class="icon-repost"></button>
+        </div>
+    `;
+    return card;
+}
+
+// Extract a tag value by name from a note's tags array. Returns the first match or ''.
+function getTagValue(note, tagName) {
+    if (!note || !note.tags) return '';
+    var tag = note.tags.find(function(t) { return Array.isArray(t) && t[0] === tagName && t.length >= 2; });
+    return tag ? tag[1] : '';
+}
+
+// Create a card for a kind 30023 long-form article.
+export function createArticleCard(note, noteIndex, idPrefix) {
+    if (idPrefix === undefined) idPrefix = '';
+    var t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
+    var safeId = escapeHtml(note.id || '');
+    var safePubkey = escapeHtml(note.pubkey || '');
+    var verifyId = idPrefix + 'verify-' + noteIndex;
+    var viewProfile = t('note.viewProfile') || 'View profile';
+    var { name: displayName, nip05 } = getAuthorDisplay(note.pubkey);
+    var title = getTagValue(note, 'title') || t('note.untitledArticle') || 'Untitled';
+    var summary = getTagValue(note, 'summary') || '';
+    var image = getTagValue(note, 'image') || '';
+    var publishedAt = getTagValue(note, 'published_at');
+    var time = formatTimestamp(publishedAt ? parseInt(publishedAt, 10) : note.created_at);
+    var liked = isNoteLiked(note.id);
+    var isBookmarked = isNoteBookmarked(note.id);
+
+    var imageHtml = image
+        ? '<div class="article-image"><img src="' + escapeHtml(image) + '" alt="" onerror="this.parentNode.style.display=\'none\'"></div>'
+        : '';
+    var summaryHtml = summary
+        ? '<p class="article-summary">' + escapeHtml(summary) + '</p>'
+        : '';
+
+    var card = document.createElement('div');
+    card.className = 'note-card note-card-article';
+    card.dataset.noteIndex = noteIndex;
+    card.dataset.noteId = safeId;
+    card.dataset.pubkey = note.pubkey || '';
+    card.innerHTML = `
+        <div class="note-top-row">
+            <button type="button" class="note-avatar note-author-link" data-pubkey="${safePubkey}" title="${escapeHtml(viewProfile)}" aria-label="${escapeHtml(viewProfile)}"><span class="avatar-fallback">?</span></button>
+            <div class="note-head">
+                <div class="note-head-line">
+                    <button type="button" class="note-author-name note-author-link" data-pubkey="${safePubkey}" title="${escapeHtml(viewProfile)}">${escapeHtml(displayName)}</button>
+                    <span class="note-verification" id="${escapeHtml(verifyId)}" title=""><span class="verify-pending">·</span></span>
+                    <span class="note-author-nip05" ${nip05 ? '' : 'style="display:none"'}>${escapeHtml(nip05)}</span>
+                    <span class="note-time">${escapeHtml(time)}</span>
+                </div>
+                ${imageHtml}
+                <h3 class="article-title">${escapeHtml(title)}</h3>
+                ${summaryHtml}
+                <div class="note-actions">
+                    <button type="button" class="note-action" title="${escapeHtml(t('note.reply'))}" aria-label="${escapeHtml(t('note.reply'))}" data-action="reply" data-note-id="${safeId}" data-pubkey="${safePubkey}"><img src="icons/reply.svg" alt="${escapeHtml(t('note.reply'))}" class="icon-reply"></button>
+                    <button type="button" class="note-action zap-muted" title="${escapeHtml(t('note.zapNoWallet'))}" aria-label="${escapeHtml(t('note.zap'))}" data-action="zap" data-zap-target-pubkey="${safePubkey}" data-zap-event-id="${safeId}" disabled><img src="icons/zap.svg" alt="${escapeHtml(t('note.zap'))}" class="icon-zap"><span class="zap-count" data-event-id="${safeId}"></span></button>
+                    <button type="button" class="note-action${liked ? ' liked' : ''}" title="${escapeHtml(t('note.like'))}" aria-label="${escapeHtml(t('note.like'))}" data-action="like" data-note-id="${safeId}" data-pubkey="${safePubkey}"><img src="icons/${liked ? 'heart-filled' : 'heart'}.svg" alt="${escapeHtml(t('note.like'))}" class="icon-heart"></button>
+                    <button type="button" class="note-action" title="${escapeHtml(t('note.repost'))}" aria-label="${escapeHtml(t('note.repost'))}" data-action="repost" data-note-id="${safeId}" data-pubkey="${safePubkey}"><img src="icons/repost.svg" alt="${escapeHtml(t('note.repost'))}" class="icon-repost"></button>
+                    <button type="button" class="note-action" title="${escapeHtml(isBookmarked ? (t('note.unbookmark') || 'Unbookmark') : t('note.bookmark'))}" aria-label="${escapeHtml(isBookmarked ? (t('note.unbookmark') || 'Unbookmark') : t('note.bookmark'))}" data-action="bookmark" data-note-id="${safeId}"><img src="icons/${isBookmarked ? 'bookmark-filled' : 'bookmark'}.svg" alt="${escapeHtml(isBookmarked ? (t('note.unbookmark') || 'Unbookmark') : t('note.bookmark'))}" class="icon-bookmark"></button>
+                </div>
+            </div>
+        </div>
+    `;
+    return card;
+}
+
+// Render Markdown to safe HTML. Supports headings, bold, italic, code, links, images, lists, blockquotes, and horizontal rules.
+function renderMarkdown(md) {
+    var html = escapeHtml(md);
+
+    // Code blocks (``` ... ```)
+    html = html.replace(/```([a-z]*)\n([\s\S]*?)```/g, function(_m, _lang, code) {
+        return '<pre><code>' + code + '</code></pre>';
+    });
+
+    // Inline code
+    html = html.replace(/`([^`\n]+)`/g, '<code>$1</code>');
+
+    // Images: ![alt](url)
+    html = html.replace(/!\[([^\]]*)\]\((https?:\/\/[^\s)]+)\)/g, function(_m, alt, url) {
+        var safeUrl = sanitizeUrl(url);
+        return safeUrl ? '<img src="' + safeUrl + '" alt="' + alt + '" loading="lazy">' : alt;
+    });
+
+    // Links: [text](url)
+    html = html.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, function(_m, text, url) {
+        var safeUrl = sanitizeUrl(url);
+        return safeUrl ? '<a href="' + safeUrl + '" target="_blank" rel="noopener noreferrer">' + text + '</a>' : text;
+    });
+
+    // Headings (# to ######)
+    html = html.replace(/^(#{1,6})\s+(.+)$/gm, function(_m, hashes, text) {
+        var level = hashes.length;
+        return '<h' + level + '>' + text + '</h' + level + '>';
+    });
+
+    // Bold **text** or __text__
+    html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+    html = html.replace(/__(.+?)__/g, '<strong>$1</strong>');
+
+    // Italic *text* or _text_ (not inside words)
+    html = html.replace(/(?<!\w)\*([^*\n]+)\*(?!\w)/g, '<em>$1</em>');
+    html = html.replace(/(?<!\w)_([^_\n]+)_(?!\w)/g, '<em>$1</em>');
+
+    // Blockquotes
+    html = html.replace(/^&gt;\s?(.*)$/gm, '<blockquote>$1</blockquote>');
+    html = html.replace(/<\/blockquote>\n<blockquote>/g, '\n');
+
+    // Horizontal rules
+    html = html.replace(/^---+$/gm, '<hr>');
+
+    // Unordered lists
+    html = html.replace(/^[\*\-]\s+(.+)$/gm, '<li>$1</li>');
+    html = html.replace(/(<li>.*<\/li>)/s, '<ul>$1</ul>');
+
+    // Ordered lists
+    html = html.replace(/^\d+\.\s+(.+)$/gm, '<li>$1</li>');
+
+    // Bare URLs
+    var urlRegex = /(?<!src="|href=")(https?:\/\/[^\s<]+)(?![^<]*>)/gi;
+    html = html.replace(urlRegex, function(url) {
+        var safeUrl = sanitizeUrl(url);
+        return safeUrl ? '<a href="' + safeUrl + '" target="_blank" rel="noopener noreferrer">' + url + '</a>' : url;
+    });
+
+    // Paragraphs: convert double newlines into paragraph breaks
+    html = html.replace(/\n\n+/g, '</p><p>');
+    html = '<p>' + html + '</p>';
+    html = html.replace(/<p>\s*<\/p>/g, '');
+    html = html.replace(/<p>(<h[1-6]>)/g, '$1');
+    html = html.replace(/(<\/h[1-6]>)<\/p>/g, '$1');
+    html = html.replace(/<p>(<pre>)/g, '$1');
+    html = html.replace(/(<\/pre>)<\/p>/g, '$1');
+    html = html.replace(/<p>(<hr>)<\/p>/g, '$1');
+    html = html.replace(/<p>(<ul>)/g, '$1');
+    html = html.replace(/(<\/ul>)<\/p>/g, '$1');
+    html = html.replace(/<p>(<blockquote>)/g, '$1');
+    html = html.replace(/(<\/blockquote>)<\/p>/g, '$1');
+
+    return html;
+}
+
+// Render a full article detail view (kind 30023). Returns a DOM element with the full rendered Markdown content.
+export function renderArticleDetail(note, noteIndex, idPrefix) {
+    if (idPrefix === undefined) idPrefix = '';
+    var t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
+    var safeId = escapeHtml(note.id || '');
+    var safePubkey = escapeHtml(note.pubkey || '');
+    var verifyId = idPrefix + 'verify-' + noteIndex;
+    var viewProfile = t('note.viewProfile') || 'View profile';
+    var { name: displayName, nip05 } = getAuthorDisplay(note.pubkey);
+    var title = getTagValue(note, 'title') || t('note.untitledArticle') || 'Untitled';
+    var image = getTagValue(note, 'image') || '';
+    var publishedAt = getTagValue(note, 'published_at');
+    var time = formatTimestamp(publishedAt ? parseInt(publishedAt, 10) : note.created_at);
+    var liked = isNoteLiked(note.id);
+    var isBookmarked = isNoteBookmarked(note.id);
+
+    var imageHtml = image
+        ? '<div class="article-hero-image"><img src="' + escapeHtml(image) + '" alt="" onerror="this.parentNode.style.display=\'none\'"></div>'
+        : '';
+
+    var renderedContent = renderMarkdown(note.content || '');
+
+    var card = document.createElement('div');
+    card.className = 'note-card note-card-article article-detail';
+    card.dataset.noteIndex = noteIndex;
+    card.dataset.noteId = safeId;
+    card.dataset.pubkey = note.pubkey || '';
+    card.innerHTML = `
+        <div class="note-top-row">
+            <button type="button" class="note-avatar note-author-link" data-pubkey="${safePubkey}" title="${escapeHtml(viewProfile)}" aria-label="${escapeHtml(viewProfile)}"><span class="avatar-fallback">?</span></button>
+            <div class="note-head">
+                <div class="note-head-line">
+                    <button type="button" class="note-author-name note-author-link" data-pubkey="${safePubkey}" title="${escapeHtml(viewProfile)}">${escapeHtml(displayName)}</button>
+                    <span class="note-verification" id="${escapeHtml(verifyId)}" title=""><span class="verify-pending">·</span></span>
+                    <span class="note-author-nip05" ${nip05 ? '' : 'style="display:none"'}>${escapeHtml(nip05)}</span>
+                    <span class="note-time">${escapeHtml(time)}</span>
+                </div>
+            </div>
+        </div>
+        ${imageHtml}
+        <h2 class="article-detail-title">${escapeHtml(title)}</h2>
+        <div class="article-content">${renderedContent}</div>
+        <div class="note-actions">
+            <button type="button" class="note-action" title="${escapeHtml(t('note.reply'))}" aria-label="${escapeHtml(t('note.reply'))}" data-action="reply" data-note-id="${safeId}" data-pubkey="${safePubkey}"><img src="icons/reply.svg" alt="${escapeHtml(t('note.reply'))}" class="icon-reply"></button>
+            <button type="button" class="note-action zap-muted" title="${escapeHtml(t('note.zapNoWallet'))}" aria-label="${escapeHtml(t('note.zap'))}" data-action="zap" data-zap-target-pubkey="${safePubkey}" data-zap-event-id="${safeId}" disabled><img src="icons/zap.svg" alt="${escapeHtml(t('note.zap'))}" class="icon-zap"><span class="zap-count" data-event-id="${safeId}"></span></button>
+            <button type="button" class="note-action${liked ? ' liked' : ''}" title="${escapeHtml(t('note.like'))}" aria-label="${escapeHtml(t('note.like'))}" data-action="like" data-note-id="${safeId}" data-pubkey="${safePubkey}"><img src="icons/${liked ? 'heart-filled' : 'heart'}.svg" alt="${escapeHtml(t('note.like'))}" class="icon-heart"></button>
+            <button type="button" class="note-action" title="${escapeHtml(t('note.repost'))}" aria-label="${escapeHtml(t('note.repost'))}" data-action="repost" data-note-id="${safeId}" data-pubkey="${safePubkey}"><img src="icons/repost.svg" alt="${escapeHtml(t('note.repost'))}" class="icon-repost"></button>
+            <button type="button" class="note-action" title="${escapeHtml(isBookmarked ? (t('note.unbookmark') || 'Unbookmark') : t('note.bookmark'))}" aria-label="${escapeHtml(isBookmarked ? (t('note.unbookmark') || 'Unbookmark') : t('note.bookmark'))}" data-action="bookmark" data-note-id="${safeId}"><img src="icons/${isBookmarked ? 'bookmark-filled' : 'bookmark'}.svg" alt="${escapeHtml(isBookmarked ? (t('note.unbookmark') || 'Unbookmark') : t('note.bookmark'))}" class="icon-bookmark"></button>
         </div>
     `;
     return card;
@@ -911,16 +1135,19 @@ export function displayNotes(notes) {
     const notesToVerify = [];
 
     notes.forEach(note => {
-        // Only show text notes (kind 1)
         if (note.kind === 1) {
             const card = createNoteCard(note, noteIndex);
+            container.appendChild(card);
+            notesToVerify.push({ note, index: noteIndex });
+            noteIndex++;
+        } else if (note.kind === 30023) {
+            const card = createArticleCard(note, noteIndex);
             container.appendChild(card);
             notesToVerify.push({ note, index: noteIndex });
             noteIndex++;
         }
     });
 
-    // If no kind 1 notes were found
     if (container.children.length === 0) {
         container.innerHTML = `
             <div class="placeholder-message">
@@ -934,6 +1161,7 @@ export function displayNotes(notes) {
     verifyNotesAsync(notesToVerify);
     ensureProfilesForNotes(notes);
     resolveNostrEmbeds(container);
+    fetchAndDisplayZapTotals();
 }
 
 // Verify notes asynchronously

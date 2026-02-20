@@ -56,6 +56,11 @@ pub struct Config {
     /// Unix timestamp of the last time the user read their DMs.
     /// Messages with created_at > this value are considered unread.
     pub dm_last_read_at: u64,
+    /// NIP-17: Preferred relays for receiving private messages (kind 10050).
+    pub dm_relays: Vec<String>,
+    /// created_at of the most recent DM event (kind 4 or 1059) received from relays.
+    /// Used for incremental sync with a 2-day safety margin.
+    pub dm_sync_since: u64,
 }
 
 impl Config {
@@ -85,6 +90,8 @@ impl Config {
             default_zap_amount: 42,
             hide_encrypted_notes: true,
             dm_last_read_at: 0,
+            dm_relays: Vec::new(),
+            dm_sync_since: 0,
         }
     }
 }
@@ -103,6 +110,7 @@ enum ConfigArrayField {
     MutedWords,
     MutedHashtags,
     Bookmarks,
+    DmRelays,
 }
 
 struct ConfigHandler {
@@ -124,8 +132,10 @@ struct ConfigHandler {
     default_zap_amount: u32,
     hide_encrypted_notes: bool,
     dm_last_read_at: u64,
+    dm_sync_since: u64,
     // Array fields
     relays: Vec<String>,
+    dm_relays: Vec<String>,
     following: Vec<String>,
     muted_users: Vec<String>,
     muted_words: Vec<String>,
@@ -155,7 +165,9 @@ impl ConfigHandler {
             default_zap_amount: 42,
             hide_encrypted_notes: true,
             dm_last_read_at: 0,
+            dm_sync_since: 0,
             relays: Vec::new(),
+            dm_relays: Vec::new(),
             following: Vec::new(),
             muted_users: Vec::new(),
             muted_words: Vec::new(),
@@ -229,6 +241,8 @@ impl ConfigHandler {
             bookmarks: self.bookmarks,
             hide_encrypted_notes: self.hide_encrypted_notes,
             dm_last_read_at: self.dm_last_read_at,
+            dm_relays: self.dm_relays,
+            dm_sync_since: self.dm_sync_since,
         }
     }
 }
@@ -251,6 +265,7 @@ impl JsonContentHandler for ConfigHandler {
                     "muted_words" => ConfigArrayField::MutedWords,
                     "muted_hashtags" => ConfigArrayField::MutedHashtags,
                     "bookmarks" => ConfigArrayField::Bookmarks,
+                    "dm_relays" => ConfigArrayField::DmRelays,
                     _ => ConfigArrayField::None,
                 };
             }
@@ -277,6 +292,7 @@ impl JsonContentHandler for ConfigHandler {
                 ConfigArrayField::MutedWords => &mut self.muted_words,
                 ConfigArrayField::MutedHashtags => &mut self.muted_hashtags,
                 ConfigArrayField::Bookmarks => &mut self.bookmarks,
+                ConfigArrayField::DmRelays => &mut self.dm_relays,
                 ConfigArrayField::None => return,
             };
             vec.push(value.to_string());
@@ -329,6 +345,8 @@ impl JsonContentHandler for ConfigHandler {
                     }
                 } else if f == "dm_last_read_at" {
                     self.dm_last_read_at = number.as_f64().max(0.0) as u64;
+                } else if f == "dm_sync_since" {
+                    self.dm_sync_since = number.as_f64().max(0.0) as u64;
                 }
             }
         }
@@ -434,6 +452,13 @@ pub fn config_to_json(config: &Config) -> String {
 
     json.push_str("  \"dm_last_read_at\": ");
     json.push_str(&config.dm_last_read_at.to_string());
+    json.push_str(",\n");
+
+    write_string_array(&mut json, "dm_relays", &config.dm_relays);
+    json.push_str(",\n");
+
+    json.push_str("  \"dm_sync_since\": ");
+    json.push_str(&config.dm_sync_since.to_string());
     json.push_str("\n");
 
     json.push_str("}");

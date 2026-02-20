@@ -526,6 +526,16 @@ async function init() {
 
         // Note card: reply button and author link (avatar/name -> profile). Same behavior for home feed and profile feed.
         function handleNoteCardClick(e) {
+            // Article card title or summary -> open detail
+            var articleTitle = e.target.closest('.article-title, .article-summary, .article-image');
+            if (articleTitle) {
+                var articleCard = articleTitle.closest('.note-card-article');
+                if (articleCard && articleCard.dataset.noteId) {
+                    e.preventDefault();
+                    openNoteDetail(articleCard.dataset.noteId);
+                    return;
+                }
+            }
             // Nostr profile link (from nostr:npub or nostr:nprofile in note content)
             var profileLink = e.target.closest('.nostr-profile-link');
             if (profileLink && profileLink.dataset.pubkey) {
@@ -561,7 +571,8 @@ async function init() {
                 }
                 var note = (state.notes && state.notes.find(function(n) { return n.id === noteId; })) ||
                     (state.profileNotes && state.profileNotes.find(function(n) { return n.id === noteId; })) ||
-                    (state.bookmarkNotes && state.bookmarkNotes.find(function(n) { return n.id === noteId; }));
+                    (state.bookmarkNotes && state.bookmarkNotes.find(function(n) { return n.id === noteId; })) ||
+                    (state.searchNotes && state.searchNotes.find(function(n) { return n.id === noteId; }));
                 if (!note && state.noteDetailReplies) {
                     var found = state.noteDetailReplies.find(function(x) { return x.note.id === noteId; });
                     if (found) {
@@ -670,6 +681,12 @@ async function init() {
             bookmarksContainer.addEventListener('mousedown', handleLikeMouseDown);
             bookmarksContainer.addEventListener('mouseleave', handleLikeMouseLeave);
         }
+        var searchResultsContainer = document.getElementById('search-results-container');
+        if (searchResultsContainer) {
+            searchResultsContainer.addEventListener('click', handleNoteCardClick);
+            searchResultsContainer.addEventListener('mousedown', handleLikeMouseDown);
+            searchResultsContainer.addEventListener('mouseleave', handleLikeMouseLeave);
+        }
         document.addEventListener('mouseup', handleLikeMouseUp);
 
         var noteDetailRepliesEl = document.getElementById('note-detail-replies');
@@ -705,6 +722,17 @@ async function init() {
         if (noteDetailBack) {
             noteDetailBack.addEventListener('click', function() {
                 switchView(state.noteDetailPreviousView || 'feed');
+            });
+        }
+
+        var followerAvatars = document.getElementById('follower-avatars');
+        if (followerAvatars) {
+            followerAvatars.addEventListener('click', function(e) {
+                var el = e.target.closest('[data-pubkey]');
+                if (el && el.dataset.pubkey) {
+                    e.preventDefault();
+                    openProfileForUser(el.dataset.pubkey);
+                }
             });
         }
 

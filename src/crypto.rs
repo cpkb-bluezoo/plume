@@ -26,13 +26,20 @@ use secp256k1::{schnorr, Keypair, Parity, PublicKey, Secp256k1, SecretKey, XOnly
 use sha2::{Digest, Sha256};
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
-use crate::nostr::{Event, KIND_DM, KIND_ZAP_REQUEST};
+use crate::nostr::{
+    Event, KIND_CHAT_MESSAGE, KIND_DM, KIND_GIFT_WRAP, KIND_SEAL, KIND_ZAP_REQUEST,
+    event_to_json_compact, parse_event,
+};
 
 use aes::cipher::block_padding::Pkcs7;
 use aes::cipher::{BlockDecryptMut, BlockEncryptMut, KeyIvInit};
 use cbc::{Decryptor, Encryptor};
 type Aes256CbcEnc = Encryptor<aes::Aes256>;
 type Aes256CbcDec = Decryptor<aes::Aes256>;
+
+use chacha20::cipher::StreamCipher;
+use hkdf::Hkdf;
+use hmac::{Hmac, Mac};
 
 // ============================================================
 // Event ID Computation
@@ -651,6 +658,363 @@ pub fn nip04_decrypt(content: &str, our_secret_hex: &str, their_public_hex: &str
 }
 
 // ============================================================
+// NIP-44 Versioned Encryption (v2)
+// ============================================================
+
+type HmacSha256 = Hmac<Sha256>;
+
+/// Derive the NIP-44 conversation key from ECDH shared secret + HKDF-extract.
+/// Symmetric: conv_key(a, B) == conv_key(b, A).
+pub fn nip44_conversation_key(our_secret_hex: &str, their_public_hex: &str) -> Result<[u8; 32], String> {
+    let our_secret_bytes = hex_to_bytes(our_secret_hex)?;
+    if our_secret_bytes.len() != 32 {
+        return Err(String::from("Invalid secret key length"));
+    }
+    let their_pubkey_bytes = hex_to_bytes(their_public_hex)?;
+    if their_pubkey_bytes.len() != 32 {
+        return Err(String::from("Invalid public key length"));
+    }
+
+    let secret_key = SecretKey::from_slice(&our_secret_bytes)
+        .map_err(|e| format!("Invalid secret key: {}", e))?;
+    let xonly = XOnlyPublicKey::from_slice(&their_pubkey_bytes)
+        .map_err(|e| format!("Invalid public key: {}", e))?;
+    let public_key = PublicKey::from_x_only_public_key(xonly, Parity::Even);
+
+    let point = shared_secret_point(&public_key, &secret_key);
+    let shared_x = &point[0..32];
+
+    let hk = Hkdf::<Sha256>::new(Some(b"nip44-v2"), shared_x);
+    let mut conversation_key = [0u8; 32];
+    hk.expand(&[], &mut conversation_key)
+        .map_err(|_| String::from("HKDF expand failed for conversation key"))?;
+    Ok(conversation_key)
+}
+
+/// Derive per-message keys (chacha_key, chacha_nonce, hmac_key) from conversation_key and nonce.
+fn nip44_message_keys(conversation_key: &[u8; 32], nonce: &[u8; 32]) -> Result<([u8; 32], [u8; 12], [u8; 32]), String> {
+    let hk = Hkdf::<Sha256>::new(Some(conversation_key), &[]);
+    let mut keys = [0u8; 76];
+    hk.expand(nonce, &mut keys)
+        .map_err(|_| String::from("HKDF expand failed for message keys"))?;
+    let mut chacha_key = [0u8; 32];
+    chacha_key.copy_from_slice(&keys[0..32]);
+    let mut chacha_nonce = [0u8; 12];
+    chacha_nonce.copy_from_slice(&keys[32..44]);
+    let mut hmac_key = [0u8; 32];
+    hmac_key.copy_from_slice(&keys[44..76]);
+    Ok((chacha_key, chacha_nonce, hmac_key))
+}
+
+/// NIP-44 padding length calculation (power-of-two based, min 32).
+pub fn nip44_calc_padded_len(unpadded_len: usize) -> Result<usize, String> {
+    if unpadded_len < 1 {
+        return Err(String::from("Plaintext must be at least 1 byte"));
+    }
+    if unpadded_len > 65535 {
+        return Err(String::from("Plaintext must be at most 65535 bytes"));
+    }
+    if unpadded_len <= 32 {
+        return Ok(32);
+    }
+    let next_power = 1usize << (usize::BITS - (unpadded_len - 1).leading_zeros());
+    let chunk = if next_power <= 256 { 32 } else { next_power / 8 };
+    Ok(chunk * (((unpadded_len - 1) / chunk) + 1))
+}
+
+/// Pad plaintext per NIP-44: [u16be length][plaintext][zero padding].
+fn nip44_pad(plaintext: &[u8]) -> Result<Vec<u8>, String> {
+    let unpadded_len = plaintext.len();
+    let padded_len = nip44_calc_padded_len(unpadded_len)?;
+    let mut padded = Vec::with_capacity(2 + padded_len);
+    padded.push((unpadded_len >> 8) as u8);
+    padded.push((unpadded_len & 0xff) as u8);
+    padded.extend_from_slice(plaintext);
+    padded.resize(2 + padded_len, 0);
+    Ok(padded)
+}
+
+/// Unpad per NIP-44: read u16be length prefix, validate, return plaintext.
+fn nip44_unpad(padded: &[u8]) -> Result<String, String> {
+    if padded.len() < 2 {
+        return Err(String::from("Padded data too short"));
+    }
+    let unpadded_len = ((padded[0] as usize) << 8) | (padded[1] as usize);
+    if unpadded_len == 0 {
+        return Err(String::from("Invalid padding: zero length"));
+    }
+    if 2 + unpadded_len > padded.len() {
+        return Err(String::from("Invalid padding: length exceeds data"));
+    }
+    let expected_padded_len = nip44_calc_padded_len(unpadded_len)?;
+    if padded.len() != 2 + expected_padded_len {
+        return Err(String::from("Invalid padding: unexpected padded size"));
+    }
+    let plaintext = &padded[2..2 + unpadded_len];
+    String::from_utf8(plaintext.to_vec()).map_err(|e| format!("Invalid UTF-8: {}", e))
+}
+
+/// HMAC-SHA256 over AAD (nonce) || message, per NIP-44.
+fn nip44_hmac_aad(hmac_key: &[u8; 32], message: &[u8], aad: &[u8; 32]) -> Result<[u8; 32], String> {
+    let mut mac = HmacSha256::new_from_slice(hmac_key)
+        .map_err(|_| String::from("HMAC key error"))?;
+    mac.update(aad);
+    mac.update(message);
+    let result = mac.finalize().into_bytes();
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&result);
+    Ok(out)
+}
+
+/// NIP-44 v2 encrypt. Returns base64(0x02 || nonce || ciphertext || mac).
+pub fn nip44_encrypt(plaintext: &str, conversation_key: &[u8; 32]) -> Result<String, String> {
+    let plaintext_bytes = plaintext.as_bytes();
+    if plaintext_bytes.is_empty() || plaintext_bytes.len() > 65535 {
+        return Err(String::from("Plaintext length out of range (1..65535)"));
+    }
+
+    let nonce: [u8; 32] = rand::random();
+    let (chacha_key, chacha_nonce, hmac_key) = nip44_message_keys(conversation_key, &nonce)?;
+
+    let padded = nip44_pad(plaintext_bytes)?;
+
+    let mut ciphertext = padded;
+    let mut cipher = chacha20::ChaCha20::new((&chacha_key).into(), (&chacha_nonce).into());
+    cipher.apply_keystream(&mut ciphertext);
+
+    let mac = nip44_hmac_aad(&hmac_key, &ciphertext, &nonce)?;
+
+    let mut payload = Vec::with_capacity(1 + 32 + ciphertext.len() + 32);
+    payload.push(0x02); // version
+    payload.extend_from_slice(&nonce);
+    payload.extend_from_slice(&ciphertext);
+    payload.extend_from_slice(&mac);
+
+    Ok(BASE64.encode(&payload))
+}
+
+/// NIP-44 v2 decrypt. Payload is base64(0x02 || nonce || ciphertext || mac).
+pub fn nip44_decrypt(payload: &str, conversation_key: &[u8; 32]) -> Result<String, String> {
+    if payload.is_empty() {
+        return Err(String::from("Empty payload"));
+    }
+    if payload.starts_with('#') {
+        return Err(String::from("Unsupported encryption version"));
+    }
+
+    let plen = payload.len();
+    if plen < 132 || plen > 87472 {
+        return Err(String::from("Invalid payload size"));
+    }
+
+    let data = BASE64.decode(payload).map_err(|e| format!("Invalid base64: {}", e))?;
+    let dlen = data.len();
+    if dlen < 99 || dlen > 65603 {
+        return Err(String::from("Invalid decoded data size"));
+    }
+    if data[0] != 0x02 {
+        return Err(format!("Unknown encryption version: {}", data[0]));
+    }
+
+    let nonce: [u8; 32] = data[1..33].try_into()
+        .map_err(|_| String::from("Invalid nonce"))?;
+    let ciphertext = &data[33..dlen - 32];
+    let mac: [u8; 32] = data[dlen - 32..dlen].try_into()
+        .map_err(|_| String::from("Invalid MAC"))?;
+
+    let (chacha_key, chacha_nonce, hmac_key) = nip44_message_keys(conversation_key, &nonce)?;
+
+    let expected_mac = nip44_hmac_aad(&hmac_key, ciphertext, &nonce)?;
+    if !constant_time_eq(&mac, &expected_mac) {
+        return Err(String::from("Invalid MAC"));
+    }
+
+    let mut padded = ciphertext.to_vec();
+    let mut cipher = chacha20::ChaCha20::new((&chacha_key).into(), (&chacha_nonce).into());
+    cipher.apply_keystream(&mut padded);
+
+    nip44_unpad(&padded)
+}
+
+/// Constant-time comparison to prevent timing attacks on MAC verification.
+fn constant_time_eq(a: &[u8; 32], b: &[u8; 32]) -> bool {
+    let mut diff = 0u8;
+    for i in 0..32 {
+        diff |= a[i] ^ b[i];
+    }
+    diff == 0
+}
+
+// ============================================================
+// NIP-59 Gift Wrap (Rumor / Seal / Gift Wrap)
+// ============================================================
+
+/// Random timestamp in the past (up to 2 days) to mask real event timing.
+fn random_past_timestamp() -> u64 {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let jitter: u64 = rand::random::<u64>() % 172800; // 0..2 days
+    now.saturating_sub(jitter)
+}
+
+/// Create a kind 14 rumor (unsigned event). The id is computed but sig is empty.
+pub fn create_rumor(
+    content: &str,
+    tags: Vec<Vec<String>>,
+    sender_pubkey_hex: &str,
+) -> Result<Event, String> {
+    let created_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let mut event = Event {
+        id: String::new(),
+        pubkey: sender_pubkey_hex.to_string(),
+        created_at,
+        kind: KIND_CHAT_MESSAGE,
+        tags,
+        content: content.to_string(),
+        sig: String::new(),
+    };
+    event.id = compute_event_id(&event)?;
+    Ok(event)
+}
+
+/// Create a kind 13 seal: encrypts the rumor JSON with NIP-44 for the recipient.
+/// Signed by the sender, with a randomized timestamp and no tags.
+pub fn create_seal(
+    rumor: &Event,
+    sender_secret_hex: &str,
+    recipient_pubkey_hex: &str,
+) -> Result<Event, String> {
+    let sender_pubkey = get_public_key_from_secret(sender_secret_hex)?;
+    let conv_key = nip44_conversation_key(sender_secret_hex, recipient_pubkey_hex)?;
+    let rumor_json = event_to_json_compact(rumor);
+    let encrypted = nip44_encrypt(&rumor_json, &conv_key)?;
+
+    let mut seal = Event {
+        id: String::new(),
+        pubkey: sender_pubkey,
+        created_at: random_past_timestamp(),
+        kind: KIND_SEAL,
+        tags: Vec::new(),
+        content: encrypted,
+        sig: String::new(),
+    };
+    sign_event(&mut seal, sender_secret_hex)?;
+    Ok(seal)
+}
+
+/// Create a kind 1059 gift wrap: encrypts the seal JSON with NIP-44 using an ephemeral key.
+/// Addressed to the recipient via a ["p", recipient] tag.
+pub fn create_gift_wrap(
+    seal: &Event,
+    recipient_pubkey_hex: &str,
+) -> Result<Event, String> {
+    let (eph_secret, eph_pubkey) = generate_keypair()?;
+    let conv_key = nip44_conversation_key(&eph_secret, recipient_pubkey_hex)?;
+    let seal_json = event_to_json_compact(seal);
+    let encrypted = nip44_encrypt(&seal_json, &conv_key)?;
+
+    let mut wrap = Event {
+        id: String::new(),
+        pubkey: eph_pubkey,
+        created_at: random_past_timestamp(),
+        kind: KIND_GIFT_WRAP,
+        tags: vec![vec![String::from("p"), recipient_pubkey_hex.to_string()]],
+        content: encrypted,
+        sig: String::new(),
+    };
+    sign_event(&mut wrap, &eph_secret)?;
+    Ok(wrap)
+}
+
+/// Unwrap a kind 1059 gift wrap: decrypt outer (gift wrap -> seal), then inner (seal -> rumor).
+/// Returns (seal, rumor). Verifies seal signature and anti-impersonation (rumor.pubkey == seal.pubkey).
+pub fn unwrap_gift_wrap(gift_wrap: &Event, our_secret_hex: &str) -> Result<(Event, Event), String> {
+    if gift_wrap.kind != KIND_GIFT_WRAP {
+        return Err(format!("Expected kind 1059, got kind {}", gift_wrap.kind));
+    }
+
+    // Outer layer: decrypt with conv_key(our_secret, gift_wrap.pubkey)
+    let outer_conv = nip44_conversation_key(our_secret_hex, &gift_wrap.pubkey)?;
+    let seal_json = nip44_decrypt(&gift_wrap.content, &outer_conv)?;
+    let seal = parse_event(&seal_json)?;
+
+    if seal.kind != KIND_SEAL {
+        return Err(format!("Expected seal kind 13, got kind {}", seal.kind));
+    }
+
+    // Verify seal signature
+    let seal_valid = verify_event_signature(&seal)?;
+    if !seal_valid {
+        return Err(String::from("Seal signature verification failed"));
+    }
+
+    // Inner layer: decrypt with conv_key(our_secret, seal.pubkey)
+    let inner_conv = nip44_conversation_key(our_secret_hex, &seal.pubkey)?;
+    let rumor_json = nip44_decrypt(&seal.content, &inner_conv)?;
+    let rumor = parse_event(&rumor_json)?;
+
+    // Anti-impersonation: rumor author must match seal signer
+    if rumor.pubkey.to_lowercase() != seal.pubkey.to_lowercase() {
+        return Err(String::from("Rumor pubkey does not match seal pubkey (impersonation detected)"));
+    }
+
+    Ok((seal, rumor))
+}
+
+/// Build the full NIP-17 gift wrap chain for a private message.
+/// Returns two gift wraps: one for the recipient and one for ourselves (self-copy).
+pub fn create_nip17_dm(
+    plaintext: &str,
+    sender_secret_hex: &str,
+    recipient_pubkey_hex: &str,
+) -> Result<(Event, Event), String> {
+    let sender_pubkey = get_public_key_from_secret(sender_secret_hex)?;
+    let tags = vec![vec![String::from("p"), recipient_pubkey_hex.to_string()]];
+    let rumor = create_rumor(plaintext, tags, &sender_pubkey)?;
+
+    let seal = create_seal(&rumor, sender_secret_hex, recipient_pubkey_hex)?;
+    let wrap_for_recipient = create_gift_wrap(&seal, recipient_pubkey_hex)?;
+
+    let seal_self = create_seal(&rumor, sender_secret_hex, &sender_pubkey)?;
+    let wrap_for_self = create_gift_wrap(&seal_self, &sender_pubkey)?;
+
+    Ok((wrap_for_recipient, wrap_for_self))
+}
+
+/// Create and sign a kind 10050 (DM relay list) event.
+pub fn create_signed_dm_relay_list(
+    relay_urls: &[String],
+    secret_key_hex: &str,
+) -> Result<Event, String> {
+    let pubkey = get_public_key_from_secret(secret_key_hex)?;
+    let created_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let tags: Vec<Vec<String>> = relay_urls
+        .iter()
+        .map(|url| vec![String::from("relay"), url.clone()])
+        .collect();
+    let mut event = Event {
+        id: String::new(),
+        pubkey,
+        created_at,
+        kind: crate::nostr::KIND_DM_RELAY_LIST,
+        tags,
+        content: String::new(),
+        sig: String::new(),
+    };
+    sign_event(&mut event, secret_key_hex)?;
+    Ok(event)
+}
+
+// ============================================================
 // Helper Functions
 // ============================================================
 
@@ -779,6 +1143,163 @@ mod tests {
         let bytes = hex_to_bytes(original).unwrap();
         let back = bytes_to_hex(&bytes);
         assert_eq!(original, back);
+    }
+
+    // NIP-44 test vectors from https://github.com/paulmillr/nip44
+    #[test]
+    fn test_nip44_conversation_key() {
+        let result = nip44_conversation_key(
+            "0000000000000000000000000000000000000000000000000000000000000001",
+            "0000000000000000000000000000000000000000000000000000000000000000",
+        );
+        assert!(result.is_err(), "Zero point should be rejected");
+
+        let (sec_a, pub_a) = generate_keypair().unwrap();
+        let (sec_b, pub_b) = generate_keypair().unwrap();
+        let ck_ab = nip44_conversation_key(&sec_a, &pub_b).unwrap();
+        let ck_ba = nip44_conversation_key(&sec_b, &pub_a).unwrap();
+        assert_eq!(ck_ab, ck_ba, "Conversation key must be symmetric");
+    }
+
+    #[test]
+    fn test_nip44_padding() {
+        assert_eq!(nip44_calc_padded_len(1).unwrap(), 32);
+        assert_eq!(nip44_calc_padded_len(16).unwrap(), 32);
+        assert_eq!(nip44_calc_padded_len(32).unwrap(), 32);
+        assert_eq!(nip44_calc_padded_len(33).unwrap(), 64);
+        assert_eq!(nip44_calc_padded_len(64).unwrap(), 64);
+        assert_eq!(nip44_calc_padded_len(65).unwrap(), 96);
+        assert_eq!(nip44_calc_padded_len(100).unwrap(), 128);
+        assert_eq!(nip44_calc_padded_len(256).unwrap(), 256);
+        assert_eq!(nip44_calc_padded_len(257).unwrap(), 320);
+        assert_eq!(nip44_calc_padded_len(320).unwrap(), 320);
+        assert_eq!(nip44_calc_padded_len(65535).unwrap(), 65536);
+        assert!(nip44_calc_padded_len(0).is_err());
+        assert!(nip44_calc_padded_len(65536).is_err());
+    }
+
+    #[test]
+    fn test_nip44_pad_unpad_roundtrip() {
+        for text in &["a", "hello world", &"x".repeat(32), &"y".repeat(33), &"z".repeat(1000)] {
+            let padded = nip44_pad(text.as_bytes()).unwrap();
+            let unpadded = nip44_unpad(&padded).unwrap();
+            assert_eq!(&unpadded, text);
+        }
+    }
+
+    #[test]
+    fn test_nip44_encrypt_decrypt_roundtrip() {
+        let (sec_a, pub_a) = generate_keypair().unwrap();
+        let (sec_b, pub_b) = generate_keypair().unwrap();
+        let ck = nip44_conversation_key(&sec_a, &pub_b).unwrap();
+        let ck2 = nip44_conversation_key(&sec_b, &pub_a).unwrap();
+        assert_eq!(ck, ck2);
+
+        let long_100 = "x".repeat(100);
+        let long_max = "y".repeat(65535);
+        let messages = vec!["hello", "a", &long_100, &long_max];
+        for msg in messages {
+            let encrypted = nip44_encrypt(msg, &ck).unwrap();
+            let decrypted = nip44_decrypt(&encrypted, &ck).unwrap();
+            assert_eq!(decrypted, msg);
+        }
+    }
+
+    #[test]
+    fn test_nip44_wrong_key_fails() {
+        let (sec_a, _pub_a) = generate_keypair().unwrap();
+        let (_sec_b, pub_b) = generate_keypair().unwrap();
+        let (_sec_c, pub_c) = generate_keypair().unwrap();
+        let ck_correct = nip44_conversation_key(&sec_a, &pub_b).unwrap();
+        let ck_wrong = nip44_conversation_key(&sec_a, &pub_c).unwrap();
+
+        let encrypted = nip44_encrypt("secret message", &ck_correct).unwrap();
+        let result = nip44_decrypt(&encrypted, &ck_wrong);
+        assert!(result.is_err(), "Decryption with wrong key should fail MAC check");
+    }
+
+    #[test]
+    fn test_nip44_version_byte() {
+        let (sec_a, _pub_a) = generate_keypair().unwrap();
+        let (_sec_b, pub_b) = generate_keypair().unwrap();
+        let ck = nip44_conversation_key(&sec_a, &pub_b).unwrap();
+
+        let encrypted = nip44_encrypt("test", &ck).unwrap();
+        let decoded = BASE64.decode(&encrypted).unwrap();
+        assert_eq!(decoded[0], 0x02, "First byte must be version 0x02");
+    }
+
+    // NIP-59 tests
+    #[test]
+    fn test_nip59_gift_wrap_roundtrip() {
+        let (sec_alice, pub_alice) = generate_keypair().unwrap();
+        let (sec_bob, pub_bob) = generate_keypair().unwrap();
+
+        let (wrap_for_bob, wrap_for_alice) =
+            create_nip17_dm("Hello Bob!", &sec_alice, &pub_bob).unwrap();
+
+        assert_eq!(wrap_for_bob.kind, 1059);
+        assert_eq!(wrap_for_alice.kind, 1059);
+
+        // Bob unwraps his copy
+        let (_seal_b, rumor_b) = unwrap_gift_wrap(&wrap_for_bob, &sec_bob).unwrap();
+        assert_eq!(rumor_b.content, "Hello Bob!");
+        assert_eq!(rumor_b.pubkey.to_lowercase(), pub_alice.to_lowercase());
+        assert_eq!(rumor_b.kind, 14);
+
+        // Alice unwraps her self-copy
+        let (_seal_a, rumor_a) = unwrap_gift_wrap(&wrap_for_alice, &sec_alice).unwrap();
+        assert_eq!(rumor_a.content, "Hello Bob!");
+        assert_eq!(rumor_a.pubkey.to_lowercase(), pub_alice.to_lowercase());
+
+        // Both get the same rumor ID
+        assert_eq!(rumor_a.id, rumor_b.id);
+    }
+
+    #[test]
+    fn test_nip59_wrong_recipient_fails() {
+        let (sec_alice, _pub_alice) = generate_keypair().unwrap();
+        let (sec_bob, pub_bob) = generate_keypair().unwrap();
+        let (sec_charlie, _pub_charlie) = generate_keypair().unwrap();
+
+        let (wrap_for_bob, _) =
+            create_nip17_dm("Secret", &sec_alice, &pub_bob).unwrap();
+
+        // Charlie cannot unwrap Bob's gift wrap
+        let result = unwrap_gift_wrap(&wrap_for_bob, &sec_charlie);
+        assert!(result.is_err());
+
+        // Bob can
+        let (_seal, rumor) = unwrap_gift_wrap(&wrap_for_bob, &sec_bob).unwrap();
+        assert_eq!(rumor.content, "Secret");
+    }
+
+    #[test]
+    fn test_nip59_gift_wrap_unique_ids() {
+        let (sec_alice, _pub_alice) = generate_keypair().unwrap();
+        let (_sec_bob, pub_bob) = generate_keypair().unwrap();
+
+        let (wrap1, _) = create_nip17_dm("msg1", &sec_alice, &pub_bob).unwrap();
+        let (wrap2, _) = create_nip17_dm("msg2", &sec_alice, &pub_bob).unwrap();
+
+        assert_ne!(wrap1.id, wrap2.id);
+        assert_ne!(wrap1.pubkey, wrap2.pubkey, "Each wrap uses a unique ephemeral key");
+    }
+
+    #[test]
+    fn test_dm_relay_list_event() {
+        let (sec, _pub) = generate_keypair().unwrap();
+        let relays = vec![
+            String::from("wss://relay.damus.io"),
+            String::from("wss://relay.primal.net"),
+        ];
+        let event = create_signed_dm_relay_list(&relays, &sec).unwrap();
+        assert_eq!(event.kind, 10050);
+        assert_eq!(event.tags.len(), 2);
+        assert_eq!(event.tags[0][0], "relay");
+        assert_eq!(event.tags[0][1], "wss://relay.damus.io");
+        assert_eq!(event.tags[1][0], "relay");
+        assert_eq!(event.tags[1][1], "wss://relay.primal.net");
     }
 }
 

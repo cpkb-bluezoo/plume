@@ -177,14 +177,78 @@ export function displayFollowing(data) {
     countEl.textContent = count.toString();
 }
 
-// Display followers list (updates count on profile page)
+// Display followers list (updates count and avatar strip on profile page)
 export function displayFollowers(data) {
     const countEl = document.getElementById('followers-count');
     if (!countEl) {
         return;
     }
-    const count = data.followers ? data.followers.length : 0;
+    const followers = data.followers || [];
+    const count = followers.length;
     countEl.textContent = count.toString();
+    renderFollowerAvatars(followers, count);
+}
+
+var FOLLOWER_AVATAR_LIMIT = 10;
+
+async function renderFollowerAvatars(followers, totalCount) {
+    var container = document.getElementById('follower-avatars');
+    if (!container) {
+        return;
+    }
+    container.innerHTML = '';
+    if (!followers || followers.length === 0) {
+        return;
+    }
+
+    var topFollowers = followers.slice(0, FOLLOWER_AVATAR_LIMIT);
+    var pubkeys = topFollowers.map(function(f) { return f.pubkey; }).filter(Boolean);
+
+    await ensureProfilesForNotes(pubkeys.map(function(pk) { return { pubkey: pk }; }));
+
+    var stack = document.createElement('div');
+    stack.className = 'follower-avatar-stack';
+
+    pubkeys.forEach(function(pubkey) {
+        var profile = state.profileCache[pubkey];
+        var picture = profile && profile.picture;
+        var name = (profile && profile.name) || '';
+        var initial = name ? name.charAt(0).toUpperCase() : '?';
+
+        if (picture) {
+            var img = document.createElement('img');
+            img.className = 'follower-avatar-item';
+            img.src = picture;
+            img.alt = name || '';
+            img.title = name || pubkey.substring(0, 12) + '…';
+            img.dataset.pubkey = pubkey;
+            img.addEventListener('error', function() {
+                var fallback = document.createElement('span');
+                fallback.className = 'follower-avatar-fallback';
+                fallback.textContent = initial;
+                fallback.title = img.title;
+                fallback.dataset.pubkey = pubkey;
+                img.replaceWith(fallback);
+            });
+            stack.appendChild(img);
+        } else {
+            var fallback = document.createElement('span');
+            fallback.className = 'follower-avatar-fallback';
+            fallback.textContent = initial;
+            fallback.title = name || pubkey.substring(0, 12) + '…';
+            fallback.dataset.pubkey = pubkey;
+            stack.appendChild(fallback);
+        }
+    });
+
+    container.appendChild(stack);
+
+    if (totalCount > FOLLOWER_AVATAR_LIMIT) {
+        var overflow = document.createElement('span');
+        overflow.className = 'follower-avatar-overflow';
+        overflow.textContent = '+' + (totalCount - FOLLOWER_AVATAR_LIMIT);
+        container.appendChild(overflow);
+    }
 }
 
 // Create a follow item element

@@ -23,12 +23,13 @@ import { invoke } from './tauri.js';
 import { escapeHtml } from './utils.js';
 import { updateFeedInitialState } from './config.js';
 import { isNoteMuted } from './muting.js';
-import { createNoteCard, getReplyToPubkey, getParentEventId, verifyNote, ensureProfilesForNotes, resolveNostrEmbeds, displayNotes, setCardAvatar } from './notes.js';
+import { createNoteCard, createArticleCard, getReplyToPubkey, getParentEventId, verifyNote, ensureProfilesForNotes, resolveNostrEmbeds, displayNotes, setCardAvatar, fetchAndDisplayZapTotals, renderArticleDetail } from './notes.js';
 import { startInitialFeedFetch, pollForNewNotes, fetchNotesFirehoseOnHomeClick } from './feed.js';
 import { fetchProfile, updateProfileDisplay, loadProfileFeed } from './profile.js';
 import { fetchFollowingAndFollowers } from './follows.js';
 import { loadMessagesView, updateMessagesNavUnread } from './messages.js';
 import { showSettingsPanel } from './settings.js';
+import { initSearch, showSearchView } from './search.js';
 
 // ============================================================
 // View Management
@@ -58,8 +59,13 @@ export async function loadBookmarksView() {
             return;
         }
         notes.forEach(function(note, i) {
-            var replyToPubkey = getReplyToPubkey(note);
-            var card = createNoteCard(note, i, 'bookmark-', replyToPubkey, true);
+            var card;
+            if (note.kind === 30023) {
+                card = createArticleCard(note, i, 'bookmark-');
+            } else {
+                var replyToPubkey = getReplyToPubkey(note);
+                card = createNoteCard(note, i, 'bookmark-', replyToPubkey, true);
+            }
             container.appendChild(card);
         });
         state.bookmarkNotes = notes;
@@ -78,6 +84,7 @@ export async function loadBookmarksView() {
             }
         });
         resolveNostrEmbeds(container);
+        fetchAndDisplayZapTotals();
     } catch (e) {
         console.error('Failed to load bookmarks:', e);
         state.bookmarkNotes = [];
@@ -230,6 +237,11 @@ export function renderNoteDetailPage() {
         var sub = state.noteDetailSubject;
         if (isNoteMuted(sub)) {
             subjectWrap.innerHTML = '<div class="placeholder-message note-detail-muted"><p>' + escapeHtml(t('feed.mutedContent') || 'This note is from a muted account or contains muted content.') + '</p></div>';
+        } else if (sub.kind === 30023) {
+            var articleEl = renderArticleDetail(sub, 0, 'note-detail-subject-');
+            articleEl.classList.add('note-detail-subject-card');
+            subjectWrap.appendChild(articleEl);
+            ensureProfilesForNotes([sub]);
         } else {
             var replyToPubkey = getReplyToPubkey(sub);
             var card = createNoteCard(sub, 0, 'note-detail-subject-', replyToPubkey);
@@ -260,6 +272,7 @@ export function renderNoteDetailPage() {
     } else {
         repliesEl.innerHTML = '<div class="placeholder-message"><p>' + escapeHtml(t('noteDetail.noReplies')) + '</p></div>';
     }
+    fetchAndDisplayZapTotals();
 }
 
 // Switch to a different view
@@ -309,6 +322,10 @@ export function switchView(viewName) {
         // Don't clear unread badge here — it is cleared when the user actually
         // opens a conversation (selectConversation), not just by clicking the icon.
         loadMessagesView();
+    }
+    if (viewName === 'search') {
+        initSearch();
+        showSearchView();
     }
     if (viewName === 'bookmarks') {
         loadBookmarksView();

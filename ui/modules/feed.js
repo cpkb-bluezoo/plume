@@ -22,7 +22,7 @@ import { state, getEffectiveRelays, FEED_LIMIT, POLL_INTERVAL_MS } from './state
 import { invoke } from './tauri.js';
 import { escapeHtml, showRelayHealthBanner } from './utils.js';
 import { isNoteMuted, isContentUnreadable } from './muting.js';
-import { createNoteCard, getReplyToPubkey, verifyNote, ensureProfilesForNotes, resolveNostrEmbeds, displayNotes } from './notes.js';
+import { createNoteCard, createArticleCard, getReplyToPubkey, verifyNote, ensureProfilesForNotes, resolveNostrEmbeds, displayNotes } from './notes.js';
 import { updateFeedInitialState } from './config.js';
 
 let feedStreamNoteIndex = 0;
@@ -308,13 +308,13 @@ export function scheduleFeedNoteDrain() {
 // Append a single note card to the feed (streaming). Dedupes by id; inserts in sorted position.
 // Returns { index, card } where index is -1 if skipped.
 export function appendNoteCardToFeedSync(note) {
-    if (!note || note.kind !== 1) {
+    if (!note || (note.kind !== 1 && note.kind !== 30023)) {
         return { index: -1, card: null };
     }
     if (isNoteMuted(note)) {
         return { index: -1, card: null };
     }
-    if ((!state.config || state.config.hide_encrypted_notes !== false) && isContentUnreadable(note.content)) {
+    if ((!state.config || state.config.hide_encrypted_notes !== false) && note.kind === 1 && isContentUnreadable(note.content)) {
         return { index: -1, card: null };
     }
     if (state.notes.some(function(n) { return n.id === note.id; })) {
@@ -336,8 +336,9 @@ export function appendNoteCardToFeedSync(note) {
     }
 
     const noteIndex = feedStreamNoteIndex++;
-    const replyToPubkey = getReplyToPubkey(note);
-    const card = createNoteCard(note, noteIndex, '', replyToPubkey);
+    const card = note.kind === 30023
+        ? createArticleCard(note, noteIndex)
+        : createNoteCard(note, noteIndex, '', getReplyToPubkey(note));
     if (idx === 0) {
         container.insertBefore(card, container.firstChild);
     } else if (idx >= container.children.length) {
@@ -349,10 +350,10 @@ export function appendNoteCardToFeedSync(note) {
 }
 
 export function appendNoteCardToFeed(note) {
-    if (!note || note.kind !== 1) {
+    if (!note || (note.kind !== 1 && note.kind !== 30023)) {
         return;
     }
-    if ((!state.config || state.config.hide_encrypted_notes !== false) && isContentUnreadable(note.content)) {
+    if ((!state.config || state.config.hide_encrypted_notes !== false) && note.kind === 1 && isContentUnreadable(note.content)) {
         return;
     }
     if (state.notes.some(function(n) { return n.id === note.id; })) {

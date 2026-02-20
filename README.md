@@ -9,12 +9,16 @@ A cross-platform Nostr desktop client built with Rust and Tauri.
 ## Features
 
 - Browse Nostr notes from multiple relays
+- Search notes by text, hashtag, or advanced filters
 - View images and videos embedded in notes
 - Manage your Nostr identity (public/private keys)
 - Configure relay connections
-- Secure encrypted chat with Nostr users
+- Private direct messages with NIP-17 support (NIP-04 backward compatible)
 - Cross-platform: MacOS, Linux, Windows
 - Localisations for English, French, German, Spanish, Italian
+
+This is a work in progress. Please report any issues in the GitHub issues tab
+above.
 
 ## Screenshots
 
@@ -39,13 +43,18 @@ Plume implements the following [NIPs](https://github.com/nostr-protocol/nips) (N
 |-----|-------------|-------|
 | [01](https://github.com/nostr-protocol/nips/blob/master/01.md) | Basic protocol | Events, filters (`ids`, `authors`, `kinds`, `since`, `until`, `#e`, `#p`), relay WebSocket communication (`REQ`/`EVENT`/`EOSE`/`CLOSE`) |
 | [02](https://github.com/nostr-protocol/nips/blob/master/02.md) | Contact list (kind 3) | Follow/unfollow, follower discovery, optional relay hints and petnames |
-| [04](https://github.com/nostr-protocol/nips/blob/master/04.md) | Encrypted direct messages (kind 4) | ECDH shared secret, AES-256-CBC encryption/decryption |
+| [04](https://github.com/nostr-protocol/nips/blob/master/04.md) | Encrypted direct messages (kind 4) | ECDH shared secret, AES-256-CBC encryption/decryption; used as fallback when recipient does not advertise NIP-17 support |
 | [05](https://github.com/nostr-protocol/nips/blob/master/05.md) | DNS-based identifiers | Stored and displayed in profiles; no server-side `.well-known` resolution yet |
 | [10](https://github.com/nostr-protocol/nips/blob/master/10.md) | Reply threading conventions | `e` tag markers (`reply`, `root`), reply-to display, threaded note detail view |
 | [18](https://github.com/nostr-protocol/nips/blob/master/18.md) | Reposts (kind 6) | Creating and displaying reposts with embedded original note |
+| [23](https://github.com/nostr-protocol/nips/blob/master/23.md) | Long-form content (kind 30023) | Article cards in feed with title, summary, and image; full Markdown-rendered detail view |
 | [19](https://github.com/nostr-protocol/nips/blob/master/19.md) | Bech32 shareable identifiers | `npub`, `nsec`, `note` (simple encoding), `nevent` and `nprofile` (TLV encoding with relay hints) |
+| [17](https://github.com/nostr-protocol/nips/blob/master/17.md) | Private direct messages (kind 14) | Gift-wrapped DMs via NIP-44 encryption and NIP-59 gift wrap; automatic fallback to NIP-04 for recipients without NIP-17 support; incremental sync with configurable DM relay list |
 | [25](https://github.com/nostr-protocol/nips/blob/master/25.md) | Reactions (kind 7) | Like/react with emoji, reaction counts |
+| [50](https://github.com/nostr-protocol/nips/blob/master/50.md) | Search | Full-text `search` filter field with client-side fallback for relays without NIP-50 |
+| [44](https://github.com/nostr-protocol/nips/blob/master/44.md) | Versioned encryption | ChaCha20 + HMAC-SHA256 with HKDF key derivation, custom padding, constant-time MAC verification |
 | [57](https://github.com/nostr-protocol/nips/blob/master/57.md) | Lightning zaps (kind 9734) | Zap requests via LUD-16 (`lud16`), LNURL callback flow, configurable default amount |
+| [59](https://github.com/nostr-protocol/nips/blob/master/59.md) | Gift wrap (kind 1059) | Three-layer encryption (rumor → seal → gift wrap) with ephemeral keys and randomised timestamps for metadata protection |
 | [65](https://github.com/nostr-protocol/nips/blob/master/65.md) | Relay list metadata (kind 10002) | Fetching and displaying relay lists, read/write designations |
 
 ### Additional protocol features
@@ -155,18 +164,18 @@ Plume stores all data under `~/.plume/`:
     └── <npub>/
         ├── config.json               # Profile config (keys, relays, settings, contacts)
         └── messages/
-            └── <hex-pubkey>.json     # Cached DM conversation (raw kind 4 events)
+            └── <hex-pubkey>.json     # Cached DM conversation (raw kind 4 / kind 1059 events)
 ```
 
 Each profile's `config.json` holds:
 
 - Nostr public key (required) and private key (optional, for posting)
-- Relay URLs
+- Relay URLs and DM relay URLs (kind 10050)
 - Profile metadata (name, about, picture, nip05, banner, website, lud16)
 - Following list, muted users/words/hashtags, bookmarks
 - App preferences (feed mode, default zap amount, etc.)
 
-**Messages** (NIP-04 encrypted DMs) are cached locally and synced with relays on startup. Unread status persists across sessions.
+**Messages** are cached locally as raw encrypted relay events (NIP-04 kind 4 and NIP-17 kind 1059 gift wraps) and synced incrementally with relays on startup. Messages are decrypted on read using the user's private key — no plaintext is stored on disk. Unread status persists across sessions.
 
 ## License
 

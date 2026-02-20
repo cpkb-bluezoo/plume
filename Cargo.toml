@@ -20,6 +20,9 @@ urlencoding = "2.1"
 qrcode = { version = "0.14", features = ["svg"], default-features = false }
 aes = "0.8"
 cbc = "0.1"
+chacha20 = "0.9"
+hkdf = "0.12"
+hmac = "0.12"
 rand = "0.8"
 # Custom WebSocket/JSON stack dependencies
 tokio-rustls = "0.26"

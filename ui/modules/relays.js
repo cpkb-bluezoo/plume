@@ -21,7 +21,7 @@
 import { state } from './state.js';
 import { invoke } from './tauri.js';
 import { escapeHtml } from './utils.js';
-import { saveConfig } from './config.js';
+import { saveConfig, setSavingState } from './config.js';
 
 // Update the relay list in the UI (with delete button per relay)
 export function updateRelayList() {
@@ -219,4 +219,145 @@ export function runRelayTests() {
                     });
             });
         });
+}
+
+// ============================================================
+// DM Relay List (Message Relays tab)
+// ============================================================
+
+export function updateDMRelayList() {
+    var t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
+    var relayList = document.getElementById('dm-relay-list');
+    if (!relayList) return;
+    relayList.innerHTML = '';
+
+    if (!state.config) state.config = {};
+    if (!Array.isArray(state.config.dm_relays)) state.config.dm_relays = [];
+
+    var deleteLabel = t('settings.relayDelete');
+    var unknownTitle = t('relays.statusUnknown');
+    state.config.dm_relays.forEach(function(relay, index) {
+        var li = document.createElement('li');
+        li.className = 'relay-item';
+        li.dataset.index = String(index);
+        var esc = escapeHtml(relay);
+        li.innerHTML =
+            '<span class="relay-url">' + esc + '</span>' +
+            '<div class="relay-status" id="dm-relay-status-' + index + '" title="' + escapeHtml(unknownTitle) + '" aria-label="' + escapeHtml(unknownTitle) + '"></div>' +
+            '<button type="button" class="btn btn-small btn-ghost relay-delete-btn" data-dm-index="' + index + '" aria-label="' + escapeHtml(deleteLabel) + '">×</button>';
+        relayList.appendChild(li);
+    });
+}
+
+export function bindDMRelayPanelHandlers() {
+    var list = document.getElementById('dm-relay-list');
+    var addInput = document.getElementById('dm-relay-add-input');
+    var addBtn = document.getElementById('dm-relay-add-btn');
+    var saveBtn = document.getElementById('settings-dm-relays-save');
+    if (!list) return;
+
+    list.removeEventListener('click', handleDMRelayListClick);
+    list.addEventListener('click', handleDMRelayListClick);
+
+    if (addBtn) {
+        addBtn.onclick = function() {
+            var url = addInput && addInput.value ? addInput.value.trim() : '';
+            if (!url) return;
+            if (!url.startsWith('ws://') && !url.startsWith('wss://')) {
+                url = 'wss://' + url;
+            }
+            if (!state.config) state.config = {};
+            if (!Array.isArray(state.config.dm_relays)) state.config.dm_relays = [];
+            if (state.config.dm_relays.indexOf(url) !== -1) return;
+            state.config.dm_relays.push(url);
+            updateDMRelayList();
+            bindDMRelayPanelHandlers();
+            runDMRelayTests();
+            if (addInput) addInput.value = '';
+        };
+    }
+    if (addInput) {
+        addInput.onkeydown = function(e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                if (addBtn) addBtn.click();
+            }
+        };
+    }
+    if (saveBtn) {
+        saveBtn.onclick = function() {
+            var restoreBtn = setSavingState(saveBtn);
+            invoke('save_dm_relays', { dm_relays: state.config.dm_relays || [] })
+                .then(function() {
+                    saveConfig().catch(function(err) { console.error('Failed to save DM relays config:', err); });
+                })
+                .catch(function(err) { console.error('Failed to publish DM relay list:', err); })
+                .finally(restoreBtn);
+        };
+    }
+}
+
+function handleDMRelayListClick(e) {
+    var target = e.target;
+    if (target.classList && target.classList.contains('relay-delete-btn')) {
+        var idx = parseInt(target.getAttribute('data-dm-index'), 10);
+        if (!state.config || !Array.isArray(state.config.dm_relays) || isNaN(idx) || idx < 0 || idx >= state.config.dm_relays.length) return;
+        state.config.dm_relays.splice(idx, 1);
+        updateDMRelayList();
+        bindDMRelayPanelHandlers();
+        runDMRelayTests();
+    }
+}
+
+export function runDMRelayTests() {
+    var t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
+    var connectedTitle = t('relays.statusConnected');
+    var failedTitle = t('relays.statusFailed');
+    if (!state.config || !Array.isArray(state.config.dm_relays)) return;
+
+    state.config.dm_relays.forEach(function(relayUrl, index) {
+        var el = document.getElementById('dm-relay-status-' + index);
+        if (!el) return;
+        el.classList.remove('connected', 'failed');
+        el.title = t('relays.statusUnknown');
+        el.setAttribute('aria-label', t('relays.statusUnknown'));
+        invoke('test_relay_connection', { relayUrl: relayUrl })
+            .then(function() {
+                if (!el.parentNode) return;
+                el.classList.remove('failed');
+                el.classList.add('connected');
+                el.title = connectedTitle;
+                el.setAttribute('aria-label', connectedTitle);
+            })
+            .catch(function() {
+                if (!el.parentNode) return;
+                el.classList.remove('connected');
+                el.classList.add('failed');
+                el.title = failedTitle;
+                el.setAttribute('aria-label', failedTitle);
+            });
+    });
+}
+
+// Tab switching for relay settings
+export function initRelayTabs() {
+    var container = document.querySelector('.relay-tabs');
+    if (!container) return;
+    container.addEventListener('click', function(e) {
+        var btn = e.target.closest('.relay-tab');
+        if (!btn) return;
+        var tab = btn.dataset.relayTab;
+        container.querySelectorAll('.relay-tab').forEach(function(b) {
+            b.classList.toggle('active', b === btn);
+        });
+        var mainPanel = document.getElementById('relay-tab-main');
+        var dmPanel = document.getElementById('relay-tab-dm');
+        if (mainPanel) mainPanel.style.display = (tab === 'main') ? 'block' : 'none';
+        if (dmPanel) dmPanel.style.display = (tab === 'dm') ? 'block' : 'none';
+        if (tab === 'dm') {
+            updateDMRelayList();
+            bindDMRelayPanelHandlers();
+            runDMRelayTests();
+        }
+    });
 }

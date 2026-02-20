@@ -166,9 +166,8 @@ impl JsonContentHandler for EventArrayHandler {
 
     fn end_object(&mut self) {
         if self.depth == 2 {
-            // Finished one event object
-            if let (Some(id), Some(pubkey), Some(sig)) = 
-                (self.event_id.clone(), self.event_pubkey.clone(), self.event_sig.clone()) 
+            if let (Some(id), Some(pubkey)) = 
+                (self.event_id.clone(), self.event_pubkey.clone()) 
             {
                 self.events.push(nostr::Event {
                     id,
@@ -177,7 +176,7 @@ impl JsonContentHandler for EventArrayHandler {
                     kind: self.event_kind,
                     tags: self.event_tags.clone(),
                     content: self.event_content.clone(),
-                    sig,
+                    sig: self.event_sig.clone().unwrap_or_default(),
                 });
             }
         }
@@ -279,31 +278,63 @@ pub fn get_messages(
     let mut messages: Vec<DecryptedMessage> = Vec::new();
     let mut seen_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
     for event in &events {
-        if event.kind != nostr::KIND_DM {
-            continue;
+        match event.kind {
+            nostr::KIND_DM => {
+                let id_lower = event.id.to_lowercase();
+                if !seen_ids.insert(id_lower) {
+                    continue;
+                }
+                let is_outgoing = event.pubkey.to_lowercase() == our;
+                let sender_pubkey = if is_outgoing { other.as_str() } else { event.pubkey.as_str() };
+                let plaintext = crypto::nip04_decrypt(&event.content, our_secret_hex, sender_pubkey)
+                    .unwrap_or_else(|_| String::from("[unable to decrypt]"));
+                messages.push(DecryptedMessage {
+                    id: event.id.clone(),
+                    pubkey: event.pubkey.clone(),
+                    created_at: event.created_at,
+                    content: plaintext,
+                    is_outgoing,
+                });
+            }
+            nostr::KIND_GIFT_WRAP => {
+                let id_lower = event.id.to_lowercase();
+                if !seen_ids.insert(id_lower) {
+                    continue;
+                }
+                match crypto::unwrap_gift_wrap(event, our_secret_hex) {
+                    Ok((_seal, rumor)) => {
+                        let rumor_id = rumor.id.to_lowercase();
+                        if !seen_ids.insert(rumor_id) {
+                            continue;
+                        }
+                        let is_outgoing = rumor.pubkey.to_lowercase() == our;
+                        messages.push(DecryptedMessage {
+                            id: rumor.id.clone(),
+                            pubkey: rumor.pubkey.clone(),
+                            created_at: rumor.created_at,
+                            content: rumor.content.clone(),
+                            is_outgoing,
+                        });
+                    }
+                    Err(_) => {
+                        messages.push(DecryptedMessage {
+                            id: event.id.clone(),
+                            pubkey: event.pubkey.clone(),
+                            created_at: event.created_at,
+                            content: String::from("[unable to decrypt]"),
+                            is_outgoing: false,
+                        });
+                    }
+                }
+            }
+            _ => continue,
         }
-        // Deduplicate by event ID (safety net for any races that wrote dupes)
-        let id_lower = event.id.to_lowercase();
-        if !seen_ids.insert(id_lower) {
-            continue;
-        }
-        let is_outgoing = event.pubkey.to_lowercase() == our;
-        let sender_pubkey = if is_outgoing { other.as_str() } else { event.pubkey.as_str() };
-        let plaintext = crypto::nip04_decrypt(&event.content, our_secret_hex, sender_pubkey)
-            .unwrap_or_else(|_| String::from("[unable to decrypt]"));
-        messages.push(DecryptedMessage {
-            id: event.id.clone(),
-            pubkey: event.pubkey.clone(),
-            created_at: event.created_at,
-            content: plaintext,
-            is_outgoing,
-        });
     }
     messages.sort_by_key(|m| m.created_at);
     Ok(messages)
 }
 
-/// Append a raw kind 4 event to the conversation file (dedupe by event id).
+/// Append a raw kind 4 or kind 1059 event to the conversation file (dedupe by event id).
 /// Returns Ok(true) if the event was actually appended, Ok(false) if duplicate.
 pub fn append_raw_event(
     config_dir: &str,
@@ -312,8 +343,8 @@ pub fn append_raw_event(
 ) -> Result<bool, String> {
     let path = conversation_file_path(config_dir, other_pubkey_hex);
     let new_event = nostr::parse_event(raw_event_json).map_err(|e| format!("Parse event: {}", e))?;
-    if new_event.kind != nostr::KIND_DM {
-        return Err(String::from("Event is not kind 4"));
+    if new_event.kind != nostr::KIND_DM && new_event.kind != nostr::KIND_GIFT_WRAP {
+        return Err(format!("Event kind {} is not a DM event (expected 4 or 1059)", new_event.kind));
     }
 
     let new_id = new_event.id.to_lowercase();

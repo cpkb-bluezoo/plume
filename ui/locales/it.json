@@ -12,7 +12,8 @@
     "settings": "Impostazioni",
     "profile": "Profilo",
     "newNote": "Nuova nota",
-    "yourProfilePhoto": "La tua foto profilo"
+    "yourProfilePhoto": "La tua foto profilo",
+    "search": "Cerca"
   },
   "welcome": {
     "title": "Benvenuto in Plume",
@@ -107,6 +108,10 @@
     "relayAdd": "Aggiungi",
     "relayAddPlaceholder": "wss://relay.esempio.com",
     "relayDelete": "Rimuovi",
+    "relayTabMain": "Relay principali",
+    "relayTabDM": "Relay messaggi",
+    "relayMainHint": "Relay utilizzati per il tuo feed, profilo e note pubbliche. Collegati a diversi per una migliore disponibilità.",
+    "relayDMHint": "Relay utilizzati per ricevere messaggi privati. Mantieni la lista piccola (1\u20133 relay). Gli altri utenti scoprono questi relay per inviarti messaggi crittografati.",
     "zaps": "Zap",
     "logout": "Esci",
     "logoutConfirm": "Sei sicuro di voler uscire? I dati del tuo profilo verranno conservati localmente."
@@ -119,7 +124,7 @@
     "mute": "Silenzia",
     "following": "seguiti",
     "followers": "follower",
-    "joined": "Iscritto il",
+    "lastModified": "Profilo aggiornato il",
     "website": "Sito web",
     "notConfigured": "Non configurato",
     "noIdentityYet": "Non hai ancora un'identità Nostr.",
@@ -128,6 +133,7 @@
     "replies": "Risposte",
     "zaps": "Zap",
     "relays": "Relay",
+    "noZaps": "Nessun zap ancora",
     "notesAppearHere": "Le note appaiono qui",
     "profilePhoto": "Foto profilo",
     "anonymous": "Anonimo",
@@ -205,7 +211,8 @@
     "bookmark": "Segnalibro",
     "unbookmark": "Rimuovi segnalibro",
     "replyLabel": "(risposta)",
-    "replyingTo": "Risposta a"
+    "replyingTo": "Risposta a",
+    "untitledArticle": "Articolo senza titolo"
   },
   "noteDetail": {
     "back": "← Indietro",
@@ -222,6 +229,34 @@
   },
   "content": {
     "image": "Immagine"
+  },
+  "search": {
+    "placeholder": "Cerca note...",
+    "clear": "Cancella",
+    "hashtags": "Hashtag",
+    "advanced": "Ricerca avanzata",
+    "includeWords": "Includi queste parole",
+    "includeWordsHint": "es. bitcoin lightning",
+    "excludeWords": "Escludi queste parole",
+    "excludeWordsHint": "es. spam truffa",
+    "searchKind": "Tipo di ricerca",
+    "kindAll": "Tutti",
+    "kindNotes": "Note",
+    "kindReplies": "Risposte",
+    "postedBy": "Pubblicato da",
+    "replyingTo": "In risposta a",
+    "anyAuthor": "Chiunque",
+    "timePosted": "Data di pubblicazione",
+    "timeAny": "Qualsiasi momento",
+    "timePastHour": "Ultima ora",
+    "timePastDay": "Ultime 24 ore",
+    "timePastWeek": "Ultima settimana",
+    "timePastMonth": "Ultimo mese",
+    "searchBtn": "Cerca",
+    "backToSearch": "← Indietro",
+    "searching": "Ricerca in corso...",
+    "noResults": "Nessun risultato trovato",
+    "failed": "Ricerca fallita"
   },
   "errors": {
     "failedToSaveSettings": "Salvataggio impostazioni fallito",

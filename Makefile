@@ -1,6 +1,9 @@
 # Plume - Nostr Desktop Client
 # Build using: make
 
+# Treat warnings as errors (equivalent of -Werror)
+export RUSTFLAGS := -D warnings
+
 # Default target
 all: build
 
@@ -48,7 +51,7 @@ fmt:
 
 # Run clippy linter
 lint:
-	cargo clippy -- -W warnings
+	cargo clippy -- -D warnings
 
 # Run tests
 test:

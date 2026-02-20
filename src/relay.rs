@@ -531,6 +531,7 @@ pub async fn run_relay_feed_stream(
 }
 
 /// Run a long-lived DM subscription (kind 4) with two filters. Does not exit on EOSE.
+#[allow(dead_code)]
 pub async fn run_relay_dm_stream(
     relay_url: String,
     filter_received: nostr::Filter,
@@ -566,6 +567,51 @@ pub async fn run_relay_dm_stream(
         should_stop: false,
         exit_on_eose: false,
         filter_kind_dm: Some(nostr::KIND_DM),
+    };
+    let _ = conn.run(&mut handler).await;
+}
+
+/// Run a long-lived DM subscription for both NIP-04 (kind 4) and NIP-17 (kind 1059).
+/// Three filters: kind 4 received, kind 4 sent, and kind 1059 gift wraps addressed to us.
+pub async fn run_relay_dm_stream_nip17(
+    relay_url: String,
+    filter_received: nostr::Filter,
+    filter_sent: nostr::Filter,
+    filter_gift_wraps: nostr::Filter,
+    tx: mpsc::UnboundedSender<StreamMessage>,
+) {
+    let conn = match connect_to_relay(&relay_url).await {
+        Ok(c) => c,
+        Err(e) => {
+            debug_log!("[relay] DM stream NIP-17: {}", e);
+            let _ = tx.send(StreamMessage::Eose);
+            return;
+        }
+    };
+
+    let subscription_id = format!(
+        "plume_dm17_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+    );
+    let f1 = nostr::filter_to_json(&filter_received);
+    let f2 = nostr::filter_to_json(&filter_sent);
+    let f3 = nostr::filter_to_json(&filter_gift_wraps);
+    let req_message = format!("[\"REQ\",\"{}\",{},{},{}]", subscription_id, f1, f2, f3);
+
+    let mut conn = conn;
+    if conn.send_text(req_message.as_bytes()).await.is_err() {
+        let _ = tx.send(StreamMessage::Eose);
+        return;
+    }
+
+    let mut handler = NostrRelayHandler {
+        tx,
+        should_stop: false,
+        exit_on_eose: false,
+        filter_kind_dm: None, // accept all kinds (4 and 1059)
     };
     let _ = conn.run(&mut handler).await;
 }
@@ -806,6 +852,62 @@ pub async fn fetch_relay_list_from_relays(
             Ok(_) => continue,
             Err(e) => {
                 debug_log!("Error fetching relay list from {}: {}", relay_url, e);
+                continue;
+            }
+        }
+    }
+    Ok(Vec::new())
+}
+
+// ============================================================
+// DM Relay List (kind 10050) fetching
+// ============================================================
+
+/// Fetch a user's DM relay list (kind 10050) from a single relay.
+pub async fn fetch_dm_relay_list_from_relay(
+    relay_url: &str,
+    pubkey: &str,
+    timeout_seconds: u32,
+) -> Result<Option<Vec<String>>, String> {
+    let filter = nostr::filter_dm_relay_list_by_author(pubkey);
+    let events = fetch_notes_from_relay(relay_url, &filter, timeout_seconds).await?;
+    let mut best_event: Option<&nostr::Event> = None;
+    for event in &events {
+        if event.kind == nostr::KIND_DM_RELAY_LIST {
+            match &best_event {
+                None => best_event = Some(event),
+                Some(current) => {
+                    if event.created_at > current.created_at {
+                        best_event = Some(event);
+                    }
+                }
+            }
+        }
+    }
+    match best_event {
+        Some(event) => match nostr::parse_dm_relay_list(event) {
+            Ok(urls) => Ok(Some(urls)),
+            Err(e) => {
+                debug_log!("Failed to parse DM relay list: {}", e);
+                Ok(None)
+            }
+        },
+        None => Ok(None),
+    }
+}
+
+/// Fetch a user's DM relay list from multiple relays.
+pub async fn fetch_dm_relay_list_from_relays(
+    relay_urls: &[String],
+    pubkey: &str,
+    timeout_seconds: u32,
+) -> Result<Vec<String>, String> {
+    for relay_url in relay_urls {
+        match fetch_dm_relay_list_from_relay(relay_url, pubkey, timeout_seconds).await {
+            Ok(Some(urls)) if !urls.is_empty() => return Ok(urls),
+            Ok(_) => continue,
+            Err(e) => {
+                debug_log!("Error fetching DM relay list from {}: {}", relay_url, e);
                 continue;
             }
         }

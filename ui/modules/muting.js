@@ -58,7 +58,7 @@ export function isNoteMuted(note) {
     if (state.config.muted_users.some(function(p) { return String(p).toLowerCase() === pubkey; })) {
         return true;
     }
-    if (note.kind === 1) {
+    if (note.kind === 1 || note.kind === 30023) {
         var content = (note.content || '').toLowerCase();
         var words = state.config.muted_words || [];
         for (var w = 0; w < words.length; w++) {

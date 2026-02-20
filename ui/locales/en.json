@@ -12,7 +12,8 @@
     "settings": "Settings",
     "profile": "Profile",
     "newNote": "New note",
-    "yourProfilePhoto": "Your profile photo"
+    "yourProfilePhoto": "Your profile photo",
+    "search": "Search"
   },
   "welcome": {
     "title": "Welcome to Plume",
@@ -107,6 +108,10 @@
     "relayAdd": "Add",
     "relayAddPlaceholder": "wss://relay.example.com",
     "relayDelete": "Remove",
+    "relayTabMain": "Main Relays",
+    "relayTabDM": "Message Relays",
+    "relayMainHint": "Relays used for your feed, profile, and public notes. Connect to several for best availability.",
+    "relayDMHint": "Relays used to receive private messages. Keep the list small (1\u20133 relays). Other users discover these relays to send you encrypted messages.",
     "zaps": "Zaps",
     "logout": "Log out",
     "logoutConfirm": "Are you sure you want to log out? Your profile data will be kept locally."
@@ -119,7 +124,7 @@
     "mute": "Mute",
     "following": "following",
     "followers": "followers",
-    "joined": "Joined",
+    "lastModified": "Profile updated",
     "website": "Website",
     "notConfigured": "Not configured",
     "noIdentityYet": "You don't have a Nostr identity yet.",
@@ -128,6 +133,7 @@
     "replies": "Replies",
     "zaps": "Zaps",
     "relays": "Relays",
+    "noZaps": "No zaps yet",
     "notesAppearHere": "Notes appear here",
     "profilePhoto": "Profile photo",
     "anonymous": "Anonymous",
@@ -205,7 +211,8 @@
     "bookmark": "Bookmark",
     "unbookmark": "Unbookmark",
     "replyLabel": "(reply)",
-    "replyingTo": "Replying to"
+    "replyingTo": "Replying to",
+    "untitledArticle": "Untitled article"
   },
   "noteDetail": {
     "back": "← Back",
@@ -222,6 +229,34 @@
   },
   "content": {
     "image": "Image"
+  },
+  "search": {
+    "placeholder": "Search notes...",
+    "clear": "Clear",
+    "hashtags": "Hashtags",
+    "advanced": "Advanced Search",
+    "includeWords": "Include these words",
+    "includeWordsHint": "e.g. bitcoin lightning",
+    "excludeWords": "Exclude these words",
+    "excludeWordsHint": "e.g. spam scam",
+    "searchKind": "Search kind",
+    "kindAll": "All",
+    "kindNotes": "Notes",
+    "kindReplies": "Replies",
+    "postedBy": "Posted by",
+    "replyingTo": "Replying to",
+    "anyAuthor": "Anyone",
+    "timePosted": "Time posted",
+    "timeAny": "Any time",
+    "timePastHour": "Past hour",
+    "timePastDay": "Past 24 hours",
+    "timePastWeek": "Past week",
+    "timePastMonth": "Past month",
+    "searchBtn": "Search",
+    "backToSearch": "← Back",
+    "searching": "Searching...",
+    "noResults": "No results found",
+    "failed": "Search failed"
   },
   "errors": {
     "failedToSaveSettings": "Failed to save settings",

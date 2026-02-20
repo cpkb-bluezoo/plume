@@ -12,7 +12,8 @@
     "settings": "Einstellungen",
     "profile": "Profil",
     "newNote": "Neue Notiz",
-    "yourProfilePhoto": "Ihr Profilfoto"
+    "yourProfilePhoto": "Ihr Profilfoto",
+    "search": "Suche"
   },
   "welcome": {
     "title": "Willkommen bei Plume",
@@ -107,6 +108,10 @@
     "relayAdd": "Hinzufügen",
     "relayAddPlaceholder": "wss://relay.beispiel.com",
     "relayDelete": "Entfernen",
+    "relayTabMain": "Haupt-Relays",
+    "relayTabDM": "Nachrichten-Relays",
+    "relayMainHint": "Relays für Ihren Feed, Ihr Profil und öffentliche Notizen. Verbinden Sie sich mit mehreren für beste Verfügbarkeit.",
+    "relayDMHint": "Relays zum Empfangen privater Nachrichten. Halten Sie die Liste klein (1\u20133 Relays). Andere Benutzer finden diese Relays, um Ihnen verschlüsselte Nachrichten zu senden.",
     "zaps": "Zaps",
     "logout": "Abmelden",
     "logoutConfirm": "Möchten Sie sich wirklich abmelden? Ihre Profildaten werden lokal gespeichert."
@@ -119,7 +124,7 @@
     "mute": "Stummschalten",
     "following": "Folgt",
     "followers": "Follower",
-    "joined": "Beigetreten am",
+    "lastModified": "Profil aktualisiert am",
     "website": "Website",
     "notConfigured": "Nicht konfiguriert",
     "noIdentityYet": "Sie haben noch keine Nostr-Identität.",
@@ -128,6 +133,7 @@
     "replies": "Antworten",
     "zaps": "Zaps",
     "relays": "Relays",
+    "noZaps": "Noch keine Zaps",
     "notesAppearHere": "Notizen erscheinen hier",
     "profilePhoto": "Profilfoto",
     "anonymous": "Anonym",
@@ -205,7 +211,8 @@
     "bookmark": "Lesezeichen",
     "unbookmark": "Lesezeichen entfernen",
     "replyLabel": "(Antwort)",
-    "replyingTo": "Antwort an"
+    "replyingTo": "Antwort an",
+    "untitledArticle": "Artikel ohne Titel"
   },
   "noteDetail": {
     "back": "← Zurück",
@@ -222,6 +229,34 @@
   },
   "content": {
     "image": "Bild"
+  },
+  "search": {
+    "placeholder": "Notizen suchen...",
+    "clear": "Löschen",
+    "hashtags": "Hashtags",
+    "advanced": "Erweiterte Suche",
+    "includeWords": "Diese Wörter einschließen",
+    "includeWordsHint": "z.B. bitcoin lightning",
+    "excludeWords": "Diese Wörter ausschließen",
+    "excludeWordsHint": "z.B. spam betrug",
+    "searchKind": "Suchtyp",
+    "kindAll": "Alle",
+    "kindNotes": "Notizen",
+    "kindReplies": "Antworten",
+    "postedBy": "Gepostet von",
+    "replyingTo": "Antwort an",
+    "anyAuthor": "Jeder",
+    "timePosted": "Veröffentlichungszeitpunkt",
+    "timeAny": "Jederzeit",
+    "timePastHour": "Letzte Stunde",
+    "timePastDay": "Letzte 24 Stunden",
+    "timePastWeek": "Letzte Woche",
+    "timePastMonth": "Letzter Monat",
+    "searchBtn": "Suchen",
+    "backToSearch": "← Zurück",
+    "searching": "Suche läuft...",
+    "noResults": "Keine Ergebnisse gefunden",
+    "failed": "Suche fehlgeschlagen"
   },
   "errors": {
     "failedToSaveSettings": "Einstellungen konnten nicht gespeichert werden",

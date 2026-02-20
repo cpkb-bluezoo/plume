@@ -58,14 +58,22 @@ pub const KIND_DM: u32 = 4;
 pub const KIND_REPOST: u32 = 6;         // Repost/boost of another note
 #[allow(dead_code)]
 pub const KIND_REACTION: u32 = 7;       // Reaction (like, emoji)
+/// NIP-59: Seal (encrypted rumor, signed by sender)
+pub const KIND_SEAL: u32 = 13;
+/// NIP-17: Private chat message (rumor kind inside seal/gift wrap)
+pub const KIND_CHAT_MESSAGE: u32 = 14;
+/// NIP-59: Gift wrap (encrypted seal, signed by ephemeral key)
+pub const KIND_GIFT_WRAP: u32 = 1059;
 pub const KIND_ZAP_REQUEST: u32 = 9734; // NIP-57 Lightning zap request
-#[allow(dead_code)]
-pub const KIND_LONG_FORM: u32 = 30023;  // Long-form content (articles)
+pub const KIND_ZAP_RECEIPT: u32 = 9735; // NIP-57 Lightning zap receipt
+/// NIP-17: DM relay list (tags: ["relay", "wss://..."])
+pub const KIND_DM_RELAY_LIST: u32 = 10050;
+pub const KIND_LONG_FORM: u32 = 30023;  // NIP-23 Long-form content (articles)
 /// NIP-65: Relay list metadata (tags: ["r", "relay_url"] or ["r", "url", "read"/"write"])
 pub const KIND_RELAY_LIST: u32 = 10002;
 
 // A filter for requesting events from relays
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct Filter {
     // Filter by event IDs
     pub ids: Option<Vec<String>>,
@@ -91,6 +99,12 @@ pub struct Filter {
 
     // Filter by "e" tags (event IDs referenced, e.g. replies to an event). NIP-01 #e.
     pub e_tags: Option<Vec<String>>,
+
+    // Filter by "t" tags (hashtags). NIP-01 #t.
+    pub t_tags: Option<Vec<String>>,
+
+    // NIP-50 full-text search term.
+    pub search: Option<String>,
 }
 
 // Create a new empty filter
@@ -106,6 +120,8 @@ impl Filter {
             limit: None,
             p_tags: None,
             e_tags: None,
+            t_tags: None,
+            search: None,
         }
     }
 }
@@ -183,7 +199,7 @@ impl EventHandler {
             kind: self.kind,
             tags: self.tags.clone(),
             content: self.content.clone(),
-            sig: self.sig.clone().ok_or("Missing 'sig' field")?,
+            sig: self.sig.clone().unwrap_or_default(),
         })
     }
 }
@@ -532,7 +548,7 @@ pub fn filter_to_json(filter: &Filter) -> String {
         if !first {
             json.push_str(",");
         }
-        let _ = first;
+        first = false;
         json.push_str("\"#e\":[");
         for (i, eid) in e_tags.iter().enumerate() {
             json.push_str("\"");
@@ -543,6 +559,35 @@ pub fn filter_to_json(filter: &Filter) -> String {
             }
         }
         json.push_str("]");
+    }
+
+    // #t tags (for filtering by hashtags)
+    if let Some(ref t_tags) = filter.t_tags {
+        if !first {
+            json.push_str(",");
+        }
+        first = false;
+        json.push_str("\"#t\":[");
+        for (i, tag) in t_tags.iter().enumerate() {
+            json.push_str("\"");
+            json.push_str(&escape_json_string(tag));
+            json.push_str("\"");
+            if i < t_tags.len() - 1 {
+                json.push_str(",");
+            }
+        }
+        json.push_str("]");
+    }
+
+    // NIP-50 search term
+    if let Some(ref search) = filter.search {
+        if !first {
+            json.push_str(",");
+        }
+        let _ = first;
+        json.push_str("\"search\":\"");
+        json.push_str(&escape_json_string(search));
+        json.push_str("\"");
     }
     
     json.push_str("}");
@@ -580,28 +625,22 @@ pub fn filter_notes_by_authors(authors: Vec<String>, limit: u32) -> Filter {
 
 pub fn filter_notes_by_authors_since(authors: Vec<String>, limit: u32, since: Option<u64>) -> Filter {
     Filter {
-        ids: None,
         authors: Some(authors),
-        kinds: Some(vec![KIND_TEXT_NOTE]),
+        kinds: Some(vec![KIND_TEXT_NOTE, KIND_LONG_FORM]),
         since,
-        until: None,
         limit: Some(limit),
-        p_tags: None,
-        e_tags: None,
+        ..Default::default()
     }
 }
 
-/// Profile feed: notes (kind 1) and reposts (kind 6) by authors. Used so reposts appear on profile.
+/// Profile feed: notes (kind 1), reposts (kind 6), and articles (kind 30023) by authors.
 pub fn filter_profile_feed_by_authors_since(authors: Vec<String>, limit: u32, since: Option<u64>) -> Filter {
     Filter {
-        ids: None,
         authors: Some(authors),
-        kinds: Some(vec![KIND_TEXT_NOTE, KIND_REPOST]),
+        kinds: Some(vec![KIND_TEXT_NOTE, KIND_REPOST, KIND_LONG_FORM]),
         since,
-        until: None,
         limit: Some(limit),
-        p_tags: None,
-        e_tags: None,
+        ..Default::default()
     }
 }
 
@@ -612,28 +651,20 @@ pub fn filter_recent_notes(limit: u32) -> Filter {
 
 pub fn filter_recent_notes_since(limit: u32, since: Option<u64>) -> Filter {
     Filter {
-        ids: None,
-        authors: None,
-        kinds: Some(vec![KIND_TEXT_NOTE]),
+        kinds: Some(vec![KIND_TEXT_NOTE, KIND_LONG_FORM]),
         since,
-        until: None,
         limit: Some(limit),
-        p_tags: None,
-        e_tags: None,
+        ..Default::default()
     }
 }
 
 /// Create a filter to fetch kind 1 notes that reference the given event ID in an "e" tag (replies).
 pub fn filter_replies_to_event(event_id: String, limit: u32) -> Filter {
     Filter {
-        ids: None,
-        authors: None,
         kinds: Some(vec![KIND_TEXT_NOTE]),
-        since: None,
-        until: None,
         limit: Some(limit),
-        p_tags: None,
         e_tags: Some(vec![event_id]),
+        ..Default::default()
     }
 }
 
@@ -667,28 +698,22 @@ pub fn other_pubkey_in_dm(event: &Event, our_pubkey_hex: &str) -> Option<String>
 /// Filter for DMs we received: kind 4 with #p = our pubkey.
 pub fn filter_dms_received(our_pubkey_hex: &str, limit: u32, since: Option<u64>) -> Filter {
     Filter {
-        ids: None,
-        authors: None,
         kinds: Some(vec![KIND_DM]),
         since,
-        until: None,
         limit: Some(limit),
         p_tags: Some(vec![our_pubkey_hex.to_string()]),
-        e_tags: None,
+        ..Default::default()
     }
 }
 
 /// Filter for DMs we sent: kind 4 with authors = our pubkey.
 pub fn filter_dms_sent(our_pubkey_hex: &str, limit: u32, since: Option<u64>) -> Filter {
     Filter {
-        ids: None,
         authors: Some(vec![our_pubkey_hex.to_string()]),
         kinds: Some(vec![KIND_DM]),
         since,
-        until: None,
         limit: Some(limit),
-        p_tags: None,
-        e_tags: None,
+        ..Default::default()
     }
 }
 
@@ -696,27 +721,160 @@ pub fn filter_dms_sent(our_pubkey_hex: &str, limit: u32, since: Option<u64>) -> 
 pub fn filter_events_by_ids(ids: Vec<String>) -> Filter {
     Filter {
         ids: Some(ids),
-        authors: None,
-        kinds: Some(vec![KIND_TEXT_NOTE]),
-        since: None,
-        until: None,
-        limit: None,
-        p_tags: None,
-        e_tags: None,
+        kinds: Some(vec![KIND_TEXT_NOTE, KIND_LONG_FORM]),
+        ..Default::default()
     }
+}
+
+/// Filter for zap receipts (kind 9735) tagged with a pubkey.
+pub fn filter_zap_receipts_by_pubkey(pubkey: &str, limit: u32) -> Filter {
+    Filter {
+        kinds: Some(vec![KIND_ZAP_RECEIPT]),
+        limit: Some(limit),
+        p_tags: Some(vec![pubkey.to_string()]),
+        ..Default::default()
+    }
+}
+
+/// Filter for zap receipts (kind 9735) tagged with specific event IDs.
+pub fn filter_zap_receipts_by_events(event_ids: Vec<String>, limit: u32) -> Filter {
+    Filter {
+        kinds: Some(vec![KIND_ZAP_RECEIPT]),
+        limit: Some(limit),
+        e_tags: Some(event_ids),
+        ..Default::default()
+    }
+}
+
+/// Parsed info from a zap receipt (kind 9735).
+pub struct ZapReceiptInfo {
+    pub receipt_id: String,
+    pub created_at: u64,
+    pub sender_pubkey: String,
+    pub recipient_pubkey: String,
+    pub amount_msats: u64,
+    pub zapped_event_id: Option<String>,
+    pub message: String,
+}
+
+/// Extract zap info from a kind 9735 receipt event.
+/// The `description` tag contains the JSON of the original kind 9734 zap request.
+pub fn parse_zap_receipt(event: &Event) -> Option<ZapReceiptInfo> {
+    if event.kind != KIND_ZAP_RECEIPT {
+        return None;
+    }
+    let recipient = event.tags.iter()
+        .find(|t| t.len() >= 2 && t[0] == "p")
+        .map(|t| t[1].clone())?;
+    let zapped_event = event.tags.iter()
+        .find(|t| t.len() >= 2 && t[0] == "e")
+        .map(|t| t[1].clone());
+    let bolt11 = event.tags.iter()
+        .find(|t| t.len() >= 2 && t[0] == "bolt11")
+        .map(|t| t[1].clone());
+    let description_json = event.tags.iter()
+        .find(|t| t.len() >= 2 && t[0] == "description")
+        .map(|t| t[1].clone())?;
+
+    let zap_request = parse_event(&description_json).ok()?;
+    if zap_request.kind != KIND_ZAP_REQUEST {
+        return None;
+    }
+
+    let sender = zap_request.pubkey.clone();
+    let amount_msats = zap_request.tags.iter()
+        .find(|t| t.len() >= 2 && t[0] == "amount")
+        .and_then(|t| t[1].parse::<u64>().ok())
+        .or_else(|| bolt11.as_deref().and_then(parse_bolt11_amount_msats))
+        .unwrap_or(0);
+
+    Some(ZapReceiptInfo {
+        receipt_id: event.id.clone(),
+        created_at: event.created_at,
+        sender_pubkey: sender,
+        recipient_pubkey: recipient,
+        amount_msats,
+        zapped_event_id: zapped_event,
+        message: zap_request.content.clone(),
+    })
+}
+
+/// Parse amount in millisats from a bolt11 invoice string.
+fn parse_bolt11_amount_msats(invoice: &str) -> Option<u64> {
+    let lower = invoice.to_lowercase();
+    let prefix = if lower.starts_with("lnbc") {
+        &lower[4..]
+    } else {
+        return None;
+    };
+    let sep = prefix.find('1')?;
+    let amount_part = &prefix[..sep];
+    if amount_part.is_empty() {
+        return None;
+    }
+    let multiplier_char = amount_part.chars().last()?;
+    let (digits, mult_msats) = match multiplier_char {
+        'm' => (&amount_part[..amount_part.len() - 1], 100_000_000u64),
+        'u' => (&amount_part[..amount_part.len() - 1], 100_000u64),
+        'n' => (&amount_part[..amount_part.len() - 1], 100u64),
+        'p' => (&amount_part[..amount_part.len() - 1], 1u64), // 0.1 msat, rounds to 1
+        '0'..='9' => (amount_part, 100_000_000_000u64), // bare BTC amount
+        _ => return None,
+    };
+    let num: u64 = digits.parse().ok()?;
+    Some(num * mult_msats)
+}
+
+pub fn zap_receipts_to_json(receipts: &[ZapReceiptInfo]) -> String {
+    let mut out = String::from("[");
+    for (i, z) in receipts.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(&format!(
+            r#"{{"receipt_id":"{}","created_at":{},"sender_pubkey":"{}","recipient_pubkey":"{}","amount_sats":{},"zapped_event_id":{},"message":"{}"}}"#,
+            escape_json_string(&z.receipt_id),
+            z.created_at,
+            escape_json_string(&z.sender_pubkey),
+            escape_json_string(&z.recipient_pubkey),
+            z.amount_msats / 1000,
+            match &z.zapped_event_id {
+                Some(id) => format!("\"{}\"", escape_json_string(id)),
+                None => String::from("null"),
+            },
+            escape_json_string(&z.message),
+        ));
+    }
+    out.push(']');
+    out
+}
+
+/// Build a JSON object mapping event_id -> total_sats from a list of zap receipts.
+pub fn zap_totals_to_json(receipts: &[ZapReceiptInfo]) -> String {
+    let mut totals: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+    for z in receipts {
+        if let Some(ref eid) = z.zapped_event_id {
+            *totals.entry(eid.clone()).or_insert(0) += z.amount_msats / 1000;
+        }
+    }
+    let mut out = String::from("{");
+    for (i, (eid, total)) in totals.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(&format!("\"{}\":{}", escape_json_string(eid), total));
+    }
+    out.push('}');
+    out
 }
 
 // Create a filter for profile metadata (kind 0) by author
 pub fn filter_profile_by_author(author_pubkey: &str) -> Filter {
     Filter {
-        ids: None,
         authors: Some(vec![author_pubkey.to_string()]),
         kinds: Some(vec![KIND_METADATA]),
-        since: None,
-        until: None,
-        limit: Some(1),  // Only need the most recent profile
-        p_tags: None,
-        e_tags: None,
+        limit: Some(1),
+        ..Default::default()
     }
 }
 
@@ -724,14 +882,9 @@ pub fn filter_profile_by_author(author_pubkey: &str) -> Filter {
 #[allow(dead_code)]
 pub fn filter_profiles_by_authors(author_pubkeys: Vec<String>) -> Filter {
     Filter {
-        ids: None,
         authors: Some(author_pubkeys),
         kinds: Some(vec![KIND_METADATA]),
-        since: None,
-        until: None,
-        limit: None,  // Get all matching profiles
-        p_tags: None,
-        e_tags: None,
+        ..Default::default()
     }
 }
 
@@ -944,40 +1097,28 @@ pub fn get_following_pubkeys(contact_list: &ContactList) -> Vec<String> {
 
 pub fn filter_contact_list_by_author(author_pubkey: &str) -> Filter {
     Filter {
-        ids: None,
         authors: Some(vec![author_pubkey.to_string()]),
         kinds: Some(vec![KIND_CONTACTS]),
-        since: None,
-        until: None,
         limit: Some(1),
-        p_tags: None,
-        e_tags: None,
+        ..Default::default()
     }
 }
 
 pub fn filter_followers_by_pubkey(target_pubkey: &str) -> Filter {
     Filter {
-        ids: None,
-        authors: None,
         kinds: Some(vec![KIND_CONTACTS]),
-        since: None,
-        until: None,
         limit: Some(500),
         p_tags: Some(vec![target_pubkey.to_string()]),
-        e_tags: None,
+        ..Default::default()
     }
 }
 
 pub fn filter_relay_list_by_author(author_pubkey: &str) -> Filter {
     Filter {
-        ids: None,
         authors: Some(vec![author_pubkey.to_string()]),
         kinds: Some(vec![KIND_RELAY_LIST]),
-        since: None,
-        until: None,
         limit: Some(1),
-        p_tags: None,
-        e_tags: None,
+        ..Default::default()
     }
 }
 
@@ -1031,6 +1172,103 @@ pub fn contact_list_to_json(contact_list: &ContactList) -> String {
 
 pub struct FollowerInfo {
     pub pubkey: String,
+}
+
+/// Compact event JSON (no whitespace) for embedding inside encrypted payloads.
+pub fn event_to_json_compact(event: &Event) -> String {
+    let mut json = String::new();
+    json.push_str("{\"id\":\"");
+    json.push_str(&escape_json_string(&event.id));
+    json.push_str("\",\"pubkey\":\"");
+    json.push_str(&escape_json_string(&event.pubkey));
+    json.push_str("\",\"created_at\":");
+    json.push_str(&event.created_at.to_string());
+    json.push_str(",\"kind\":");
+    json.push_str(&event.kind.to_string());
+    json.push_str(",\"tags\":[");
+    for (i, tag) in event.tags.iter().enumerate() {
+        json.push_str("[");
+        for (j, item) in tag.iter().enumerate() {
+            json.push_str("\"");
+            json.push_str(&escape_json_string(item));
+            json.push_str("\"");
+            if j < tag.len() - 1 {
+                json.push_str(",");
+            }
+        }
+        json.push_str("]");
+        if i < event.tags.len() - 1 {
+            json.push_str(",");
+        }
+    }
+    json.push_str("],\"content\":\"");
+    json.push_str(&escape_json_string(&event.content));
+    json.push_str("\",\"sig\":\"");
+    json.push_str(&escape_json_string(&event.sig));
+    json.push_str("\"}");
+    json
+}
+
+/// Filter for searching notes by hashtag.
+pub fn filter_notes_by_hashtag(hashtag: &str, limit: u32) -> Filter {
+    Filter {
+        kinds: Some(vec![KIND_TEXT_NOTE, KIND_LONG_FORM]),
+        limit: Some(limit),
+        t_tags: Some(vec![hashtag.to_lowercase()]),
+        ..Default::default()
+    }
+}
+
+/// Filter for NIP-50 full-text search.
+pub fn filter_notes_by_search(query: &str, limit: u32, authors: Option<Vec<String>>, since: Option<u64>, until: Option<u64>) -> Filter {
+    let kinds = Some(vec![KIND_TEXT_NOTE, KIND_LONG_FORM]);
+    Filter {
+        authors,
+        kinds,
+        since,
+        until,
+        limit: Some(limit),
+        search: Some(query.to_string()),
+        ..Default::default()
+    }
+}
+
+/// Filter for NIP-17 gift wraps addressed to us: kind 1059, #p = our pubkey.
+pub fn filter_gift_wraps_received(our_pubkey_hex: &str, limit: u32, since: Option<u64>) -> Filter {
+    Filter {
+        kinds: Some(vec![KIND_GIFT_WRAP]),
+        since,
+        limit: Some(limit),
+        p_tags: Some(vec![our_pubkey_hex.to_string()]),
+        ..Default::default()
+    }
+}
+
+/// Filter for kind 10050 DM relay list by author.
+pub fn filter_dm_relay_list_by_author(author_pubkey: &str) -> Filter {
+    Filter {
+        authors: Some(vec![author_pubkey.to_string()]),
+        kinds: Some(vec![KIND_DM_RELAY_LIST]),
+        limit: Some(1),
+        ..Default::default()
+    }
+}
+
+/// Parse kind 10050 DM relay list: extract relay URLs from ["relay", "wss://..."] tags.
+pub fn parse_dm_relay_list(event: &Event) -> Result<Vec<String>, String> {
+    if event.kind != KIND_DM_RELAY_LIST {
+        return Err(format!("Expected kind 10050 event, got kind {}", event.kind));
+    }
+    let mut urls: Vec<String> = Vec::new();
+    for tag in &event.tags {
+        if tag.len() >= 2 && tag[0] == "relay" && !tag[1].is_empty() {
+            let url = tag[1].trim();
+            if !url.is_empty() && !urls.contains(&url.to_string()) {
+                urls.push(url.to_string());
+            }
+        }
+    }
+    Ok(urls)
 }
 
 pub fn followers_to_json(followers: &Vec<FollowerInfo>) -> String {

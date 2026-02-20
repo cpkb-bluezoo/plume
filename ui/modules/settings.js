@@ -23,7 +23,7 @@ import { invoke } from './tauri.js';
 import { escapeHtml, clearValidationErrors, showValidationError } from './utils.js';
 import { saveConfig, setSavingState, updateFeedInitialState } from './config.js';
 import { hexToNpub, validatePublicKey, validateSecretKey } from './keys.js';
-import { updateRelayList, bindRelayPanelHandlers, runRelayTests } from './relays.js';
+import { updateRelayList, bindRelayPanelHandlers, runRelayTests, initRelayTabs } from './relays.js';
 import { loadFollowsPanel } from './follows.js';
 import { loadMutedPanel } from './muting.js';
 import { fetchProfile } from './profile.js';
@@ -144,6 +144,7 @@ export function showSettingsPanel(key) {
         updateRelayList();
         bindRelayPanelHandlers();
         runRelayTests();
+        initRelayTabs();
     }
     if (key === 'zaps') {
         var amountEl = document.getElementById('settings-zaps-default-amount');
