@@ -194,7 +194,12 @@
     "signingPublishing": "Signing and publishing note...",
     "publishedSuccess": "Published to {success} of {total} relay(s)",
     "publishFailed": "Failed to publish to any relay",
-    "postFailed": "Failed to post note"
+    "postFailed": "Failed to post note",
+    "attach": "Attach file",
+    "uploading": "Uploading…",
+    "uploadComplete": "Upload complete",
+    "uploadFailed": "Upload failed",
+    "cancelUpload": "Cancel upload"
   },
   "note": {
     "viewProfile": "View profile",
@@ -265,5 +270,10 @@
     "loadFailed": "Failed to load bookmarks",
     "failedToPublish": "Failed to publish",
     "allRelaysUnreachable": "Could not reach any relays. Check your connection and relay settings."
+  },
+  "alpha": {
+    "preLink": "This is alpha software. Please report any bugs",
+    "linkText": "here",
+    "postLink": "."
   }
 }

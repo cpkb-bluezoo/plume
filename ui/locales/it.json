@@ -194,7 +194,12 @@
     "signingPublishing": "Firma e pubblicazione in corso…",
     "publishedSuccess": "Pubblicato su {success} di {total} relay",
     "publishFailed": "Pubblicazione fallita su tutti i relay",
-    "postFailed": "Pubblicazione della nota fallita"
+    "postFailed": "Pubblicazione della nota fallita",
+    "attach": "Allega file",
+    "uploading": "Caricamento…",
+    "uploadComplete": "Caricamento completato",
+    "uploadFailed": "Caricamento fallito",
+    "cancelUpload": "Annulla caricamento"
   },
   "note": {
     "viewProfile": "Vedi profilo",
@@ -265,5 +270,10 @@
     "loadFailed": "Impossibile caricare i segnalibri",
     "failedToPublish": "Pubblicazione non riuscita",
     "allRelaysUnreachable": "Impossibile raggiungere i relay. Controlla la connessione e le impostazioni dei relay."
+  },
+  "alpha": {
+    "preLink": "Questo è un software alfa. Si prega di segnalare eventuali bug",
+    "linkText": "qui",
+    "postLink": "."
   }
 }

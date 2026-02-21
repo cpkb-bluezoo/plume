@@ -22,19 +22,13 @@
 
 use std::io;
 use std::pin::Pin;
-use std::sync::{Arc, OnceLock};
 use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpStream;
 use tokio_rustls::client::TlsStream;
 
-use crate::debug_log;
-use tokio_rustls::rustls::ClientConfig;
 use tokio_rustls::rustls::pki_types::ServerName;
 use tokio_rustls::TlsConnector;
-
-/// Cached TLS config (loaded once, reused for all connections).
-static TLS_CONFIG: OnceLock<Arc<ClientConfig>> = OnceLock::new();
 
 /// Unified stream: plain TCP or TLS. Implements AsyncRead + AsyncWrite.
 pub enum WsStream {
@@ -82,36 +76,11 @@ impl AsyncWrite for WsStream {
     }
 }
 
-/// Install the rustls crypto provider. Must be called once at startup before any TLS use.
-/// Selects ring to avoid ambiguity when both ring and aws-lc-rs features are enabled.
-pub fn install_crypto_provider() {
-    let _ = tokio_rustls::rustls::crypto::ring::default_provider().install_default();
-}
-
-/// TLS client config for WebSocket connections.
-/// Loaded once from the OS native certificate store, then cached for all connections.
-pub fn ws_tls_config() -> Arc<ClientConfig> {
-    TLS_CONFIG.get_or_init(|| {
-        let mut root_store = tokio_rustls::rustls::RootCertStore::empty();
-        let cert_result = rustls_native_certs::load_native_certs();
-        for cert in cert_result.certs {
-            if let Err(e) = root_store.add(cert) {
-                debug_log!("Warning: failed to add a native root cert: {}", e);
-            }
-        }
-        debug_log!("Loaded {} root certificates from system store", root_store.len());
-        let config = ClientConfig::builder()
-            .with_root_certificates(root_store)
-            .with_no_client_auth();
-        Arc::new(config)
-    }).clone()
-}
-
 /// Connect with TLS to host:port, returning a WsStream::Tls.
 pub async fn connect_tls(tcp: TcpStream, host: &str) -> io::Result<WsStream> {
     let server_name: ServerName<'static> = ServerName::try_from(host.to_string())
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid host name"))?;
-    let connector = TlsConnector::from(ws_tls_config());
+    let connector = TlsConnector::from(crate::tls::ws_tls_config());
     let tls = connector
         .connect(server_name, tcp)
         .await

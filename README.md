@@ -11,6 +11,7 @@ A cross-platform Nostr desktop client built with Rust and Tauri.
 - Browse Nostr notes from multiple relays
 - Search notes by text, hashtag, or advanced filters
 - View images and videos embedded in notes
+- Media uploads to Blossom or NIP-96 servers with progress feedback
 - Manage your Nostr identity (public/private keys)
 - Configure relay connections
 - Private direct messages with NIP-17 support (NIP-04 backward compatible)
@@ -56,9 +57,12 @@ Plume implements the following [NIPs](https://github.com/nostr-protocol/nips) (N
 | [57](https://github.com/nostr-protocol/nips/blob/master/57.md) | Lightning zaps (kind 9734) | Zap requests via LUD-16 (`lud16`), LNURL callback flow, configurable default amount |
 | [59](https://github.com/nostr-protocol/nips/blob/master/59.md) | Gift wrap (kind 1059) | Three-layer encryption (rumor → seal → gift wrap) with ephemeral keys and randomised timestamps for metadata protection |
 | [65](https://github.com/nostr-protocol/nips/blob/master/65.md) | Relay list metadata (kind 10002) | Fetching and displaying relay lists, read/write designations |
+| [96](https://github.com/nostr-protocol/nips/blob/master/96.md) | HTTP File Storage Integration | NIP-96 media upload with NIP-98 auth; auto-discovery via `.well-known/nostr/nip96.json` |
+| [98](https://github.com/nostr-protocol/nips/blob/master/98.md) | HTTP Auth (kind 27235) | Signed auth events for NIP-96 and Blossom media server requests |
 
 ### Additional protocol features
 
+- **[Blossom](https://github.com/hzrd149/blossom) media upload** (BUD-01/02/04): upload/delete with kind 24242 auth events; HTTP/2 preferred with ALPN
 - **Schnorr signature verification** (BIP-340 / secp256k1) for event signing and verification
 - **Inline media embedding** for images (jpg, png, gif, webp) and video (mp4, webm, mov) URLs in note content
 - **`nostr:` URI embedding** in notes: `npub`/`nprofile` rendered as clickable profile links, `note`/`nevent` rendered as embedded note cards with recursive resolution (depth limit of 5)

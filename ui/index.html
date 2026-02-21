@@ -499,6 +499,12 @@
                     <div id="note-detail-subject-wrap" class="note-detail-subject-wrap"></div>
                     <div id="note-detail-reply-compose" class="note-detail-reply-compose">
                         <textarea id="note-detail-reply-content" rows="3" data-i18n-placeholder="noteDetail.replyPlaceholder" placeholder="Write a reply…" maxlength="10000"></textarea>
+                        <div class="reply-attach-row">
+                            <button type="button" id="reply-attach-btn" class="compose-attach-btn" data-i18n-title="composeModal.attach" data-i18n-aria-label="composeModal.attach">
+                                <img src="icons/paperclip.svg" class="compose-attach-icon" alt="">
+                            </button>
+                            <div id="reply-uploads" class="compose-uploads"></div>
+                        </div>
                         <button type="button" id="note-detail-reply-btn" class="btn btn-primary" data-i18n="noteDetail.reply">Reply</button>
                     </div>
                     <div id="note-detail-replies" class="note-detail-replies"></div>
@@ -568,6 +574,12 @@
                             <textarea id="compose-content" data-i18n-placeholder="composeModal.placeholder" rows="5" maxlength="10000"></textarea>
                             <div class="char-count"><span id="compose-char-count"></span></div>
                         </div>
+                        <div class="compose-attach-row">
+                            <button type="button" id="compose-attach-btn" class="compose-attach-btn" data-i18n-title="composeModal.attach" data-i18n-aria-label="composeModal.attach">
+                                <img src="icons/paperclip.svg" class="compose-attach-icon" alt="">
+                            </button>
+                            <div id="compose-uploads" class="compose-uploads"></div>
+                        </div>
                         <div id="compose-error" class="compose-error"></div>
                         <div id="compose-status" class="compose-status"></div>
                         <div class="form-actions">
@@ -600,6 +612,10 @@
                 </div>
             </div>
         </div>
+    </div>
+
+    <div id="alpha-bar" class="alpha-bar">
+        <span data-i18n="alpha.preLink">This is alpha software. Please report any bugs</span> <a href="https://github.com/cpkb-bluezoo/plume/issues" target="_blank" rel="noopener noreferrer" data-i18n="alpha.linkText">here</a><span data-i18n="alpha.postLink">.</span>
     </div>
 
     <script src="i18n.js"></script>

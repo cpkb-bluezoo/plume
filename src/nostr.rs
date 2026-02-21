@@ -66,6 +66,10 @@ pub const KIND_CHAT_MESSAGE: u32 = 14;
 pub const KIND_GIFT_WRAP: u32 = 1059;
 pub const KIND_ZAP_REQUEST: u32 = 9734; // NIP-57 Lightning zap request
 pub const KIND_ZAP_RECEIPT: u32 = 9735; // NIP-57 Lightning zap receipt
+/// Blossom auth event (BUD-01): tags ["t", action], ["x", sha256], ["expiration", ts]
+pub const KIND_BLOSSOM_AUTH: u32 = 24242;
+/// NIP-98 HTTP Auth event: tags ["u", url], ["method", method]
+pub const KIND_HTTP_AUTH: u32 = 27235;
 /// NIP-17: DM relay list (tags: ["relay", "wss://..."])
 pub const KIND_DM_RELAY_LIST: u32 = 10050;
 pub const KIND_LONG_FORM: u32 = 30023;  // NIP-23 Long-form content (articles)

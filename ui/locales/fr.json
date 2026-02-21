@@ -194,7 +194,12 @@
     "signingPublishing": "Signature et publication en cours…",
     "publishedSuccess": "Publié sur {success} relais sur {total}",
     "publishFailed": "Échec de publication sur tous les relais",
-    "postFailed": "Échec de publication de la note"
+    "postFailed": "Échec de publication de la note",
+    "attach": "Joindre un fichier",
+    "uploading": "Téléversement…",
+    "uploadComplete": "Téléversement terminé",
+    "uploadFailed": "Échec du téléversement",
+    "cancelUpload": "Annuler le téléversement"
   },
   "note": {
     "viewProfile": "Voir le profil",
@@ -265,5 +270,10 @@
     "loadFailed": "Échec du chargement des favoris",
     "failedToPublish": "Échec de la publication",
     "allRelaysUnreachable": "Impossible de contacter les relais. Vérifiez votre connexion et vos paramètres de relais."
+  },
+  "alpha": {
+    "preLink": "Ceci est un logiciel alpha. Veuillez signaler tout bug",
+    "linkText": "ici",
+    "postLink": "."
   }
 }

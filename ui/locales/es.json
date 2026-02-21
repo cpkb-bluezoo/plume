@@ -194,7 +194,12 @@
     "signingPublishing": "Firmando y publicando nota…",
     "publishedSuccess": "Publicado en {success} de {total} relay(s)",
     "publishFailed": "No se pudo publicar en ningún relay",
-    "postFailed": "Error al publicar la nota"
+    "postFailed": "Error al publicar la nota",
+    "attach": "Adjuntar archivo",
+    "uploading": "Subiendo…",
+    "uploadComplete": "Subida completada",
+    "uploadFailed": "Error en la subida",
+    "cancelUpload": "Cancelar subida"
   },
   "note": {
     "viewProfile": "Ver perfil",
@@ -265,5 +270,10 @@
     "loadFailed": "Error al cargar los marcadores",
     "failedToPublish": "Error al publicar",
     "allRelaysUnreachable": "No se pudo conectar a ningún relay. Verifica tu conexión y la configuración de relays."
+  },
+  "alpha": {
+    "preLink": "Este es un software alfa. Por favor, informe de cualquier error",
+    "linkText": "aquí",
+    "postLink": "."
   }
 }

@@ -25,11 +25,14 @@
 mod config;
 mod crypto;
 mod debug;
+mod http;
 mod json;
 mod keys;
+mod media;
 mod messages_store;
 mod nostr;
 mod relay;
+mod tls;
 mod websocket;
 
 // Import what we need from external crates
@@ -1324,7 +1327,8 @@ async fn fetch_dm_relay_list(pubkey: String, relay_urls: Vec<String>) -> Result<
 // ============================================================
 
 /// Handler for LNURL response JSON: extracts callback, allowsNostr, minSendable, maxSendable.
-struct LnurlResponseHandler {
+/// LNURL response: extracts callback, min/max, allowsNostr.
+struct LnurlJsonHandler {
     current_field: Option<String>,
     callback: Option<String>,
     allows_nostr: bool,
@@ -1332,7 +1336,7 @@ struct LnurlResponseHandler {
     max_sendable: u64,
 }
 
-impl LnurlResponseHandler {
+impl LnurlJsonHandler {
     fn new() -> Self {
         Self {
             current_field: None,
@@ -1344,7 +1348,7 @@ impl LnurlResponseHandler {
     }
 }
 
-impl JsonContentHandler for LnurlResponseHandler {
+impl JsonContentHandler for LnurlJsonHandler {
     fn start_object(&mut self) {}
     fn end_object(&mut self) {}
     fn start_array(&mut self) {}
@@ -1378,19 +1382,22 @@ impl JsonContentHandler for LnurlResponseHandler {
     fn null_value(&mut self) {}
 }
 
-/// Handler for zap callback response: extracts pr (bolt11 invoice).
-struct ZapCallbackHandler {
+/// Zap callback response: extracts pr (bolt11 invoice).
+struct ZapCallbackJsonHandler {
     current_field: Option<String>,
     pr: Option<String>,
 }
 
-impl ZapCallbackHandler {
+impl ZapCallbackJsonHandler {
     fn new() -> Self {
-        Self { current_field: None, pr: None }
+        Self {
+            current_field: None,
+            pr: None,
+        }
     }
 }
 
-impl JsonContentHandler for ZapCallbackHandler {
+impl JsonContentHandler for ZapCallbackJsonHandler {
     fn start_object(&mut self) {}
     fn end_object(&mut self) {}
     fn start_array(&mut self) {}
@@ -1410,31 +1417,212 @@ impl JsonContentHandler for ZapCallbackHandler {
     fn null_value(&mut self) {}
 }
 
-fn parse_json_with_handler<H: JsonContentHandler>(body: &str, handler: &mut H) -> Result<(), String> {
-    let mut parser = JsonParser::new();
-    let mut buf = BytesMut::from(body.as_bytes());
-    parser.receive(&mut buf, handler).map_err(|e| format!("JSON parse error: {}", e))?;
-    parser.close(handler).map_err(|e| format!("JSON parse error: {}", e))?;
-    Ok(())
+/// ResponseHandler for the first LNURL discovery request. On complete,
+/// chains into the zap callback request.
+struct LnurlDiscoveryResponseHandler {
+    app: tauri::AppHandle,
+    relays: Vec<String>,
+    target_pubkey: String,
+    event_id: String,
+    amount_msats: u64,
+    secret_key: String,
+    json_parser: JsonParser,
+    json_handler: LnurlJsonHandler,
+    success: bool,
 }
 
+impl http::ResponseHandler for LnurlDiscoveryResponseHandler {
+    fn ok(&mut self, _response: &http::Response) {
+        self.success = true;
+    }
+    fn error(&mut self, response: &http::Response) {
+        self.success = false;
+        let payload = format!(
+            r#"{{"error":"LNURL endpoint returned {}"}}"#,
+            response.code
+        );
+        let _ = self.app.emit("zap-invoice-failed", &payload);
+    }
+    fn header(&mut self, _name: &str, _value: &str) {}
+    fn start_body(&mut self) {}
+    fn body_chunk(&mut self, data: &[u8]) {
+        if self.success {
+            let mut buf = BytesMut::from(data);
+            let _ = self.json_parser.receive(&mut buf, &mut self.json_handler);
+        }
+    }
+    fn end_body(&mut self) {
+        let _ = self.json_parser.close(&mut self.json_handler);
+    }
+    fn complete(&mut self) {
+        if !self.success {
+            return;
+        }
+
+        let callback = match self.json_handler.callback.take() {
+            Some(c) => c,
+            None => {
+                let _ = self.app.emit(
+                    "zap-invoice-failed",
+                    &r#"{"error":"LNURL response missing callback"}"#,
+                );
+                return;
+            }
+        };
+        if !self.json_handler.allows_nostr {
+            let _ = self.app.emit(
+                "zap-invoice-failed",
+                &r#"{"error":"Recipient does not support Nostr zaps"}"#,
+            );
+            return;
+        }
+
+        let amount_msats = self
+            .amount_msats
+            .clamp(self.json_handler.min_sendable, self.json_handler.max_sendable);
+
+        let event_id_opt = if self.event_id.trim().is_empty() {
+            None
+        } else {
+            Some(self.event_id.as_str())
+        };
+        let zap_event = match crypto::create_signed_zap_request(
+            &self.relays,
+            &self.target_pubkey,
+            event_id_opt,
+            amount_msats,
+            "",
+            &self.secret_key,
+        ) {
+            Ok(e) => e,
+            Err(e) => {
+                let payload = format!(r#"{{"error":"{}"}}"#, e.replace('"', "\\\""));
+                let _ = self.app.emit("zap-invoice-failed", &payload);
+                return;
+            }
+        };
+        let zap_json = nostr::event_to_json(&zap_event);
+        let zap_b64 = BASE64.encode(zap_json.as_bytes());
+
+        let sep = if callback.contains('?') { '&' } else { '?' };
+        let callback_with_params = format!(
+            "{}{}amount={}&nostr={}",
+            callback,
+            sep,
+            amount_msats,
+            urlencoding::encode(&zap_b64)
+        );
+
+        let parsed = match url::Url::parse(&callback_with_params) {
+            Ok(u) => u,
+            Err(e) => {
+                let payload = format!(r#"{{"error":"Invalid callback URL: {}"}}"#, e);
+                let _ = self.app.emit("zap-invoice-failed", &payload);
+                return;
+            }
+        };
+        let host = match parsed.host_str() {
+            Some(h) => h.to_string(),
+            None => return,
+        };
+        let secure = parsed.scheme() == "https";
+        let port = parsed.port().unwrap_or(if secure { 443 } else { 80 });
+        let path_and_query = match parsed.query() {
+            Some(q) => format!("{}?{}", parsed.path(), q),
+            None => parsed.path().to_string(),
+        };
+
+        let client = http::HttpClient::new(&host, port, secure);
+        let handler = Box::new(ZapCallbackResponseHandler {
+            app: self.app.clone(),
+            json_parser: JsonParser::new(),
+            json_handler: ZapCallbackJsonHandler::new(),
+            success: false,
+        });
+        client.get(&path_and_query).send(handler);
+    }
+    fn failed(&mut self, error: &std::io::Error) {
+        let payload = format!(
+            r#"{{"error":"{}"}}"#,
+            error.to_string().replace('"', "\\\"")
+        );
+        let _ = self.app.emit("zap-invoice-failed", &payload);
+    }
+}
+
+/// ResponseHandler for the zap callback request. Extracts invoice, emits event.
+struct ZapCallbackResponseHandler {
+    app: tauri::AppHandle,
+    json_parser: JsonParser,
+    json_handler: ZapCallbackJsonHandler,
+    success: bool,
+}
+
+impl http::ResponseHandler for ZapCallbackResponseHandler {
+    fn ok(&mut self, _response: &http::Response) {
+        self.success = true;
+    }
+    fn error(&mut self, response: &http::Response) {
+        self.success = false;
+        let payload = format!(
+            r#"{{"error":"Zap callback returned {}"}}"#,
+            response.code
+        );
+        let _ = self.app.emit("zap-invoice-failed", &payload);
+    }
+    fn header(&mut self, _name: &str, _value: &str) {}
+    fn start_body(&mut self) {}
+    fn body_chunk(&mut self, data: &[u8]) {
+        if self.success {
+            let mut buf = BytesMut::from(data);
+            let _ = self.json_parser.receive(&mut buf, &mut self.json_handler);
+        }
+    }
+    fn end_body(&mut self) {
+        let _ = self.json_parser.close(&mut self.json_handler);
+    }
+    fn complete(&mut self) {
+        if !self.success {
+            return;
+        }
+        if let Some(pr) = self.json_handler.pr.take() {
+            let pr_escaped = pr.replace('\\', "\\\\").replace('"', "\\\"");
+            let payload = format!(r#"{{"pr":"{}"}}"#, pr_escaped);
+            let _ = self.app.emit("zap-invoice-ready", &payload);
+        } else {
+            let _ = self.app.emit(
+                "zap-invoice-failed",
+                &r#"{"error":"Callback response missing pr (invoice)"}"#,
+            );
+        }
+    }
+    fn failed(&mut self, error: &std::io::Error) {
+        let payload = format!(
+            r#"{{"error":"{}"}}"#,
+            error.to_string().replace('"', "\\\"")
+        );
+        let _ = self.app.emit("zap-invoice-failed", &payload);
+    }
+}
+
+/// Fire-and-forget: starts zap invoice request. Invoice delivered via
+/// "zap-invoice-ready" event, errors via "zap-invoice-failed" event.
 #[tauri::command]
 async fn request_zap_invoice(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     target_lud16: String,
     amount_sats: u32,
     event_id: String,
     target_pubkey: String,
-) -> Result<String, String> {
+) -> Result<(), String> {
     let config_dir = state.config_dir();
-    let cfg = match config::load_config(&config_dir) {
-        Ok(c) => c,
-        Err(e) => return Err(format!("Failed to load config: {}", e)),
-    };
-    let secret_key = match &cfg.private_key {
-        Some(k) => k.clone(),
-        None => return Err(String::from("No private key configured.")),
-    };
+    let cfg = config::load_config(&config_dir).map_err(|e| format!("Failed to load config: {}", e))?;
+    let secret_key = cfg
+        .private_key
+        .as_ref()
+        .ok_or("No private key configured.")?
+        .clone();
     if target_lud16.is_empty() || target_pubkey.is_empty() {
         return Err(String::from("target_lud16 and target_pubkey are required"));
     }
@@ -1448,55 +1636,23 @@ async fn request_zap_invoice(
     }
     let lnurl_user = parts[0];
     let domain = parts[1];
-    let lnurl_url = format!("https://{}/.well-known/lnurlp/{}", domain, lnurl_user);
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
-        .build()
-        .map_err(|e| format!("HTTP client: {}", e))?;
-    let resp = client.get(&lnurl_url).send().await.map_err(|e| format!("LNURL fetch: {}", e))?;
-    let status = resp.status();
-    if !status.is_success() {
-        return Err(format!("LNURL endpoint returned {}", status));
-    }
-    let body = resp.text().await.map_err(|e| format!("LNURL response: {}", e))?;
-
-    let mut lnurl_handler = LnurlResponseHandler::new();
-    parse_json_with_handler(&body, &mut lnurl_handler)?;
-
-    let callback = lnurl_handler.callback.ok_or("LNURL response missing callback")?;
-    if !lnurl_handler.allows_nostr {
-        return Err(String::from("Recipient does not support Nostr zaps (allowsNostr)"));
-    }
-    let amount_msats = amount_msats.clamp(lnurl_handler.min_sendable, lnurl_handler.max_sendable);
-
-    let event_id_opt = if event_id.trim().is_empty() { None } else { Some(event_id.as_str()) };
-    let zap_event = crypto::create_signed_zap_request(
-        &cfg.relays,
-        &target_pubkey,
-        event_id_opt,
+    let client = http::HttpClient::new(domain, 443, true);
+    let path = format!("/.well-known/lnurlp/{}", lnurl_user);
+    let handler = Box::new(LnurlDiscoveryResponseHandler {
+        app,
+        relays: cfg.relays.clone(),
+        target_pubkey,
+        event_id,
         amount_msats,
-        "",
-        &secret_key,
-    )?;
-    let zap_json = nostr::event_to_json(&zap_event);
-    let zap_b64 = BASE64.encode(zap_json.as_bytes());
+        secret_key,
+        json_parser: JsonParser::new(),
+        json_handler: LnurlJsonHandler::new(),
+        success: false,
+    });
+    client.get(&path).send(handler);
 
-    let sep = if callback.contains('?') { '&' } else { '?' };
-    let callback_with_params = format!("{}{}amount={}&nostr={}", callback, sep, amount_msats, urlencoding::encode(&zap_b64));
-
-    let resp2 = client.get(&callback_with_params).send().await.map_err(|e| format!("Callback fetch: {}", e))?;
-    if !resp2.status().is_success() {
-        return Err(format!("Zap callback returned {}", resp2.status()));
-    }
-    let body2 = resp2.text().await.map_err(|e| format!("Callback response: {}", e))?;
-
-    let mut zap_handler = ZapCallbackHandler::new();
-    parse_json_with_handler(&body2, &mut zap_handler)?;
-
-    let pr = zap_handler.pr.ok_or("Callback response missing pr (invoice)")?;
-    let pr_escaped = pr.replace('\\', "\\\\").replace('"', "\\\"");
-    Ok(format!(r#"{{"pr":"{}"}}"#, pr_escaped))
+    Ok(())
 }
 
 // ============================================================
@@ -1596,6 +1752,107 @@ async fn fetch_note_zap_totals(event_ids: Vec<String>, relay_urls: Vec<String>) 
         }
     }
     Ok(nostr::zap_totals_to_json(&receipts))
+}
+
+// ============================================================
+// Media Upload Commands
+// ============================================================
+
+/// Open a native file dialog to pick a media file for upload.
+/// Returns a JSON string `{"path":"...","name":"..."}` if a file was selected,
+/// or an empty string if cancelled.
+#[tauri::command(rename_all = "snake_case")]
+async fn pick_media_file() -> Result<String, String> {
+    let handle = rfd::AsyncFileDialog::new()
+        .add_filter(
+            "Media",
+            &[
+                "png", "jpg", "jpeg", "gif", "webp", "svg", "mp4", "webm", "mov", "avi", "mp3",
+                "ogg", "wav", "flac", "pdf",
+            ],
+        )
+        .set_title("Select file to upload")
+        .pick_file()
+        .await;
+
+    match handle {
+        Some(file) => {
+            let path = file.path().to_string_lossy().to_string();
+            let name = file.file_name();
+            Ok(format!(
+                r#"{{"path":"{}","name":"{}"}}"#,
+                path.replace('\\', "\\\\").replace('"', "\\\""),
+                name.replace('\\', "\\\\").replace('"', "\\\""),
+            ))
+        }
+        None => Ok(String::new()),
+    }
+}
+
+/// Upload a file to the configured media server.
+/// Accepts a filesystem path from the frontend (file is read by the backend).
+/// Fire-and-forget: starts upload, returns immediately. Progress, completion,
+/// and failure delivered via "upload-progress", "upload-complete",
+/// "upload-failed" Tauri events.
+#[tauri::command(rename_all = "snake_case")]
+async fn upload_media(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    file_path: String,
+    file_name: String,
+    upload_id: String,
+) -> Result<(), String> {
+    let config_dir = state.config_dir();
+    let cfg = config::load_config(&config_dir).map_err(|e| format!("Config: {}", e))?;
+    let secret_key = cfg
+        .private_key
+        .as_ref()
+        .ok_or("No private key configured. Add your nsec in Settings to upload.")?
+        .clone();
+    let server_url = cfg.media_server_url.clone();
+    if server_url.is_empty() {
+        return Err(String::from(
+            "No media server configured. Set one in Settings.",
+        ));
+    }
+
+    let content_type = mime_guess::from_path(&file_name)
+        .first_or_octet_stream()
+        .to_string();
+
+    media::start_upload(
+        app,
+        &server_url,
+        &file_path,
+        &file_name,
+        &content_type,
+        &secret_key,
+        &upload_id,
+    );
+
+    Ok(())
+}
+
+/// Fire-and-forget: starts delete, returns immediately.
+#[tauri::command(rename_all = "snake_case")]
+async fn delete_media(
+    state: tauri::State<'_, AppState>,
+    file_hash: String,
+) -> Result<(), String> {
+    let config_dir = state.config_dir();
+    let cfg = config::load_config(&config_dir).map_err(|e| format!("Config: {}", e))?;
+    let secret_key = cfg
+        .private_key
+        .as_ref()
+        .ok_or("No private key configured.")?
+        .clone();
+    let server_url = cfg.media_server_url.clone();
+    if server_url.is_empty() {
+        return Err(String::from("No media server configured."));
+    }
+
+    media::start_delete(&server_url, &file_hash, &secret_key);
+    Ok(())
 }
 
 #[tauri::command]
@@ -1852,7 +2109,7 @@ fn events_to_json_array(events: &Vec<nostr::Event>) -> String {
 
 fn main() {
     // Install the rustls crypto provider before any TLS connections.
-    websocket::stream::install_crypto_provider();
+    tls::install_crypto_provider();
 
     let base_dir: String = match config::get_config_dir() {
         Some(path) => path,
@@ -1974,6 +2231,9 @@ fn main() {
             request_zap_invoice,
             fetch_zap_receipts,
             fetch_note_zap_totals,
+            pick_media_file,
+            upload_media,
+            delete_media,
             sign_event,
             get_derived_public_key,
             generate_keypair,

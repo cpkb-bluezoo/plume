@@ -312,7 +312,7 @@ export function fetchAndDisplayZapTotals() {
         .catch(function() {});
 }
 
-// Request a zap invoice and open it with the user's wallet (lightning: URL).
+// Fire-and-forget: request a zap invoice. Results arrive via events.
 export function performZap(targetPubkey, eventId, zapBtn) {
     if (!targetPubkey || !state.config || !state.profileCache) {
         return;
@@ -327,28 +327,48 @@ export function performZap(targetPubkey, eventId, zapBtn) {
     if (zapBtn) {
         zapBtn.disabled = true;
     }
+
+    // Store ref so event handler can re-enable
+    window._pendingZapBtn = zapBtn;
+
     invoke('request_zap_invoice', {
         target_lud16: profile.lud16.trim(),
         amount_sats: amount,
         event_id: eventId || '',
         target_pubkey: targetPubkey
-    })
-        .then(function(result) {
-            var data = typeof result === 'string' ? JSON.parse(result) : result;
+    }).catch(function(err) {
+        console.error('Zap failed:', err);
+        alert((window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t('errors.failedToPublish') : 'Failed to get zap invoice') + ': ' + err);
+        if (zapBtn) {
+            zapBtn.disabled = false;
+        }
+    });
+}
+
+export function initZapEventListeners() {
+    if (window.__TAURI__ && window.__TAURI__.event && typeof window.__TAURI__.event.listen === 'function') {
+        window.__TAURI__.event.listen('zap-invoice-ready', function(ev) {
+            var data = typeof ev.payload === 'string' ? JSON.parse(ev.payload) : ev.payload;
             if (data && data.pr) {
                 var url = data.pr.indexOf('ln') === 0 ? 'lightning:' + data.pr : data.pr;
                 window.open(url, '_blank');
             }
-        })
-        .catch(function(err) {
-            console.error('Zap failed:', err);
-            alert((window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t('errors.failedToPublish') : 'Failed to get zap invoice') + ': ' + err);
-        })
-        .finally(function() {
-            if (zapBtn) {
-                zapBtn.disabled = false;
+            if (window._pendingZapBtn) {
+                window._pendingZapBtn.disabled = false;
+                window._pendingZapBtn = null;
             }
         });
+        window.__TAURI__.event.listen('zap-invoice-failed', function(ev) {
+            var data = typeof ev.payload === 'string' ? JSON.parse(ev.payload) : ev.payload;
+            var msg = (data && data.error) ? data.error : 'Failed to get zap invoice';
+            console.error('Zap failed:', msg);
+            alert((window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t('errors.failedToPublish') : 'Failed to get zap invoice') + ': ' + msg);
+            if (window._pendingZapBtn) {
+                window._pendingZapBtn.disabled = false;
+                window._pendingZapBtn = null;
+            }
+        });
+    }
 }
 
 // Perform a like (reaction) and update UI on success
@@ -913,24 +933,26 @@ export function processNoteContent(content, depth) {
         return escapeHtml(fullMatch);
     });
 
-    // Find image URLs and convert to img tags (only safe http/https URLs)
-    const imageAlt = (window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t('content.image') : 'Image');
-    const safeImageAlt = escapeHtml(imageAlt);
-    const imageRegex = /(https?:\/\/[^\s]+\.(jpg|jpeg|png|gif|webp)(\?[^\s]*)?)/gi;
-    html = html.replace(imageRegex, function(match) {
-        var safe = sanitizeUrl(match);
-        return safe ? '<img src="' + safe + '" alt="' + safeImageAlt + '" loading="lazy">' : escapeHtml(match);
-    });
+    // Standalone URLs (sole content of a line) are rendered as media via
+    // progressive probing: try <img> first (safe, sanitises SVG, checks
+    // Content-Type).  On error, try <video>.  On error again, fall back to
+    // a plain link.  No file-extension guessing, no script execution risk.
+    var lines = html.split('\n');
+    for (var li = 0; li < lines.length; li++) {
+        var trimmed = lines[li].trim();
+        var urlOnly = trimmed.match(/^(https?:\/\/[^\s<]+)$/);
+        if (urlOnly) {
+            var safe = sanitizeUrl(urlOnly[1]);
+            if (safe) {
+                lines[li] = '<img src="' + safe + '" class="note-media-probe" loading="lazy"'
+                    + ' onerror="this.onerror=null;var v=document.createElement(\'video\');v.src=this.src;v.controls=true;v.preload=\'metadata\';v.className=\'note-media-probe\';v.onerror=function(){var a=document.createElement(\'a\');a.href=v.src;a.target=\'_blank\';a.rel=\'noopener noreferrer\';a.textContent=v.src;v.replaceWith(a)};this.replaceWith(v)">';
+            }
+        }
+    }
+    html = lines.join('\n');
 
-    // Find video URLs and convert to video tags
-    const videoRegex = /(https?:\/\/[^\s]+\.(mp4|webm|mov)(\?[^\s]*)?)/gi;
-    html = html.replace(videoRegex, function(match) {
-        var safe = sanitizeUrl(match);
-        return safe ? '<video src="' + safe + '" controls preload="metadata"></video>' : escapeHtml(match);
-    });
-
-    // Convert plain URLs to links (but not ones we already converted to media/link tags)
-    const urlRegex = /(?<!src=")(https?:\/\/[^\s<]+)(?![^<]*>)/gi;
+    // Convert remaining plain URLs to links (skip ones already in tags)
+    const urlRegex = /(?<!src="|href="|data=")(https?:\/\/[^\s<]+)(?![^<]*>)/gi;
     html = html.replace(urlRegex, function(match) {
         var safe = sanitizeUrl(match);
         return safe ? '<a href="' + safe + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(match) + '</a>' : escapeHtml(match);

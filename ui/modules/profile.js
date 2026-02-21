@@ -443,7 +443,7 @@ export function appendProfileNoteCardSync(note) {
         card = createNoteCard(note, noteIndex, 'profile-', replyToPubkey);
     }
     var viewedPubkey = effectivePubkey ? String(effectivePubkey).toLowerCase() : '';
-    if (viewedPubkey && String((note.pubkey || '')).toLowerCase() === viewedPubkey) {
+    if (note.kind !== 6 && viewedPubkey && String((note.pubkey || '')).toLowerCase() === viewedPubkey) {
         var profileForAvatar = state.viewedProfile || (effectivePubkey === state.publicKeyHex ? state.profile : null);
         if (profileForAvatar && profileForAvatar.picture) {
             setCardAvatar(card, profileForAvatar.picture);
@@ -784,7 +784,7 @@ export function displayProfileNotes(notes) {
             card = createNoteCard(note, noteIndex, prefix, replyToPubkey);
         }
         container.appendChild(card);
-        if (viewedProfile && viewedPubkey && String((note.pubkey || '')).toLowerCase() === viewedPubkey) {
+        if (note.kind !== 6 && viewedProfile && viewedPubkey && String((note.pubkey || '')).toLowerCase() === viewedPubkey) {
             setCardAvatar(card, viewedProfile.picture);
         }
         if (note.kind === 1 || note.kind === 30023) {

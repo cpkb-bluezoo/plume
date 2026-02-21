@@ -206,6 +206,7 @@ export async function openNoteDetail(noteIdOrNote) {
     } catch (e) {
         console.error('Failed to fetch replies:', e);
     }
+    repliesRaw = repliesRaw.filter(function(n) { return n.kind !== 6; });
     state.noteDetailReplies = buildReplyThread(repliesRaw, noteId).filter(function(item) { return !isNoteMuted(item.note); });
     renderNoteDetailPage();
 }

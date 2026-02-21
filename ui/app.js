@@ -35,7 +35,7 @@ import {
     setCardAvatar, isNoteLiked, performZap, performLike,
     openLikeEmojiModal, closeLikeEmojiModal, handleLikeMouseDown, handleLikeMouseUp, handleLikeMouseLeave,
     createNoteCard, createRepostCard, verifyNote, resolveNostrEmbeds, displayNotes,
-    isNoteBookmarked
+    isNoteBookmarked, initZapEventListeners
 } from './modules/notes.js';
 import {
     startInitialFeedFetch, pollForNewNotes, fetchNotesFirehoseOnHomeClick,
@@ -57,7 +57,8 @@ import {
     checkUnreadDmsOnStartup, startDmStream
 } from './modules/messages.js';
 import {
-    openCompose, closeCompose, updateCharCount, handleComposeSubmit
+    openCompose, closeCompose, updateCharCount, handleComposeSubmit,
+    initComposeUploads, initReplyUploads, clearReplyUploads
 } from './modules/compose.js';
 import {
     openSettings, closeSettings, showSettingsPanel,
@@ -492,6 +493,13 @@ async function init() {
             composeContent.addEventListener('input', updateCharCount);
         }
 
+        // Media upload buttons for compose and reply
+        initComposeUploads();
+        initReplyUploads();
+
+        // Zap invoice event listeners
+        initZapEventListeners();
+
         // Generate keys button (on profile when no key)
         debugLog('Looking for generate-keys-btn...');
         const generateKeysBtn = document.getElementById('generate-keys-btn');
@@ -794,6 +802,7 @@ async function init() {
                     var result = JSON.parse(resultJson);
                     if (result.success_count > 0) {
                         noteDetailReplyContent.value = '';
+                        clearReplyUploads();
                         var replyJson = await invoke('fetch_replies_to_event', {
                             relay_urls: getEffectiveRelays(),
                             event_id: state.noteDetailSubjectId,

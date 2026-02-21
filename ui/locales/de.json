@@ -194,7 +194,12 @@
     "signingPublishing": "Notiz wird signiert und veröffentlicht…",
     "publishedSuccess": "An {success} von {total} Relais veröffentlicht",
     "publishFailed": "Veröffentlichung an keinem Relais möglich",
-    "postFailed": "Notiz konnte nicht veröffentlicht werden"
+    "postFailed": "Notiz konnte nicht veröffentlicht werden",
+    "attach": "Datei anhängen",
+    "uploading": "Hochladen…",
+    "uploadComplete": "Upload abgeschlossen",
+    "uploadFailed": "Upload fehlgeschlagen",
+    "cancelUpload": "Upload abbrechen"
   },
   "note": {
     "viewProfile": "Profil anzeigen",
@@ -265,5 +270,10 @@
     "loadFailed": "Lesezeichen konnten nicht geladen werden",
     "failedToPublish": "Veröffentlichung fehlgeschlagen",
     "allRelaysUnreachable": "Keine Relais erreichbar. Überprüfen Sie Ihre Verbindung und Relay-Einstellungen."
+  },
+  "alpha": {
+    "preLink": "Dies ist Alpha-Software. Bitte melden Sie Fehler",
+    "linkText": "hier",
+    "postLink": "."
   }
 }
