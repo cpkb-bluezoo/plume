@@ -18,11 +18,7 @@
  * along with Plume.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-//! HPACK (RFC 7541): decoder and encoder for HTTP/2 header blocks.
+pub mod tor_dial;
 
-mod decoder;
-mod encoder;
-mod static_table;
-
-pub use decoder::{Decoder, HeaderHandler};
-pub use encoder::encode_headers;
+/// Process-wide hopf reactor runtime -- every dial in Plume registers on this.
+pub mod runtime;

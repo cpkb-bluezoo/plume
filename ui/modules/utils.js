@@ -142,6 +142,20 @@ export function sanitizeUrl(url) {
     return trimmed;
 }
 
+// Rewrite a remote image/media URL so the webview never fetches it directly
+// (which would bypass Tor entirely and leak the real IP plus the webview's
+// own User-Agent to the content host). The Rust backend's `torimg://`
+// handler fetches the real URL through the same Tor-routed HTTP client used
+// everywhere else and hands back the bytes. Local/relative paths (icons,
+// data: URIs) pass through unchanged.
+export function torImgUrl(url) {
+    var safe = sanitizeUrl(url);
+    if (!safe) {
+        return url;
+    }
+    return 'torimg://localhost/' + encodeURIComponent(safe);
+}
+
 // Clear validation error displays
 export function clearValidationErrors() {
     document.querySelectorAll('.validation-error').forEach(el => {

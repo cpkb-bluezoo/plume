@@ -19,53 +19,29 @@
  */
 
 //! Shared TLS configuration. Both WebSocket and HTTP use this to get a
-//! cached `ClientConfig` with native root certificates.
+//! cached connector backed by the OS trust store (via hopf-core, AWS-LC).
+//! Every TLS connection in Plume is layered on top of an already-established
+//! Tor SOCKS5 tunnel (see `crate::net::tor_dial`) via `start_client_tls`,
+//! never dialed directly.
 
-use std::sync::{Arc, OnceLock};
-use tokio_rustls::rustls::ClientConfig;
+use std::sync::OnceLock;
 
-/// TLS config for WebSocket (no ALPN).
-static WS_TLS_CONFIG: OnceLock<Arc<ClientConfig>> = OnceLock::new();
+use hopf::core::{public_trust_connector, SharedTlsConnector};
 
-/// TLS config for HTTP (ALPN h2, http/1.1).
-static HTTP_TLS_CONFIG: OnceLock<Arc<ClientConfig>> = OnceLock::new();
+/// TLS connector for WebSocket connections (no ALPN negotiation).
+static WS_TLS_CONNECTOR: OnceLock<SharedTlsConnector> = OnceLock::new();
 
-/// Install the rustls crypto provider. Must be called once at startup
-/// before any TLS use.
-pub fn install_crypto_provider() {
-    let _ = tokio_rustls::rustls::crypto::ring::default_provider().install_default();
+/// TLS connector for HTTP connections (ALPN h2, http/1.1).
+static HTTP_TLS_CONNECTOR: OnceLock<SharedTlsConnector> = OnceLock::new();
+
+/// TLS connector for WebSocket connections (no ALPN).
+pub fn ws_tls_connector() -> SharedTlsConnector {
+    WS_TLS_CONNECTOR.get_or_init(|| public_trust_connector(&[])).clone()
 }
 
-fn load_root_store() -> tokio_rustls::rustls::RootCertStore {
-    let mut root_store = tokio_rustls::rustls::RootCertStore::empty();
-    let cert_result = rustls_native_certs::load_native_certs();
-    for cert in cert_result.certs {
-        let _ = root_store.add(cert);
-    }
-    root_store
-}
-
-/// TLS config for WebSocket connections (no ALPN negotiation).
-pub fn ws_tls_config() -> Arc<ClientConfig> {
-    WS_TLS_CONFIG
-        .get_or_init(|| {
-            let config = ClientConfig::builder()
-                .with_root_certificates(load_root_store())
-                .with_no_client_auth();
-            Arc::new(config)
-        })
-        .clone()
-}
-
-/// TLS config for HTTP connections (ALPN h2, http/1.1).
-pub fn http_tls_config() -> Arc<ClientConfig> {
-    HTTP_TLS_CONFIG
-        .get_or_init(|| {
-            let mut config = ClientConfig::builder()
-                .with_root_certificates(load_root_store())
-                .with_no_client_auth();
-            config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
-            Arc::new(config)
-        })
+/// TLS connector for HTTP connections (ALPN h2, http/1.1).
+pub fn http_tls_connector() -> SharedTlsConnector {
+    HTTP_TLS_CONNECTOR
+        .get_or_init(|| public_trust_connector(&[b"h2", b"http/1.1"]))
         .clone()
 }

@@ -21,7 +21,7 @@
 //! HTTP request handle: accumulates method, path, headers. Fire via
 //! `send()` (no body) or `start_body()` (streaming body).
 
-use tokio::sync::mpsc;
+use std::sync::mpsc;
 
 use crate::http::client::Command;
 use crate::http::ResponseHandler;
@@ -29,7 +29,7 @@ use crate::http::ResponseHandler;
 /// HTTP request handle. Returned by `HttpClient::get()`, etc.
 /// Configure headers, then fire with `send()` or `start_body()`.
 pub struct HttpRequest {
-    cmd_tx: mpsc::UnboundedSender<Command>,
+    cmd_tx: mpsc::Sender<Command>,
     method: String,
     path: String,
     headers: Vec<(String, String)>,
@@ -37,7 +37,7 @@ pub struct HttpRequest {
 
 impl HttpRequest {
     pub(crate) fn new(
-        cmd_tx: mpsc::UnboundedSender<Command>,
+        cmd_tx: mpsc::Sender<Command>,
         method: &str,
         path: &str,
     ) -> Self {
@@ -83,7 +83,7 @@ impl HttpRequest {
 
 /// Handle for pushing body chunks after `start_body()`.
 pub struct RequestBody {
-    cmd_tx: mpsc::UnboundedSender<Command>,
+    cmd_tx: mpsc::Sender<Command>,
 }
 
 impl RequestBody {

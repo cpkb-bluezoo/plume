@@ -379,12 +379,13 @@ fn nip96_upload(params: UploadParams, api_url: &str) {
     let auth_json = nostr::event_to_json(&auth_event);
     let auth_header = format!("Nostr {}", BASE64.encode(auth_json.as_bytes()));
 
+    // Generic, random boundary -- never identify the app or leak a timestamp
+    // to the media server.
+    let mut boundary_bytes = [0u8; 16];
+    rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut boundary_bytes);
     let boundary = format!(
-        "----PlumeUpload{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis()
+        "----{}",
+        boundary_bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
     );
 
     // Build multipart body: preamble + file data + epilogue

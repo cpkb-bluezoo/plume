@@ -18,26 +18,23 @@
  * along with Plume.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-//! HTTP client: event-driven, push-parsed HTTP/1.1 and HTTP/2 client.
+//! HTTP client: dials through the local Tor SOCKS5 proxy, then runs
+//! hopf-http's HTTP/1.1 and HTTP/2 client underneath Plume's own stable
+//! request/response API.
 //!
-//! Architecture (Gumdrop pattern):
-//! - `HttpClient::new(host, port, secure)` creates a per-host client and
-//!   spawns a background connection task.
+//! Architecture:
+//! - `HttpClient::new(host, port, secure)` creates a per-request client and
+//!   dials through Tor immediately.
 //! - Factory methods (`get`, `put`, `post`, `delete`) return `HttpRequest`
 //!   handles. Configure headers, then fire via `send()` or `start_body()`.
 //! - Response data is pushed to a `ResponseHandler` as it arrives:
 //!   ok/error -> headers -> body_chunk (xn) -> end_body -> complete.
 //! - Body chunks flow into `JsonParser` -> `JsonContentHandler` for
 //!   streaming response parsing (SAX-like pipeline).
-//! - HTTP/2 via ALPN with HPACK header compression. HTTP/1.1 fallback
-//!   with chunked encoding and persistent connections.
+//! - HTTP/2 via ALPN, HTTP/1.1 fallback -- both handled by hopf-http.
 
 mod handler;
 mod response;
-
-pub mod h1;
-pub mod h2;
-pub mod hpack;
 
 pub mod client;
 pub mod request;

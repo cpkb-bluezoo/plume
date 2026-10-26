@@ -18,175 +18,217 @@
  * along with Plume.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-//! WebSocket connection: owns stream after handshake, drives frame parser, exposes send/run.
+//! WebSocket connection: a cheap, cloneable handle over hopf-websocket's
+//! post-upgrade `ConnHandle`. Sends write pre-framed bytes straight to the
+//! wire (no reactor round-trip needed); incoming frames arrive via an
+//! internal [`hopf::websocket::WsEventHandler`] (installed by `client.rs`
+//! at upgrade time) and are dispatched into whichever `WebSocketHandler` is
+//! attached via [`WebSocketConnection::run`].
 
-use bytes::BytesMut;
 use std::io;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use std::sync::{Arc, Mutex};
 
-use crate::debug_log;
-use crate::websocket::frame::{encode_frame, FrameHandler, FrameParser, OP_BINARY, OP_CLOSE, OP_PING, OP_PONG, OP_TEXT};
-use crate::websocket::stream::WsStream;
+use hopf::core::ConnHandle;
+use hopf::websocket::{
+    write_binary, write_close, write_close_empty, write_pong, write_text, WsEventHandler, WsFrameError,
+    WsRole, WsSession,
+};
+
+use crate::async_bridge::{self, OneshotFuture};
 use crate::websocket::WebSocketHandler;
 
-/// WebSocket connection after successful handshake. Use run() to drive the read loop with a handler;
-/// use send_text/send_binary/send_ping/send_close to send frames.
+/// Buffered incoming event, held until a handler is attached via [`WebSocketConnection::run`].
+enum PendingEvent {
+    Text(Vec<u8>),
+    Binary(Vec<u8>),
+    Ping(Vec<u8>),
+    Pong(Vec<u8>),
+    Closed(Option<u16>, String),
+    Failed(io::Error),
+}
+
+struct Shared {
+    handler: Option<Box<dyn WebSocketHandler + Send>>,
+    pending: Vec<PendingEvent>,
+    done: Option<async_bridge::OneshotSender<io::Result<()>>>,
+    finished: bool,
+}
+
+/// WebSocket connection after a successful handshake. `send_*` write
+/// directly to the wire; `run()` attaches the handler that receives
+/// incoming frames and awaits until the connection ends.
+#[derive(Clone)]
 pub struct WebSocketConnection {
-    stream: WsStream,
-    read_buf: BytesMut,
-    frame_parser: FrameParser,
+    conn: ConnHandle,
+    shared: Arc<Mutex<Shared>>,
 }
 
 impl WebSocketConnection {
-    pub(crate) fn new(stream: WsStream, initial_data: &[u8]) -> Self {
-        let mut read_buf = BytesMut::with_capacity(8192);
-        if !initial_data.is_empty() {
-            read_buf.extend_from_slice(initial_data);
-        }
-        Self {
-            stream,
-            read_buf,
-            frame_parser: FrameParser::new(),
-        }
-    }
-
-    /// Run the read loop, calling the handler for each frame. Returns when the connection closes,
-    /// an error occurs (handler.failed is called before return), or handler.should_stop() is true.
-    pub async fn run(&mut self, handler: &mut (dyn WebSocketHandler + Send)) -> io::Result<()> {
-        // Process any data already in the buffer (leftover from handshake)
-        if !self.read_buf.is_empty() {
-            debug_log!("[ws] processing {} leftover bytes", self.read_buf.len());
-            let mut adapter = FrameToHandlerAdapter { handler };
-            if let Err(e) = self.frame_parser.receive(&mut self.read_buf, &mut adapter) {
-                debug_log!("[ws] frame parse error on leftover: {}", e);
-                handler.failed(&e);
-                return Err(e);
-            }
-            if handler.should_stop() {
-                debug_log!("[ws] handler stopped after leftover processing");
-                return Ok(());
-            }
-        }
-        debug_log!("[ws] entering read loop");
-        loop {
-            let mut tmp = [0u8; 8192];
-            let n = match self.stream.read(&mut tmp).await {
-                Ok(0) => {
-                    debug_log!("[ws] stream EOF");
-                    return Ok(());
-                }
-                Ok(n) => n,
-                Err(e) => {
-                    debug_log!("[ws] stream read error: {}", e);
-                    handler.failed(&e);
-                    return Err(e);
-                }
-            };
-            debug_log!("[ws] read {} bytes from stream (buf now {})", n, self.read_buf.len() + n);
-            self.read_buf.extend_from_slice(&tmp[..n]);
-            {
-                let mut adapter = FrameToHandlerAdapter { handler };
-                if let Err(e) = self.frame_parser.receive(&mut self.read_buf, &mut adapter) {
-                    debug_log!("[ws] frame parse error: {}", e);
-                    handler.failed(&e);
-                    return Err(e);
-                }
-            }
-            debug_log!("[ws] after frame parse, buf remaining: {}", self.read_buf.len());
-            if handler.should_stop() {
-                debug_log!("[ws] handler requested stop");
-                return Ok(());
-            }
-        }
+    /// Builds the connection handle alongside the hopf-websocket event sink
+    /// that feeds it -- call once, right after the WS upgrade succeeds
+    /// (see `client.rs`), and install the returned handler via
+    /// `WsUpgradeHandler::client`.
+    pub(crate) fn new_pair(conn: ConnHandle) -> (Self, Box<dyn WsEventHandler>) {
+        let shared = Arc::new(Mutex::new(Shared {
+            handler: None,
+            pending: Vec::new(),
+            done: None,
+            finished: false,
+        }));
+        let sink = Box::new(EventSink { shared: Arc::clone(&shared) });
+        (Self { conn, shared }, sink)
     }
 
     /// Send a text frame.
-    pub async fn send_text(&mut self, data: &[u8]) -> io::Result<()> {
-        self.send_frame(OP_TEXT, data).await
+    pub fn send_text(&self, data: &[u8]) -> io::Result<()> {
+        let text = std::str::from_utf8(data)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let mut out = Vec::new();
+        write_text(&mut out, WsRole::Client, text);
+        self.conn.send(out);
+        Ok(())
     }
 
     /// Send a binary frame.
     #[allow(dead_code)]
-    pub async fn send_binary(&mut self, data: &[u8]) -> io::Result<()> {
-        self.send_frame(OP_BINARY, data).await
+    pub fn send_binary(&self, data: &[u8]) -> io::Result<()> {
+        let mut out = Vec::new();
+        write_binary(&mut out, WsRole::Client, data);
+        self.conn.send(out);
+        Ok(())
     }
 
-    /// Send a ping frame.
+    /// Send a pong frame (e.g. in response to a ping).
     #[allow(dead_code)]
-    pub async fn send_ping(&mut self, data: &[u8]) -> io::Result<()> {
-        if data.len() > 125 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "ping payload max 125 bytes",
-            ));
-        }
-        self.send_frame(OP_PING, data).await
-    }
-
-    /// Send a pong frame (e.g. in response to ping).
-    #[allow(dead_code)]
-    pub async fn send_pong(&mut self, data: &[u8]) -> io::Result<()> {
-        if data.len() > 125 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "pong payload max 125 bytes",
-            ));
-        }
-        self.send_frame(OP_PONG, data).await
+    pub fn send_pong(&self, data: &[u8]) -> io::Result<()> {
+        let mut out = Vec::new();
+        write_pong(&mut out, WsRole::Client, data);
+        self.conn.send(out);
+        Ok(())
     }
 
     /// Send a close frame. Reason is UTF-8; code is optional (e.g. 1000 = normal).
     #[allow(dead_code)]
-    pub async fn send_close(&mut self, code: Option<u16>, reason: &str) -> io::Result<()> {
-        let mut payload = Vec::new();
-        if let Some(c) = code {
-            payload.extend_from_slice(&c.to_be_bytes());
+    pub fn send_close(&self, code: Option<u16>, reason: &str) -> io::Result<()> {
+        let mut out = Vec::new();
+        match code {
+            Some(c) => write_close(&mut out, WsRole::Client, c, reason),
+            None => write_close_empty(&mut out, WsRole::Client),
         }
-        payload.extend_from_slice(reason.as_bytes());
-        if payload.len() > 125 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "close payload max 125 bytes",
-            ));
-        }
-        self.send_frame(OP_CLOSE, &payload).await
-    }
-
-    async fn send_frame(&mut self, opcode: u8, payload: &[u8]) -> io::Result<()> {
-        let mut mask_key = [0u8; 4];
-        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut mask_key);
-        let mut out = BytesMut::with_capacity(14 + payload.len());
-        encode_frame(opcode, payload, &mask_key, &mut out)?;
-        self.stream.write_all(&out).await?;
-        self.stream.flush().await?;
+        self.conn.send(out);
         Ok(())
     }
-}
 
-/// Adapts FrameHandler callbacks to WebSocketHandler.
-struct FrameToHandlerAdapter<'a> {
-    handler: &'a mut (dyn WebSocketHandler + Send),
-}
-
-impl FrameHandler for FrameToHandlerAdapter<'_> {
-    fn frame(&mut self, opcode: u8, _fin: bool, data: &[u8]) {
-        debug_log!("[ws] frame: opcode={} fin={} len={}", opcode, _fin, data.len());
-        match opcode {
-            OP_TEXT => self.handler.text_frame(data),
-            OP_BINARY => self.handler.binary_frame(data),
-            OP_CLOSE => {
-                let (code, reason) = if data.len() >= 2 {
-                    let code = u16::from_be_bytes([data[0], data[1]]);
-                    let reason = std::str::from_utf8(&data[2..]).unwrap_or("").to_string();
-                    (Some(code), reason)
-                } else {
-                    (None, String::new())
-                };
-                self.handler.close(code, &reason);
-            }
-            OP_PING => self.handler.ping(data),
-            OP_PONG => self.handler.pong(data),
-            _ => {}
+    /// Attach `handler` and wait until the connection closes, fails, or
+    /// `handler.should_stop()` becomes true. Replays any frames that
+    /// arrived before this call (`opened`/early messages can race ahead of
+    /// `run()` when a relay replies unusually fast).
+    pub fn run<H: WebSocketHandler + Send + 'static>(&self, handler: H) -> OneshotFuture<io::Result<()>> {
+        let (tx, fut) = async_bridge::oneshot();
+        let pending = {
+            let mut guard = self.shared.lock().unwrap();
+            guard.handler = Some(Box::new(handler));
+            guard.done = Some(tx);
+            std::mem::take(&mut guard.pending)
+        };
+        if let Some(h) = self.shared.lock().unwrap().handler.as_mut() {
+            h.connected();
         }
+        for event in pending {
+            dispatch(&self.shared, event);
+        }
+        fut
+    }
+}
+
+/// Dispatches one event to the attached handler (if any) and finishes the
+/// `run()` future when the handler asks to stop or the connection ended.
+/// Called either directly from the reactor thread (fresh event, via
+/// [`EventSink`]) or from [`WebSocketConnection::run`] (replaying buffered
+/// events) -- same path either way, so behavior doesn't depend on which
+/// raced first.
+fn dispatch(shared: &Arc<Mutex<Shared>>, event: PendingEvent) {
+    let mut guard = shared.lock().unwrap();
+    if guard.finished {
+        return;
+    }
+    let Some(handler) = guard.handler.as_mut() else {
+        guard.pending.push(event);
+        return;
+    };
+
+    let mut end_result: Option<io::Result<()>> = None;
+    match event {
+        PendingEvent::Text(data) => {
+            handler.text_frame(&data);
+            if handler.should_stop() {
+                end_result = Some(Ok(()));
+            }
+        }
+        PendingEvent::Binary(data) => {
+            handler.binary_frame(&data);
+            if handler.should_stop() {
+                end_result = Some(Ok(()));
+            }
+        }
+        PendingEvent::Ping(data) => {
+            handler.ping(&data);
+        }
+        PendingEvent::Pong(data) => {
+            handler.pong(&data);
+        }
+        PendingEvent::Closed(code, reason) => {
+            handler.close(code, &reason);
+            end_result = Some(Ok(()));
+        }
+        PendingEvent::Failed(err) => {
+            handler.failed(&err);
+            end_result = Some(Err(err));
+        }
+    }
+
+    if let Some(result) = end_result {
+        guard.finished = true;
+        if let Some(tx) = guard.done.take() {
+            drop(guard);
+            tx.send(result);
+        }
+    }
+}
+
+/// hopf-websocket event sink feeding [`Shared`] from the reactor thread.
+struct EventSink {
+    shared: Arc<Mutex<Shared>>,
+}
+
+impl WsEventHandler for EventSink {
+    fn opened(&mut self, _session: &mut WsSession<'_>, _conn: &ConnHandle) {}
+
+    fn text_message(&mut self, _session: &mut WsSession<'_>, text: &str) {
+        dispatch(&self.shared, PendingEvent::Text(text.as_bytes().to_vec()));
+    }
+
+    fn binary_message(&mut self, _session: &mut WsSession<'_>, data: &[u8]) {
+        dispatch(&self.shared, PendingEvent::Binary(data.to_vec()));
+    }
+
+    fn ping(&mut self, session: &mut WsSession<'_>, payload: &[u8]) {
+        session.send_pong(payload);
+        dispatch(&self.shared, PendingEvent::Ping(payload.to_vec()));
+    }
+
+    fn pong(&mut self, _session: &mut WsSession<'_>, payload: &[u8]) {
+        dispatch(&self.shared, PendingEvent::Pong(payload.to_vec()));
+    }
+
+    fn closed(&mut self, _session: &mut WsSession<'_>, code: u16, reason: &str) {
+        dispatch(&self.shared, PendingEvent::Closed(Some(code), reason.to_string()));
+    }
+
+    fn error(&mut self, err: WsFrameError) {
+        dispatch(
+            &self.shared,
+            PendingEvent::Failed(io::Error::new(io::ErrorKind::InvalidData, err.to_string())),
+        );
     }
 }

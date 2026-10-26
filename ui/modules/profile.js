@@ -20,7 +20,7 @@
 
 import { state, getEffectiveRelays, FEED_LIMIT } from './state.js';
 import { invoke } from './tauri.js';
-import { escapeHtml, debugLog, formatTimestamp } from './utils.js';
+import { escapeHtml, debugLog, formatTimestamp, torImgUrl } from './utils.js';
 import { saveConfig, setSavingState } from './config.js';
 import { isNoteMuted, isUserMuted } from './muting.js';
 import { createNoteCard, createRepostCard, createArticleCard, verifyNote, verifyRepostOriginal, ensureProfilesForNotes, setCardAvatar, getReplyToPubkey, resolveNostrEmbeds, fetchAndDisplayZapTotals } from './notes.js';
@@ -68,7 +68,7 @@ export function updateSidebarAvatar() {
     // Prefer profile picture (fetched from relays), fall back to config picture (local)
     var pic = (state.profile && state.profile.picture) || (state.config && state.config.picture) || null;
     if (pic) {
-        sidebarAvatar.src = pic;
+        sidebarAvatar.src = torImgUrl(pic);
         sidebarAvatar.style.display = 'block';
         sidebarPlaceholder.style.display = 'none';
         sidebarAvatar.onerror = function() {
@@ -726,7 +726,7 @@ function displayProfileZaps(receipts) {
         var senderName = (cached && cached.name) ? escapeHtml(cached.name) : escapeHtml(zap.sender_pubkey.substring(0, 12) + '…');
         var picture = cached && cached.picture ? cached.picture : null;
         var avatarHtml = picture
-            ? '<img src="' + escapeHtml(picture) + '" alt="" class="zap-avatar" onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'flex\'">'
+            ? '<img src="' + escapeHtml(torImgUrl(picture)) + '" alt="" class="zap-avatar" onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'flex\'">'
               + '<span class="zap-avatar zap-avatar-placeholder" style="display:none"><img src="icons/user.svg" alt="" class="icon-sm"></span>'
             : '<span class="zap-avatar zap-avatar-placeholder"><img src="icons/user.svg" alt="" class="icon-sm"></span>';
         var sats = zap.amount_sats || 0;
@@ -885,7 +885,7 @@ export function updateProfileDisplay() {
         }
         if (pictureEl && placeholderEl) {
             if (profile.picture) {
-                pictureEl.src = profile.picture;
+                pictureEl.src = torImgUrl(profile.picture);
                 pictureEl.style.display = 'block';
                 placeholderEl.style.display = 'none';
                 pictureEl.onerror = () => {
@@ -898,7 +898,7 @@ export function updateProfileDisplay() {
             }
         }
         if (bannerEl) {
-            bannerEl.style.backgroundImage = profile.banner ? `url('${profile.banner}')` : '';
+            bannerEl.style.backgroundImage = profile.banner ? `url('${torImgUrl(profile.banner)}')` : '';
         }
         if (nip05El) {
             nip05El.textContent = profile.nip05 || '';
@@ -938,7 +938,7 @@ export function updateProfileDisplay() {
         }
         if (pictureEl && placeholderEl) {
             if (cache && cache.picture) {
-                pictureEl.src = cache.picture;
+                pictureEl.src = torImgUrl(cache.picture);
                 pictureEl.style.display = 'block';
                 placeholderEl.style.display = 'none';
                 pictureEl.onerror = function() {
@@ -996,7 +996,7 @@ export function updateProfileDisplay() {
     if (sidebarAvatar && sidebarPlaceholder) {
         const pic = state.profile?.picture || state.config?.picture;
         if (pic) {
-            sidebarAvatar.src = pic;
+            sidebarAvatar.src = torImgUrl(pic);
             sidebarAvatar.style.display = 'block';
             sidebarPlaceholder.style.display = 'none';
             sidebarAvatar.onerror = () => {

@@ -20,7 +20,7 @@
 
 import { state, getEffectiveRelays } from './state.js';
 import { invoke } from './tauri.js';
-import { escapeHtml, shortenKey } from './utils.js';
+import { escapeHtml, shortenKey, torImgUrl } from './utils.js';
 import { setSavingState } from './config.js';
 import { getAuthorDisplay, ensureProfilesForNotes } from './notes.js';
 import { validatePublicKey } from './keys.js';
@@ -218,7 +218,7 @@ async function renderFollowerAvatars(followers, totalCount) {
         if (picture) {
             var img = document.createElement('img');
             img.className = 'follower-avatar-item';
-            img.src = picture;
+            img.src = torImgUrl(picture);
             img.alt = name || '';
             img.title = name || pubkey.substring(0, 12) + '…';
             img.dataset.pubkey = pubkey;
@@ -385,7 +385,7 @@ export function renderFollowsPanel() {
         li.className = 'follows-list-item';
         li.dataset.pubkey = item.pubkey;
         var imgHtml = picture
-                    ? '<img src="' + escapeHtml(picture) + '" alt="" class="follows-item-avatar">'
+                    ? '<img src="' + escapeHtml(torImgUrl(picture)) + '" alt="" class="follows-item-avatar">'
                     : '';
         li.innerHTML = '<label class="follows-item-row">' +
             '<input type="checkbox" class="follows-item-checkbox" ' + (item.checked ? 'checked' : '') + ' data-pubkey="' + escapeHtml(item.pubkey) + '">' +

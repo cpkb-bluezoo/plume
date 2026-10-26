@@ -20,7 +20,7 @@
 
 import { state, DEFAULT_LIKE_EMOJI, LIKE_EMOJI_LIST, NOSTR_EMBED_MAX_DEPTH, getEffectiveRelays } from './state.js';
 import { invoke } from './tauri.js';
-import { escapeHtml, escapeCssAttr, shortenKey, formatTimestamp, sanitizeUrl } from './utils.js';
+import { escapeHtml, escapeCssAttr, shortenKey, formatTimestamp, sanitizeUrl, torImgUrl } from './utils.js';
 import { isNoteMuted, isContentUnreadable } from './muting.js';
 
 var likeLongPressTimer = null;
@@ -135,7 +135,7 @@ export async function ensureProfilesForNotes(notes) {
                 var fallback = avatar.querySelector('.avatar-fallback');
                 var img = avatar.querySelector('img');
                 if (img) {
-                    img.src = profile.picture;
+                    img.src = torImgUrl(profile.picture);
                     img.alt = '';
                     img.style.display = '';
                     if (fallback) {
@@ -143,7 +143,7 @@ export async function ensureProfilesForNotes(notes) {
                     }
                 } else {
                     var newImg = document.createElement('img');
-                    newImg.src = profile.picture;
+                    newImg.src = torImgUrl(profile.picture);
                     newImg.alt = '';
                     newImg.onerror = function() {
                         if (fallback) {
@@ -214,7 +214,7 @@ export function setCardAvatar(card, pictureUrl) {
     var fallback = avatar.querySelector('.avatar-fallback');
     var img = avatar.querySelector('img');
     if (img) {
-        img.src = pictureUrl;
+        img.src = torImgUrl(pictureUrl);
         img.alt = '';
         img.style.display = '';
         if (fallback) {
@@ -222,7 +222,7 @@ export function setCardAvatar(card, pictureUrl) {
         }
     } else {
         img = document.createElement('img');
-        img.src = pictureUrl;
+        img.src = torImgUrl(pictureUrl);
         img.alt = '';
         img.onerror = function() {
             if (fallback) {
@@ -673,7 +673,7 @@ export function createArticleCard(note, noteIndex, idPrefix) {
     var isBookmarked = isNoteBookmarked(note.id);
 
     var imageHtml = image
-        ? '<div class="article-image"><img src="' + escapeHtml(image) + '" alt="" onerror="this.parentNode.style.display=\'none\'"></div>'
+        ? '<div class="article-image"><img src="' + escapeHtml(torImgUrl(image)) + '" alt="" onerror="this.parentNode.style.display=\'none\'"></div>'
         : '';
     var summaryHtml = summary
         ? '<p class="article-summary">' + escapeHtml(summary) + '</p>'
@@ -725,7 +725,7 @@ function renderMarkdown(md) {
     // Images: ![alt](url)
     html = html.replace(/!\[([^\]]*)\]\((https?:\/\/[^\s)]+)\)/g, function(_m, alt, url) {
         var safeUrl = sanitizeUrl(url);
-        return safeUrl ? '<img src="' + safeUrl + '" alt="' + alt + '" loading="lazy">' : alt;
+        return safeUrl ? '<img src="' + torImgUrl(safeUrl) + '" alt="' + alt + '" loading="lazy">' : alt;
     });
 
     // Links: [text](url)
@@ -803,7 +803,7 @@ export function renderArticleDetail(note, noteIndex, idPrefix) {
     var isBookmarked = isNoteBookmarked(note.id);
 
     var imageHtml = image
-        ? '<div class="article-hero-image"><img src="' + escapeHtml(image) + '" alt="" onerror="this.parentNode.style.display=\'none\'"></div>'
+        ? '<div class="article-hero-image"><img src="' + escapeHtml(torImgUrl(image)) + '" alt="" onerror="this.parentNode.style.display=\'none\'"></div>'
         : '';
 
     var renderedContent = renderMarkdown(note.content || '');
@@ -944,7 +944,7 @@ export function processNoteContent(content, depth) {
         if (urlOnly) {
             var safe = sanitizeUrl(urlOnly[1]);
             if (safe) {
-                lines[li] = '<img src="' + safe + '" class="note-media-probe" loading="lazy"'
+                lines[li] = '<img src="' + torImgUrl(safe) + '" class="note-media-probe" loading="lazy"'
                     + ' onerror="this.onerror=null;var v=document.createElement(\'video\');v.src=this.src;v.controls=true;v.preload=\'metadata\';v.className=\'note-media-probe\';v.onerror=function(){var a=document.createElement(\'a\');a.href=v.src;a.target=\'_blank\';a.rel=\'noopener noreferrer\';a.textContent=v.src;v.replaceWith(a)};this.replaceWith(v)">';
             }
         }
@@ -1122,7 +1122,7 @@ export async function resolveNostrEmbeds(container) {
         if (cached && cached.picture) {
             var avatarBtn = card.querySelector('.embed-avatar');
             if (avatarBtn) {
-                avatarBtn.innerHTML = '<img src="' + escapeHtml(cached.picture) + '" class="sidebar-avatar" alt="" style="width:24px;height:24px;border-radius:50%;">';
+                avatarBtn.innerHTML = '<img src="' + escapeHtml(torImgUrl(cached.picture)) + '" class="sidebar-avatar" alt="" style="width:24px;height:24px;border-radius:50%;">';
             }
         }
     });

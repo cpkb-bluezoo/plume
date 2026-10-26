@@ -18,32 +18,16 @@
  * along with Plume.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-//! HTTP response status (status code + reason).
+//! HTTP response status.
 
-/// HTTP response status (code and optional reason).
+/// HTTP response status code.
 #[derive(Debug, Clone)]
 pub struct Response {
     pub code: u16,
-    #[allow(dead_code)]
-    pub reason: Option<String>,
 }
 
 impl Response {
     pub fn new(code: u16) -> Self {
-        Self {
-            code,
-            reason: None,
-        }
-    }
-
-    pub fn with_reason(code: u16, reason: String) -> Self {
-        Self {
-            code,
-            reason: Some(reason),
-        }
-    }
-
-    pub fn is_success(&self) -> bool {
-        (200..300).contains(&self.code)
+        Self { code }
     }
 }

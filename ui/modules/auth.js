@@ -20,7 +20,7 @@
 
 import { state, DEFAULT_RELAYS } from './state.js';
 import { invoke } from './tauri.js';
-import { escapeHtml, showConfirm } from './utils.js';
+import { escapeHtml, showConfirm, torImgUrl } from './utils.js';
 import { updateUIFromConfig } from './config.js';
 import { updateSidebarAvatar } from './profile.js';
 import { startInitialFeedFetch } from './feed.js';
@@ -150,7 +150,7 @@ export async function populateWelcomeProfiles() {
         li.className = 'known-profile-item';
         li.dataset.npub = p.npub;
         var avatarHtml = p.picture
-            ? '<img src="' + escapeHtml(p.picture) + '" class="known-profile-avatar" alt="">'
+            ? '<img src="' + escapeHtml(torImgUrl(p.picture)) + '" class="known-profile-avatar" alt="">'
             : '<span class="known-profile-placeholder"><img src="icons/user.svg" alt="" class="nav-icon"></span>';
         var name = p.name || 'Anonymous';
         var shortNpub = p.npub.length > 20 ? p.npub.substring(0, 10) + '...' + p.npub.substring(p.npub.length - 6) : p.npub;

@@ -18,15 +18,13 @@
  * along with Plume.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-//! WebSocket client (RFC 6455): handshake over HTTP/1.1, then frame-based send/recv.
+//! WebSocket client (RFC 6455): dials through Tor, handshake over HTTP/1.1
+//! (via hopf-http), then frame-based send/recv (via hopf-websocket).
 //! Callback-based API: implement WebSocketHandler to receive frames.
 
 mod client;
 pub mod connection;
-mod frame;
 mod handler;
-mod handshake;
-pub mod stream;
 
 pub use client::WebSocketClient;
 pub use handler::WebSocketHandler;

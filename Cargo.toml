@@ -13,7 +13,6 @@ url = "2.5"
 bech32 = "0.11"
 secp256k1 = { version = "0.29", features = ["global-context"] }
 sha2 = "0.10"
-tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "sync", "io-util", "macros"] }
 mime_guess = "2"
 base64 = "0.22"
 urlencoding = "2.1"
@@ -24,16 +23,29 @@ chacha20 = "0.9"
 hkdf = "0.12"
 hmac = "0.12"
 rand = "0.8"
-# Custom WebSocket/JSON/HTTP stack dependencies
-rustls = { version = "0.23", features = ["ring"], default-features = false }
-tokio-rustls = "0.26"
-rustls-native-certs = "0.8"
-sha1 = "0.10"
 bytes = "1"
 rfd = "0.15"
+hopf = { version = "0.5", default-features = false, features = ["http", "websocket", "socks"] }
+# hopf-core 0.5.0 uses aws-lc-rs ML_DSA/PqdsaKeyPair symbols that only exist from 1.18
+# onward, but its own Cargo.toml allows any "1" — pin explicitly so a fresh lockfile
+# doesn't resolve a too-old aws-lc-rs and fail to build.
+aws-lc-rs = "1.18"
 
 [build-dependencies]
 tauri-build = { version = "2.0", features = [] }
+
+# hopf-http's HttpClientConnection/HttpClientSessionConfig became public (for
+# dialing through our own SOCKS+TLS transport) in the sibling ../hopf checkout
+# but hasn't been published to crates.io yet — override with the local path
+# per hopf's own README ("local path override via [patch.crates-io] when
+# hacking") until a new hopf release ships.
+[patch.crates-io]
+hopf = { path = "../hopf/crates/hopf" }
+hopf-core = { path = "../hopf/crates/hopf-core" }
+hopf-http = { path = "../hopf/crates/hopf-http" }
+hopf-websocket = { path = "../hopf/crates/hopf-websocket" }
+hopf-socks = { path = "../hopf/crates/hopf-socks" }
+hopf-dns = { path = "../hopf/crates/hopf-dns" }
 
 [profile.release]
 strip = true

@@ -22,6 +22,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 // Import our modules
+mod async_bridge;
 mod config;
 mod crypto;
 mod debug;
@@ -29,10 +30,13 @@ mod http;
 mod json;
 mod keys;
 mod media;
+mod media_proxy;
 mod messages_store;
+mod net;
 mod nostr;
 mod relay;
 mod tls;
+mod tor;
 mod websocket;
 
 // Import what we need from external crates
@@ -534,19 +538,12 @@ fn start_feed_stream(
 
     let num_relays = relay_urls.len() as u32;
     std::thread::spawn(move || {
-        let rt = match tokio::runtime::Runtime::new() {
-            Ok(r) => r,
-            Err(e) => {
-                warn_log!("Failed to create Tokio runtime: {}", e);
-                return;
-            }
-        };
-        rt.block_on(async move {
-            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        async_bridge::block_on(async move {
+            let (tx, mut rx) = async_bridge::mpsc::unbounded_channel();
             for relay_url in relay_urls {
                 let filter = filter.clone();
                 let tx = tx.clone();
-                tokio::spawn(async move {
+                async_bridge::spawn(async move {
                     relay::run_relay_feed_stream(relay_url, filter, 10, tx).await;
                 });
             }
@@ -650,11 +647,24 @@ fn generate_qr_svg(data: String) -> Result<String, String> {
     Ok(svg_xml)
 }
 
+/// Current Tor status, for the frontend to query if it missed the
+/// `tor-status` event (e.g. a window opened after startup already resolved).
+#[tauri::command]
+fn get_tor_status() -> String {
+    match tor::status() {
+        tor::TorStatus::Starting => r#"{"state":"starting"}"#.to_string(),
+        tor::TorStatus::Ready(addr) => format!(r#"{{"state":"ready","socks_addr":"{addr}"}}"#),
+        tor::TorStatus::Failed(reason) => {
+            format!(r#"{{"state":"failed","reason":"{}"}}"#, reason.replace('"', "\\\""))
+        }
+    }
+}
+
 #[tauri::command]
 async fn test_relay_connection(relay_url: String) -> Result<String, String> {
     debug_log!("Testing connection to: {}", relay_url);
     // Explicit user test — bypass backoff, but clear it on success
-    match tokio::time::timeout(
+    match async_bridge::timeout(
         std::time::Duration::from_secs(5),
         crate::websocket::WebSocketClient::connect(&relay_url),
     ).await {
@@ -1174,23 +1184,16 @@ fn start_dm_stream(app: tauri::AppHandle, state: tauri::State<AppState>) -> Resu
     }
 
     std::thread::spawn(move || {
-        let rt = match tokio::runtime::Runtime::new() {
-            Ok(r) => r,
-            Err(e) => {
-                warn_log!("DM stream: failed to create runtime: {}", e);
-                return;
-            }
-        };
-        rt.block_on(async move {
+        async_bridge::block_on(async move {
             let num_relays = all_relays.len() as u32;
-            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            let (tx, mut rx) = async_bridge::mpsc::unbounded_channel();
             for relay_url in &all_relays {
                 let tx = tx.clone();
                 let url = relay_url.clone();
                 let f1 = filter_received.clone();
                 let f2 = filter_sent.clone();
                 let f3 = filter_gift_wraps.clone();
-                tokio::spawn(async move {
+                async_bridge::spawn(async move {
                     relay::run_relay_dm_stream_nip17(url, f1, f2, f3, tx).await;
                 });
             }
@@ -2108,9 +2111,6 @@ fn events_to_json_array(events: &Vec<nostr::Event>) -> String {
 // ============================================================
 
 fn main() {
-    // Install the rustls crypto provider before any TLS connections.
-    tls::install_crypto_provider();
-
     let base_dir: String = match config::get_config_dir() {
         Some(path) => path,
         None => {
@@ -2176,13 +2176,17 @@ fn main() {
         None => base_dir.clone(),
     };
 
+    let base_dir_for_tor = base_dir.clone();
     let app_state = AppState {
         base_dir,
         active_config_dir: RwLock::new(config_dir),
     };
-    
-    tauri::Builder::default()
+
+    let app = tauri::Builder::default()
         .manage(app_state)
+        .register_asynchronous_uri_scheme_protocol("torimg", |_ctx, request, responder| {
+            media_proxy::handle(request.uri().path(), responder);
+        })
         .invoke_handler(tauri::generate_handler![
             get_config_dir,
             load_config,
@@ -2203,6 +2207,7 @@ fn main() {
             fetch_replies_to_event,
             test_relay_connection,
             get_relay_backoff_status,
+            get_tor_status,
             fetch_profile,
             fetch_own_profile,
             set_profile_metadata,
@@ -2244,15 +2249,22 @@ fn main() {
             delete_profile,
             list_profiles,
         ])
-        .setup(|app| {
+        .setup(move |app| {
             let _window = app.get_webview_window("main").unwrap();
             #[cfg(debug_assertions)]
             {
                 _window.open_devtools();
             }
             warn_log!("Plume is starting...");
+            tor::start(app.handle().clone(), &base_dir_for_tor);
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("ERROR: Failed to run Tauri application");
+        .build(tauri::generate_context!())
+        .expect("ERROR: Failed to build Tauri application");
+
+    app.run(|_app_handle, event| {
+        if let tauri::RunEvent::Exit = event {
+            tor::shutdown();
+        }
+    });
 }

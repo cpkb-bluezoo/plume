@@ -27,6 +27,7 @@ console.log('[Plume] app.js module loading');
 import { state, getEffectiveRelays } from './modules/state.js';
 import { invoke } from './modules/tauri.js';
 import { debugLog, escapeHtml, showConfirm } from './modules/utils.js';
+import { initTorStatusGate } from './modules/tor-status.js';
 import { validatePublicKey } from './modules/keys.js';
 import { loadConfig, saveConfig, updateUIFromConfig, setSavingState, updateFeedInitialState } from './modules/config.js';
 import { isNoteMuted, isContentUnreadable, ensureMutedConfig, handleMuteClick, loadMutedPanel, renderMutedPanels, saveMutedFromPanel } from './modules/muting.js';
@@ -105,6 +106,12 @@ window.onunhandledrejection = function(event) {
 async function init() {
     try {
         console.log('[Plume] init() entered');
+
+        // Tor status gate: show immediately, update as the backend reports
+        // progress. Does not block the rest of init() -- buttons wire up
+        // right away, but the overlay keeps the user from interacting with
+        // anything that would make a network call until Tor is ready.
+        initTorStatusGate();
 
         // Wire the UI first with no awaits – so nothing can block before buttons work
         updateMessagesNavUnread();

@@ -24,10 +24,9 @@
 use bytes::BytesMut;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
-use std::time::Instant;
-use tokio::sync::mpsc;
-use tokio::time::Duration;
+use std::time::{Duration, Instant};
 
+use crate::async_bridge::{self, mpsc};
 use crate::debug_log;
 use crate::json::{JsonContentHandler, JsonNumber, JsonParser};
 use crate::nostr;
@@ -139,7 +138,7 @@ pub async fn connect_to_relay(relay_url: &str) -> Result<WebSocketConnection, St
         }
     }
 
-    let result = tokio::time::timeout(
+    let result = async_bridge::timeout(
         Duration::from_secs(CONNECT_TIMEOUT_SECS),
         WebSocketClient::connect(relay_url),
     ).await;
@@ -500,16 +499,16 @@ pub async fn run_relay_feed_stream(
     let filter_json = nostr::filter_to_json(&filter);
     let req_message = format!("[\"REQ\",\"{}\",{}]", subscription_id, filter_json);
 
-    let mut conn = conn;
+    let conn = conn;
     debug_log!("[relay] sending REQ to {}: {}", relay_url, req_message);
-    if let Err(e) = conn.send_text(req_message.as_bytes()).await {
+    if let Err(e) = conn.send_text(req_message.as_bytes()) {
         debug_log!("[relay] failed to send REQ to {}: {}", relay_url, e);
         let _ = tx.send(StreamMessage::Eose);
         return;
     }
     debug_log!("[relay] REQ sent to {}, waiting for data (timeout {}s)...", relay_url, timeout_seconds);
 
-    let mut handler = NostrRelayHandler {
+    let handler = NostrRelayHandler {
         tx: tx.clone(),
         should_stop: false,
         exit_on_eose: true,
@@ -517,7 +516,7 @@ pub async fn run_relay_feed_stream(
     };
 
     let timeout_duration = Duration::from_secs(timeout_seconds as u64);
-    match tokio::time::timeout(timeout_duration, conn.run(&mut handler)).await {
+    match async_bridge::timeout(timeout_duration, conn.run(handler)).await {
         Ok(Ok(())) => debug_log!("[relay] run completed normally for {}", relay_url),
         Ok(Err(e)) => {
             debug_log!("[relay] run error for {}: {}", relay_url, e);
@@ -557,18 +556,18 @@ pub async fn run_relay_dm_stream(
     let f2 = nostr::filter_to_json(&filter_sent);
     let req_message = format!("[\"REQ\",\"{}\",{},{}]", subscription_id, f1, f2);
 
-    let mut conn = conn;
-    if conn.send_text(req_message.as_bytes()).await.is_err() {
+    let conn = conn;
+    if conn.send_text(req_message.as_bytes()).is_err() {
         return;
     }
 
-    let mut handler = NostrRelayHandler {
+    let handler = NostrRelayHandler {
         tx,
         should_stop: false,
         exit_on_eose: false,
         filter_kind_dm: Some(nostr::KIND_DM),
     };
-    let _ = conn.run(&mut handler).await;
+    let _ = conn.run(handler).await;
 }
 
 /// Run a long-lived DM subscription for both NIP-04 (kind 4) and NIP-17 (kind 1059).
@@ -601,19 +600,19 @@ pub async fn run_relay_dm_stream_nip17(
     let f3 = nostr::filter_to_json(&filter_gift_wraps);
     let req_message = format!("[\"REQ\",\"{}\",{},{},{}]", subscription_id, f1, f2, f3);
 
-    let mut conn = conn;
-    if conn.send_text(req_message.as_bytes()).await.is_err() {
+    let conn = conn;
+    if conn.send_text(req_message.as_bytes()).is_err() {
         let _ = tx.send(StreamMessage::Eose);
         return;
     }
 
-    let mut handler = NostrRelayHandler {
+    let handler = NostrRelayHandler {
         tx,
         should_stop: false,
         exit_on_eose: false,
         filter_kind_dm: None, // accept all kinds (4 and 1059)
     };
-    let _ = conn.run(&mut handler).await;
+    let _ = conn.run(handler).await;
 }
 
 // ============================================================
@@ -633,7 +632,7 @@ pub async fn fetch_notes_from_relay(
     let timeout = timeout_seconds;
 
     // Run the feed stream which collects events and sends Eose when done
-    tokio::spawn(async move {
+    async_bridge::spawn(async move {
         run_relay_feed_stream(url, filter, timeout, tx).await;
     });
 
@@ -932,12 +931,12 @@ pub async fn publish_event_to_relay(
     timeout_seconds: u32,
 ) -> Result<PublishResult, String> {
     // Connect with timeout and backoff
-    let mut conn = connect_to_relay(relay_url).await?;
+    let conn = connect_to_relay(relay_url).await?;
 
     // Send the EVENT message
     let event_json = nostr::event_to_json(event);
     let publish_message = format!("[\"EVENT\",{}]", event_json);
-    conn.send_text(publish_message.as_bytes()).await
+    conn.send_text(publish_message.as_bytes())
         .map_err(|e| format!("Failed to send to {}: {}", relay_url, e))?;
 
     // Wait for OK response using a handler
@@ -971,9 +970,9 @@ pub async fn publish_event_to_relay(
         fn should_stop(&self) -> bool { self.should_stop }
     }
 
-    let mut handler = PublishHandler { tx, should_stop: false };
+    let handler = PublishHandler { tx, should_stop: false };
     let timeout_duration = Duration::from_secs(timeout_seconds as u64);
-    let _ = tokio::time::timeout(timeout_duration, conn.run(&mut handler)).await;
+    let _ = async_bridge::timeout(timeout_duration, conn.run(handler)).await;
 
     // Check what we got
     while let Ok(msg) = rx.try_recv() {

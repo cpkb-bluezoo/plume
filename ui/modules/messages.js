@@ -20,7 +20,7 @@
 
 import { state, getEffectiveRelays } from './state.js';
 import { invoke } from './tauri.js';
-import { escapeHtml } from './utils.js';
+import { escapeHtml, torImgUrl } from './utils.js';
 
 // Guard against concurrent sendMessage calls
 var sendInProgress = false;
@@ -90,7 +90,7 @@ export async function loadMessagesView() {
                 const picture = cached && cached.picture ? cached.picture : null;
                 const ts = c.last_created_at ? new Date(c.last_created_at * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : '';
                 var avatarHtml = picture
-                    ? '<img src="' + escapeHtml(picture) + '" alt="" class="conversation-avatar" onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'flex\'">'
+                    ? '<img src="' + escapeHtml(torImgUrl(picture)) + '" alt="" class="conversation-avatar" onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'flex\'">'
                       + '<span class="conversation-avatar conversation-avatar-placeholder" style="display:none"><img src="icons/user.svg" alt="" class="icon-sm"></span>'
                     : '<span class="conversation-avatar conversation-avatar-placeholder"><img src="icons/user.svg" alt="" class="icon-sm"></span>';
                 html += '<div class="conversation-item" role="button" tabindex="0" data-other-pubkey="' + escapeHtml(other) + '" title="' + escapeHtml(other) + '">'
@@ -132,7 +132,7 @@ export async function loadMessagesView() {
                                     // Remove all existing avatar elements and insert fresh img + fallback
                                     var oldAvatars = item.querySelectorAll('.conversation-avatar');
                                     var insertBefore = oldAvatars.length > 0 ? oldAvatars[0] : null;
-                                    var newHtml = '<img src="' + escapeHtml(profile.picture) + '" alt="" class="conversation-avatar" onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'flex\'">'
+                                    var newHtml = '<img src="' + escapeHtml(torImgUrl(profile.picture)) + '" alt="" class="conversation-avatar" onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'flex\'">'
                                         + '<span class="conversation-avatar conversation-avatar-placeholder" style="display:none"><img src="icons/user.svg" alt="" class="icon-sm"></span>';
                                     if (insertBefore) {
                                         insertBefore.insertAdjacentHTML('beforebegin', newHtml);

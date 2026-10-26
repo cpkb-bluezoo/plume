@@ -19,7 +19,7 @@
  */
 
 import { state } from './state.js';
-import { escapeHtml, shortenKey } from './utils.js';
+import { escapeHtml, shortenKey, torImgUrl } from './utils.js';
 import { saveConfig } from './config.js';
 import { updateProfileDisplay } from './profile.js';
 import { ensureProfilesForNotes } from './notes.js';
@@ -190,7 +190,7 @@ export function renderMutedPanels() {
                 li.className = 'follows-list-item';
                 li.dataset.pubkey = item.pubkey;
                 var imgHtml = picture
-                    ? '<img src="' + escapeHtml(picture) + '" alt="" class="follows-item-avatar">'
+                    ? '<img src="' + escapeHtml(torImgUrl(picture)) + '" alt="" class="follows-item-avatar">'
                     : '';
                 li.innerHTML = '<label class="follows-item-row">' +
                     '<input type="checkbox" class="follows-item-checkbox muted-user-checkbox" ' + (item.checked ? 'checked' : '') + ' data-pubkey="' + escapeHtml(item.pubkey) + '">' +
