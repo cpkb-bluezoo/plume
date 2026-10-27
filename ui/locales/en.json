@@ -37,9 +37,9 @@
     "welcomeTitle": "Welcome to Plume!",
     "welcomeHint": "Configure your keys in Settings to start browsing Nostr.",
     "noNotes": "No notes to display",
-    "notesHint": "Notes will appear here when they're available.",
-    "noTextNotes": "No text notes found",
-    "tryRelays": "Try connecting to different relays",
+    "notesHint": "Connecting to relays over Tor and fetching notes… this can take up to a minute, especially the first time.",
+    "noTextNotes": "No text notes found (yet)",
+    "tryRelays": "This can happen on a slow Tor connection — try reloading, or check your relays in Settings if it keeps happening",
     "noRelays": "No relays configured. Add relays in Settings.",
     "feedFailed": "Failed to load feed. Check relays and try again.",
     "mutedContent": "This note is from a muted account or contains muted content."

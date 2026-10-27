@@ -272,7 +272,7 @@ fn decode_nostr_uri(bech32_str: String) -> Result<String, String> {
 async fn fetch_notes(relay_url: String, limit: u32) -> Result<String, String> {
     debug_log!("Fetching {} notes from {}", limit, relay_url);
     let filter = nostr::filter_recent_notes(limit);
-    let events = relay::fetch_notes_from_relay(&relay_url, &filter, 10).await?;
+    let events = relay::fetch_notes_from_relay(&relay_url, &filter, relay::RESPONSE_TIMEOUT_SECS).await?;
     let json = events_to_json_array(&events);
     return Ok(json);
 }
@@ -306,7 +306,7 @@ async fn fetch_notes_from_relays(
     let mut fail_count: usize = 0;
 
     for relay_url in relay_urls {
-        match relay::fetch_notes_from_relay(&relay_url, &filter, 10).await {
+        match relay::fetch_notes_from_relay(&relay_url, &filter, relay::RESPONSE_TIMEOUT_SECS).await {
             Ok(events) => {
                 for event in events {
                     all_events.push(event);
@@ -366,7 +366,7 @@ async fn search_hashtag(
     let mut fail_count: usize = 0;
 
     for relay_url in &relay_urls {
-        match relay::fetch_notes_from_relay(relay_url, &filter, 10).await {
+        match relay::fetch_notes_from_relay(relay_url, &filter, relay::RESPONSE_TIMEOUT_SECS).await {
             Ok(events) => {
                 for event in events {
                     all_events.push(event);
@@ -426,7 +426,7 @@ async fn search_notes(
     let mut fail_count: usize = 0;
 
     for relay_url in &relay_urls {
-        match relay::fetch_notes_from_relay(relay_url, &filter, 10).await {
+        match relay::fetch_notes_from_relay(relay_url, &filter, relay::RESPONSE_TIMEOUT_SECS).await {
             Ok(events) => {
                 for event in events {
                     all_events.push(event);
@@ -448,7 +448,7 @@ async fn search_notes(
             nostr::filter_recent_notes_since(limit * 4, since)
         };
         for relay_url in &relay_urls {
-            match relay::fetch_notes_from_relay(relay_url, &fallback_filter, 10).await {
+            match relay::fetch_notes_from_relay(relay_url, &fallback_filter, relay::RESPONSE_TIMEOUT_SECS).await {
                 Ok(events) => {
                     let lower_q = q.to_lowercase();
                     for event in events {
@@ -544,7 +544,7 @@ fn start_feed_stream(
                 let filter = filter.clone();
                 let tx = tx.clone();
                 async_bridge::spawn(async move {
-                    relay::run_relay_feed_stream(relay_url, filter, 10, tx).await;
+                    relay::run_relay_feed_stream(relay_url, filter, relay::RESPONSE_TIMEOUT_SECS, tx).await;
                 });
             }
             drop(tx);
@@ -585,7 +585,7 @@ async fn fetch_replies_to_event(relay_urls: Vec<String>, event_id: String, limit
     let filter = nostr::filter_replies_to_event(event_id, limit);
     let mut all_events: Vec<nostr::Event> = Vec::new();
     for relay_url in &relay_urls {
-        match relay::fetch_notes_from_relay(relay_url, &filter, 10).await {
+        match relay::fetch_notes_from_relay(relay_url, &filter, relay::RESPONSE_TIMEOUT_SECS).await {
             Ok(events) => {
                 for event in events {
                     all_events.push(event);
@@ -618,7 +618,7 @@ async fn fetch_events_by_ids(relay_urls: Vec<String>, ids: Vec<String>) -> Resul
     let filter = nostr::filter_events_by_ids(ids);
     let mut all_events: Vec<nostr::Event> = Vec::new();
     for relay_url in relay_urls {
-        match relay::fetch_notes_from_relay(&relay_url, &filter, 10).await {
+        match relay::fetch_notes_from_relay(&relay_url, &filter, relay::RESPONSE_TIMEOUT_SECS).await {
             Ok(events) => {
                 for event in events {
                     all_events.push(event);
@@ -665,7 +665,7 @@ async fn test_relay_connection(relay_url: String) -> Result<String, String> {
     debug_log!("Testing connection to: {}", relay_url);
     // Explicit user test — bypass backoff, but clear it on success
     match async_bridge::timeout(
-        std::time::Duration::from_secs(5),
+        std::time::Duration::from_secs(relay::RESPONSE_TIMEOUT_SECS as u64),
         crate::websocket::WebSocketClient::connect(&relay_url),
     ).await {
         Ok(Ok(_conn)) => {
@@ -709,7 +709,7 @@ async fn fetch_profile(pubkey: String, relay_urls: Vec<String>) -> Result<String
         Ok(hex) => hex,
         Err(e) => return Err(format!("Invalid public key: {}", e)),
     };
-    match relay::fetch_profile_from_relays(&relay_urls, &hex_pubkey, 5).await {
+    match relay::fetch_profile_from_relays(&relay_urls, &hex_pubkey, relay::RESPONSE_TIMEOUT_SECS).await {
         Ok(Some(profile)) => Ok(nostr::profile_to_json(&profile)),
         Ok(None) => Ok(String::from("{}")),
         Err(e) => Err(format!("Failed to fetch profile: {}", e)),
@@ -726,7 +726,7 @@ async fn fetch_own_profile(state: tauri::State<'_, AppState>) -> Result<String, 
     if cfg.public_key.is_empty() {
         return Err(String::from("No public key configured"));
     }
-    match relay::fetch_profile_from_relays(&cfg.relays, &cfg.public_key, 5).await {
+    match relay::fetch_profile_from_relays(&cfg.relays, &cfg.public_key, relay::RESPONSE_TIMEOUT_SECS).await {
         Ok(Some(profile)) => Ok(nostr::profile_to_json(&profile)),
         Ok(None) => Ok(String::from("{}")),
         Err(e) => Err(format!("Failed to fetch profile: {}", e)),
@@ -784,7 +784,7 @@ async fn fetch_following(pubkey: String, relay_urls: Vec<String>) -> Result<Stri
         Ok(hex) => hex,
         Err(e) => return Err(format!("Invalid public key: {}", e)),
     };
-    match relay::fetch_following_from_relays(&relay_urls, &hex_pubkey, 10).await {
+    match relay::fetch_following_from_relays(&relay_urls, &hex_pubkey, relay::RESPONSE_TIMEOUT_SECS).await {
         Ok(Some(contact_list)) => Ok(nostr::contact_list_to_json(&contact_list)),
         Ok(None) => Ok(String::from("{\"owner_pubkey\":\"\",\"created_at\":0,\"count\":0,\"contacts\":[]}")),
         Err(e) => Err(format!("Failed to fetch following: {}", e)),
@@ -801,7 +801,7 @@ async fn fetch_own_following(state: tauri::State<'_, AppState>) -> Result<String
     if cfg.public_key.is_empty() {
         return Err(String::from("No public key configured"));
     }
-    match relay::fetch_following_from_relays(&cfg.relays, &cfg.public_key, 10).await {
+    match relay::fetch_following_from_relays(&cfg.relays, &cfg.public_key, relay::RESPONSE_TIMEOUT_SECS).await {
         Ok(Some(contact_list)) => {
             // Sync the following list to local config for fast access by the feed
             let pubkeys = nostr::get_following_pubkeys(&contact_list);
@@ -839,7 +839,7 @@ async fn update_contact_list(
     }
     let target_hex = keys::public_key_to_hex(&target_pubkey)
         .map_err(|e| format!("Invalid target pubkey: {}", e))?;
-    let mut pubkeys: Vec<String> = match relay::fetch_following_from_relays(&cfg.relays, &cfg.public_key, 10).await {
+    let mut pubkeys: Vec<String> = match relay::fetch_following_from_relays(&cfg.relays, &cfg.public_key, relay::RESPONSE_TIMEOUT_SECS).await {
         Ok(Some(contact_list)) => nostr::get_following_pubkeys(&contact_list),
         Ok(None) => Vec::new(),
         Err(e) => return Err(format!("Failed to fetch current following: {}", e)),
@@ -852,7 +852,7 @@ async fn update_contact_list(
         pubkeys.retain(|p| p != &target_hex);
     }
     let event = crypto::create_signed_contact_list(&pubkeys, &secret_key)?;
-    let results = relay::publish_event_to_relays(&cfg.relays, &event, 10).await;
+    let results = relay::publish_event_to_relays(&cfg.relays, &event, relay::RESPONSE_TIMEOUT_SECS).await;
     let success_count = results.iter().filter(|r| r.success).count();
     if success_count == 0 {
         return Err(String::from("Failed to publish contact list to any relay"));
@@ -886,7 +886,7 @@ async fn set_contact_list(state: tauri::State<'_, AppState>, pubkeys: Vec<String
         hex_pubkeys.push(hex);
     }
     let event = crypto::create_signed_contact_list(&hex_pubkeys, &secret_key)?;
-    let results = relay::publish_event_to_relays(&cfg.relays, &event, 10).await;
+    let results = relay::publish_event_to_relays(&cfg.relays, &event, relay::RESPONSE_TIMEOUT_SECS).await;
     let success_count = results.iter().filter(|r| r.success).count();
     if success_count == 0 {
         return Err(String::from("Failed to publish contact list to any relay"));
@@ -905,7 +905,7 @@ async fn fetch_followers(pubkey: String, relay_urls: Vec<String>) -> Result<Stri
         Ok(hex) => hex,
         Err(e) => return Err(format!("Invalid public key: {}", e)),
     };
-    match relay::fetch_followers_from_relays(&relay_urls, &hex_pubkey, 10).await {
+    match relay::fetch_followers_from_relays(&relay_urls, &hex_pubkey, relay::RESPONSE_TIMEOUT_SECS).await {
         Ok(followers) => Ok(nostr::followers_to_json(&followers)),
         Err(e) => Err(format!("Failed to fetch followers: {}", e)),
     }
@@ -921,7 +921,7 @@ async fn fetch_own_followers(state: tauri::State<'_, AppState>) -> Result<String
     if cfg.public_key.is_empty() {
         return Err(String::from("No public key configured"));
     }
-    match relay::fetch_followers_from_relays(&cfg.relays, &cfg.public_key, 10).await {
+    match relay::fetch_followers_from_relays(&cfg.relays, &cfg.public_key, relay::RESPONSE_TIMEOUT_SECS).await {
         Ok(followers) => Ok(nostr::followers_to_json(&followers)),
         Err(e) => Err(format!("Failed to fetch followers: {}", e)),
     }
@@ -933,7 +933,7 @@ async fn fetch_relay_list(pubkey: String, relay_urls: Vec<String>) -> Result<Str
         Ok(hex) => hex,
         Err(e) => return Err(format!("Invalid public key: {}", e)),
     };
-    match relay::fetch_relay_list_from_relays(&relay_urls, &hex_pubkey, 10).await {
+    match relay::fetch_relay_list_from_relays(&relay_urls, &hex_pubkey, relay::RESPONSE_TIMEOUT_SECS).await {
         Ok(urls) => {
             let mut json = String::from("[");
             for (i, url) in urls.iter().enumerate() {
@@ -985,7 +985,7 @@ async fn post_note(
         Ok(e) => e,
         Err(e) => return Err(format!("Failed to create note: {}", e)),
     };
-    let results = relay::publish_event_to_relays(&cfg.relays, &event, 10).await;
+    let results = relay::publish_event_to_relays(&cfg.relays, &event, relay::RESPONSE_TIMEOUT_SECS).await;
     let success_count = results.iter().filter(|r| r.success).count();
     if success_count == 0 {
         return Err(String::from("Failed to publish to any relay"));
@@ -1014,7 +1014,7 @@ async fn post_reaction(
     }
     let content = emoji.as_deref().filter(|s| !s.is_empty()).unwrap_or("❤️");
     let event = crypto::create_signed_reaction(&event_id, &author_pubkey, content, &secret_key)?;
-    let results = relay::publish_event_to_relays(&cfg.relays, &event, 10).await;
+    let results = relay::publish_event_to_relays(&cfg.relays, &event, relay::RESPONSE_TIMEOUT_SECS).await;
     let success_count = results.iter().filter(|r| r.success).count();
     if success_count == 0 {
         return Err(String::from("Failed to publish reaction to any relay"));
@@ -1043,7 +1043,7 @@ async fn post_repost(
     }
     let content = content_optional.as_deref().unwrap_or("");
     let event = crypto::create_signed_repost(&event_id, &author_pubkey, content, &secret_key)?;
-    let results = relay::publish_event_to_relays(&cfg.relays, &event, 10).await;
+    let results = relay::publish_event_to_relays(&cfg.relays, &event, relay::RESPONSE_TIMEOUT_SECS).await;
     let success_count = results.iter().filter(|r| r.success).count();
     if success_count == 0 {
         return Err(String::from("Failed to publish repost to any relay"));
@@ -1107,7 +1107,7 @@ async fn send_dm(state: tauri::State<'_, AppState>, recipient_pubkey: String, pl
         .map_err(|e| format!("Invalid recipient: {}", e))?;
 
     // Check if recipient supports NIP-17 by looking up their kind 10050 DM relay list
-    let recipient_dm_relays = relay::fetch_dm_relay_list_from_relays(&cfg.relays, &recipient_hex, 10).await
+    let recipient_dm_relays = relay::fetch_dm_relay_list_from_relays(&cfg.relays, &recipient_hex, relay::RESPONSE_TIMEOUT_SECS).await
         .unwrap_or_default();
 
     if !recipient_dm_relays.is_empty() {
@@ -1126,7 +1126,7 @@ async fn send_dm(state: tauri::State<'_, AppState>, recipient_pubkey: String, pl
 
         // Publish self-copy to our own DM relays (or regular relays if none configured)
         let our_dm_relays = if cfg.dm_relays.is_empty() { &cfg.relays } else { &cfg.dm_relays };
-        let _ = relay::publish_event_to_relays(our_dm_relays, &wrap_for_self, 10).await;
+        let _ = relay::publish_event_to_relays(our_dm_relays, &wrap_for_self, relay::RESPONSE_TIMEOUT_SECS).await;
 
         // Store raw gift wraps locally
         let raw_recip = nostr::event_to_json(&wrap_for_recipient);
@@ -1138,7 +1138,7 @@ async fn send_dm(state: tauri::State<'_, AppState>, recipient_pubkey: String, pl
     } else {
         // NIP-04 fallback: existing kind 4 path
         let event = crypto::create_signed_dm(&recipient_hex, &plaintext, &secret_hex)?;
-        let results = relay::publish_event_to_relays(&cfg.relays, &event, 10).await;
+        let results = relay::publish_event_to_relays(&cfg.relays, &event, relay::RESPONSE_TIMEOUT_SECS).await;
         let success_count = results.iter().filter(|r| r.success).count();
         if success_count == 0 {
             return Err(String::from("Failed to publish DM to any relay"));
@@ -1300,7 +1300,7 @@ async fn save_dm_relays(state: tauri::State<'_, AppState>, dm_relays: Vec<String
     cfg.dm_relays = dm_relays.clone();
     config::save_config(&config_dir, &cfg)?;
     let event = crypto::create_signed_dm_relay_list(&dm_relays, &secret_hex)?;
-    let results = relay::publish_event_to_relays(&cfg.relays, &event, 10).await;
+    let results = relay::publish_event_to_relays(&cfg.relays, &event, relay::RESPONSE_TIMEOUT_SECS).await;
     let success_count = results.iter().filter(|r| r.success).count();
     if success_count == 0 {
         return Err(String::from("DM relays saved locally but failed to publish to any relay"));
@@ -1313,7 +1313,7 @@ async fn save_dm_relays(state: tauri::State<'_, AppState>, dm_relays: Vec<String
 async fn fetch_dm_relay_list(pubkey: String, relay_urls: Vec<String>) -> Result<String, String> {
     let hex_pubkey = keys::public_key_to_hex(&pubkey)
         .map_err(|e| format!("Invalid public key: {}", e))?;
-    let urls = relay::fetch_dm_relay_list_from_relays(&relay_urls, &hex_pubkey, 10).await?;
+    let urls = relay::fetch_dm_relay_list_from_relays(&relay_urls, &hex_pubkey, relay::RESPONSE_TIMEOUT_SECS).await?;
     let mut json = String::from("[");
     for (i, url) in urls.iter().enumerate() {
         if i > 0 { json.push(','); }
@@ -1685,7 +1685,7 @@ async fn set_profile_metadata(state: tauri::State<'_, AppState>, profile_json: S
         Ok(e) => e,
         Err(e) => return Err(format!("Failed to create profile event: {}", e)),
     };
-    let results = relay::publish_event_to_relays(&cfg.relays, &event, 10).await;
+    let results = relay::publish_event_to_relays(&cfg.relays, &event, relay::RESPONSE_TIMEOUT_SECS).await;
     let success_count = results.iter().filter(|r| r.success).count();
     if success_count == 0 {
         return Err(String::from("Failed to publish profile to any relay"));
@@ -1713,7 +1713,7 @@ async fn fetch_zap_receipts(pubkey: String, relay_urls: Vec<String>, limit: Opti
     let filter = nostr::filter_zap_receipts_by_pubkey(&hex_pubkey, limit.unwrap_or(50));
     let mut all_events: Vec<nostr::Event> = Vec::new();
     for relay_url in &relay_urls {
-        match relay::fetch_notes_from_relay(relay_url, &filter, 10).await {
+        match relay::fetch_notes_from_relay(relay_url, &filter, relay::RESPONSE_TIMEOUT_SECS).await {
             Ok(events) => all_events.extend(events),
             Err(_) => continue,
         }
@@ -1740,7 +1740,7 @@ async fn fetch_note_zap_totals(event_ids: Vec<String>, relay_urls: Vec<String>) 
     let filter = nostr::filter_zap_receipts_by_events(event_ids, 500);
     let mut all_events: Vec<nostr::Event> = Vec::new();
     for relay_url in &relay_urls {
-        match relay::fetch_notes_from_relay(relay_url, &filter, 10).await {
+        match relay::fetch_notes_from_relay(relay_url, &filter, relay::RESPONSE_TIMEOUT_SECS).await {
             Ok(events) => all_events.extend(events),
             Err(_) => continue,
         }
@@ -2183,8 +2183,10 @@ fn main() {
     };
 
     let app = tauri::Builder::default()
+        .plugin(tauri_plugin_clipboard_manager::init())
         .manage(app_state)
         .register_asynchronous_uri_scheme_protocol("torimg", |_ctx, request, responder| {
+            debug_log!("[torimg] raw request uri: {:?}", request.uri());
             media_proxy::handle(request.uri().path(), responder);
         })
         .invoke_handler(tauri::generate_handler![

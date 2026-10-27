@@ -25,7 +25,8 @@ hmac = "0.12"
 rand = "0.8"
 bytes = "1"
 rfd = "0.15"
-hopf = { version = "0.5", default-features = false, features = ["http", "websocket", "socks"] }
+tauri-plugin-clipboard-manager = "2"
+hopf = { version = "0.6", default-features = false, features = ["http", "websocket", "socks"] }
 # hopf-core 0.5.0 uses aws-lc-rs ML_DSA/PqdsaKeyPair symbols that only exist from 1.18
 # onward, but its own Cargo.toml allows any "1" — pin explicitly so a fresh lockfile
 # doesn't resolve a too-old aws-lc-rs and fail to build.
@@ -33,19 +34,6 @@ aws-lc-rs = "1.18"
 
 [build-dependencies]
 tauri-build = { version = "2.0", features = [] }
-
-# hopf-http's HttpClientConnection/HttpClientSessionConfig became public (for
-# dialing through our own SOCKS+TLS transport) in the sibling ../hopf checkout
-# but hasn't been published to crates.io yet — override with the local path
-# per hopf's own README ("local path override via [patch.crates-io] when
-# hacking") until a new hopf release ships.
-[patch.crates-io]
-hopf = { path = "../hopf/crates/hopf" }
-hopf-core = { path = "../hopf/crates/hopf-core" }
-hopf-http = { path = "../hopf/crates/hopf-http" }
-hopf-websocket = { path = "../hopf/crates/hopf-websocket" }
-hopf-socks = { path = "../hopf/crates/hopf-socks" }
-hopf-dns = { path = "../hopf/crates/hopf-dns" }
 
 [profile.release]
 strip = true

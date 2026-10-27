@@ -200,11 +200,16 @@ export async function copyNsecToClipboard() {
     }
     try {
         var nsec = await invoke('convert_hex_to_nsec', { hex_key: state.config.private_key });
-        if (nsec && navigator.clipboard) {
-            await navigator.clipboard.writeText(nsec);
-            var t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
-            alert(t('accountModal.nsecCopied') || 'Private key (nsec) copied to clipboard.');
+        if (!nsec) {
+            return;
         }
+        // Write via Tauri's clipboard-manager plugin (native OS pasteboard),
+        // not navigator.clipboard.writeText: the webview's Web Clipboard API
+        // is unreliable here (can be unavailable, or silently drop the write
+        // once user-activation has lapsed across the `await` above).
+        await invoke('plugin:clipboard-manager|write_text', { text: nsec });
+        var t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
+        alert(t('accountModal.nsecCopied') || 'Private key (nsec) copied to clipboard.');
     } catch (e) {
         console.error('Failed to copy nsec:', e);
         alert('Failed to copy private key.');

@@ -936,9 +936,14 @@ export function updateProfileDisplay() {
         if (aboutEl) {
             aboutEl.textContent = '';
         }
+        // Own profile hasn't come back from relays yet: fall back to the
+        // locally-cached picture from config (same source the sidebar
+        // avatar already uses) instead of leaving this blank until the
+        // relay round-trip completes.
+        var fallbackPicture = viewingOwn ? state.config?.picture : (cache && cache.picture);
         if (pictureEl && placeholderEl) {
-            if (cache && cache.picture) {
-                pictureEl.src = torImgUrl(cache.picture);
+            if (fallbackPicture) {
+                pictureEl.src = torImgUrl(fallbackPicture);
                 pictureEl.style.display = 'block';
                 placeholderEl.style.display = 'none';
                 pictureEl.onerror = function() {
@@ -951,7 +956,9 @@ export function updateProfileDisplay() {
             }
         }
         if (bannerEl) {
-            bannerEl.style.backgroundImage = '';
+            bannerEl.style.backgroundImage = viewingOwn && state.config?.banner
+                ? `url('${torImgUrl(state.config.banner)}')`
+                : '';
         }
         if (nip05El) {
             nip05El.style.display = 'none';

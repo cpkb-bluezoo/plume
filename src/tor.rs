@@ -84,6 +84,55 @@ pub fn socks_addr() -> io::Result<SocketAddr> {
     }
 }
 
+/// Like [`socks_addr`], but when Tor is merely [`TorStatus::Starting`],
+/// blocks the calling thread (polling) until it becomes `Ready` or
+/// `Failed`, or `max_wait` elapses -- instead of failing instantly.
+///
+/// For a caller fired the instant local state becomes available (e.g. the
+/// sidebar/profile avatar, requested as soon as the on-disk config loads,
+/// well before Tor usually finishes bootstrapping) with no retry logic of
+/// its own (a one-shot `<img>` load), `socks_addr`'s instant failure means
+/// that request never succeeds even once Tor becomes ready moments later.
+/// Only call this from a thread that can afford to block for a while --
+/// never a shared dispatch thread.
+pub fn wait_for_ready(max_wait: Duration) -> io::Result<SocketAddr> {
+    let deadline = std::time::Instant::now() + max_wait;
+    loop {
+        match status() {
+            TorStatus::Ready(addr) => return Ok(addr),
+            TorStatus::Failed(reason) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotConnected,
+                    format!("Tor is not available: {reason}"),
+                ));
+            }
+            TorStatus::Starting => {
+                if std::time::Instant::now() >= deadline {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "Tor did not finish starting in time",
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            }
+        }
+    }
+}
+
+/// Async equivalent of [`wait_for_ready`] that never blocks the calling
+/// task's own thread: the poll-and-sleep loop runs on a short-lived
+/// watcher thread (the same shape as [`crate::async_bridge::timeout`]'s
+/// deadline timer), and the result is delivered back through a oneshot.
+/// Safe to `.await` from anywhere, including a thread shared with other
+/// work -- unlike `wait_for_ready`, which parks the calling thread directly.
+pub async fn wait_for_ready_async(max_wait: Duration) -> io::Result<SocketAddr> {
+    let (tx, rx) = crate::async_bridge::oneshot::<io::Result<SocketAddr>>();
+    std::thread::spawn(move || {
+        tx.send(wait_for_ready(max_wait));
+    });
+    rx.await
+}
+
 fn set_status(status: TorStatus, app: &tauri::AppHandle) {
     *status_cell().lock().unwrap() = status.clone();
     let payload = match &status {
@@ -121,13 +170,14 @@ pub fn start(app: tauri::AppHandle, base_dir: &str) {
 
     let mut cmd = Command::new("tor");
     cmd.arg("--SocksPort")
-        .arg("auto")
+        .arg("[::1]:auto")
         .arg("--DataDirectory")
         .arg(&data_dir)
         .arg("--ClientOnly")
         .arg("1")
         .arg("--Log")
         .arg("notice stdout")
+        .env("PATH", augmented_path())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .stdin(Stdio::null());
@@ -215,10 +265,10 @@ fn watch_bootstrap(stdout: impl std::io::Read, app: tauri::AppHandle) {
 }
 
 /// Parses Tor's own notice-log line for the address it actually bound --
-/// required since we ask for `SocksPort auto`. Deliberately *not* the
-/// earlier "Opening Socks listener on 127.0.0.1:0" line -- that's logged
+/// required since we ask for `SocksPort [::1]:auto`. Deliberately *not* the
+/// earlier "Opening Socks listener on [::1]:0" line -- that's logged
 /// before the OS assigns the real port, always showing `:0`. "Opened Socks
-/// listener connection (ready) on 127.0.0.1:PORT" is logged once the
+/// listener connection (ready) on [::1]:PORT" is logged once the
 /// listener actually has its real, bound port.
 fn parse_socks_listener_line(line: &str) -> Option<SocketAddr> {
     let marker = "Opened Socks listener connection (ready) on ";
@@ -236,6 +286,41 @@ pub fn shutdown() {
             let _ = child.wait();
         }
     }
+}
+
+/// `PATH`, plus the common macOS package-manager bin directories (Homebrew,
+/// MacPorts) if they're not already in it.
+///
+/// A GUI launch (Finder double-click, `open Plume.app`, a Dock icon) gets
+/// its `PATH` from `/etc/paths` + `/etc/paths.d/*` only -- it never sources
+/// `~/.zprofile`/`~/.zshrc`, which is how an interactive terminal's `PATH`
+/// picks up `/opt/homebrew/bin` or `/opt/local/bin`. `tor` installed via
+/// Homebrew or MacPorts is invisible to `Command::new("tor")` under a GUI
+/// launch even though the exact same binary works fine from a terminal.
+#[cfg(target_os = "macos")]
+fn augmented_path() -> std::ffi::OsString {
+    const EXTRA_DIRS: &[&str] = &[
+        "/opt/homebrew/bin",
+        "/opt/homebrew/sbin",
+        "/usr/local/bin",
+        "/usr/local/sbin",
+        "/opt/local/bin",
+        "/opt/local/sbin",
+    ];
+    let existing = std::env::var_os("PATH").unwrap_or_default();
+    let mut dirs: Vec<std::path::PathBuf> = std::env::split_paths(&existing).collect();
+    for extra in EXTRA_DIRS {
+        let extra = std::path::PathBuf::from(extra);
+        if !dirs.contains(&extra) {
+            dirs.push(extra);
+        }
+    }
+    std::env::join_paths(dirs).unwrap_or(existing)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn augmented_path() -> std::ffi::OsString {
+    std::env::var_os("PATH").unwrap_or_default()
 }
 
 fn pid_file_path(data_dir: &Path) -> std::path::PathBuf {
@@ -270,3 +355,76 @@ fn kill_stale_tor(data_dir: &Path) {
 
 #[cfg(not(unix))]
 fn kill_stale_tor(_data_dir: &Path) {}
+
+/// Force [`status`] to report `Ready(addr)` without going through [`start`]
+/// -- for tests that want to dial a Tor instance that's already running
+/// (e.g. one started by hand outside the test process) without needing a
+/// `tauri::AppHandle` to drive the normal bootstrap-watching flow.
+#[cfg(test)]
+pub fn force_ready_for_test(addr: SocketAddr) {
+    *status_cell().lock().unwrap() = TorStatus::Starting;
+    *status_cell().lock().unwrap() = TorStatus::Ready(addr);
+}
+
+/// Force [`status`] back to `Starting` -- for tests that need to control
+/// the Starting -> Ready transition themselves (e.g. flipping it to Ready
+/// on a delay from another thread) rather than jumping straight to Ready
+/// like [`force_ready_for_test`] does.
+#[cfg(test)]
+pub fn force_starting_for_test() {
+    *status_cell().lock().unwrap() = TorStatus::Starting;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `status_cell` is a single process-wide global, so this (and every
+    /// other test touching it) must run with `--test-threads=1` -- run
+    /// concurrently, a different test's `force_ready_for_test` could flip
+    /// the status out from under this one mid-wait.
+    #[test]
+    fn wait_for_ready_blocks_then_succeeds_once_ready() {
+        *status_cell().lock().unwrap() = TorStatus::Starting;
+        let addr: SocketAddr = "127.0.0.1:9050".parse().unwrap();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            *status_cell().lock().unwrap() = TorStatus::Ready(addr);
+        });
+        let start = std::time::Instant::now();
+        let result = wait_for_ready(Duration::from_secs(5));
+        assert_eq!(result.unwrap(), addr);
+        assert!(
+            start.elapsed() >= Duration::from_millis(250),
+            "should have actually waited, not returned instantly"
+        );
+    }
+
+    #[test]
+    fn wait_for_ready_times_out_if_never_ready() {
+        *status_cell().lock().unwrap() = TorStatus::Starting;
+        let result = wait_for_ready(Duration::from_millis(300));
+        assert!(result.is_err());
+    }
+
+    /// `wait_for_ready_async` must resolve successfully once status flips
+    /// to `Ready`, the same as the blocking version -- it's just delivered
+    /// through a oneshot from a watcher thread instead of parking the
+    /// calling thread directly.
+    #[test]
+    fn wait_for_ready_async_resolves_once_ready() {
+        *status_cell().lock().unwrap() = TorStatus::Starting;
+        let addr: SocketAddr = "127.0.0.1:9050".parse().unwrap();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            *status_cell().lock().unwrap() = TorStatus::Ready(addr);
+        });
+        let start = std::time::Instant::now();
+        let result = crate::async_bridge::block_on(wait_for_ready_async(Duration::from_secs(5)));
+        assert_eq!(result.unwrap(), addr);
+        assert!(
+            start.elapsed() >= Duration::from_millis(250),
+            "should have actually waited, not returned instantly"
+        );
+    }
+}

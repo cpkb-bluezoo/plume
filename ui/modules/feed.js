@@ -26,8 +26,6 @@ import { createNoteCard, createArticleCard, getReplyToPubkey, verifyNote, ensure
 import { updateFeedInitialState } from './config.js';
 
 let feedStreamNoteIndex = 0;
-var feedNoteQueue = [];
-var feedNoteDrainScheduled = false;
 
 // Returns list of hex pubkeys for "follows" mode, or null for firehose.
 // Uses the locally cached following list from config first for instant results,
@@ -280,31 +278,6 @@ export function showMessage(message) {
     `;
 }
 
-export function scheduleFeedNoteDrain() {
-    if (feedNoteDrainScheduled) {
-        return;
-    }
-    feedNoteDrainScheduled = true;
-    requestAnimationFrame(function drainFeedNoteQueue() {
-        feedNoteDrainScheduled = false;
-        if (feedNoteQueue.length === 0) {
-            return;
-        }
-        var note = feedNoteQueue.shift();
-        var result = appendNoteCardToFeedSync(note);
-        if (result.index !== -1) {
-            ensureProfilesForNotes([note]);
-            verifyNote(note, result.index);
-            if (result.card) {
-                resolveNostrEmbeds(result.card);
-            }
-        }
-        if (feedNoteQueue.length > 0) {
-            scheduleFeedNoteDrain();
-        }
-    });
-}
-
 // Append a single note card to the feed (streaming). Dedupes by id; inserts in sorted position.
 // Returns { index, card } where index is -1 if skipped.
 export function appendNoteCardToFeedSync(note) {
@@ -359,6 +332,19 @@ export function appendNoteCardToFeed(note) {
     if (state.notes.some(function(n) { return n.id === note.id; })) {
         return;
     }
-    feedNoteQueue.push(note);
-    scheduleFeedNoteDrain();
+    // Append and enrich immediately, synchronously, as each event arrives --
+    // no queue, no requestAnimationFrame pacing. The backend already emits
+    // one `feed-note` event per relay EVENT message the instant it's parsed
+    // (never buffered until EOSE); spreading the resulting DOM inserts over
+    // multiple animation frames just added latency on top of that for no
+    // benefit, most noticeably on a fresh connection where a relay's whole
+    // backlog (up to `limit`) arrives in one tight burst.
+    var result = appendNoteCardToFeedSync(note);
+    if (result.index !== -1) {
+        ensureProfilesForNotes([note]);
+        verifyNote(note, result.index);
+        if (result.card) {
+            resolveNostrEmbeds(result.card);
+        }
+    }
 }

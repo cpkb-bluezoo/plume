@@ -117,6 +117,63 @@ impl<T> OneshotSender<T> {
     }
 }
 
+/// An async counting semaphore -- `std`-only stand-in for
+/// `tokio::sync::Semaphore`. Bounds how many callers may hold a permit at
+/// once; anyone over the limit awaits until one is released rather than
+/// being turned away, so a burst of far more concurrent callers than the
+/// cap just queues up and drains through it instead of failing outright.
+pub struct Semaphore {
+    state: Mutex<SemaphoreState>,
+}
+
+struct SemaphoreState {
+    available: usize,
+    waiters: std::collections::VecDeque<OneshotSender<()>>,
+}
+
+/// Holds one permit; releases it (waking the next waiter, if any) on drop.
+pub struct SemaphorePermit<'a> {
+    semaphore: &'a Semaphore,
+}
+
+impl Semaphore {
+    pub fn new(permits: usize) -> Self {
+        Self { state: Mutex::new(SemaphoreState { available: permits, waiters: std::collections::VecDeque::new() }) }
+    }
+
+    /// Waits for a permit to become available, queuing (FIFO) behind
+    /// anyone already waiting if the semaphore is currently exhausted.
+    pub async fn acquire(&self) -> SemaphorePermit<'_> {
+        let pending = {
+            let mut guard = self.state.lock().unwrap();
+            if guard.available > 0 {
+                guard.available -= 1;
+                None
+            } else {
+                let (tx, rx) = oneshot::<()>();
+                guard.waiters.push_back(tx);
+                Some(rx)
+            }
+        };
+        if let Some(rx) = pending {
+            rx.await;
+        }
+        SemaphorePermit { semaphore: self }
+    }
+}
+
+impl Drop for SemaphorePermit<'_> {
+    fn drop(&mut self) {
+        let mut guard = self.semaphore.state.lock().unwrap();
+        match guard.waiters.pop_front() {
+            // Ownership of this permit transfers directly to the next
+            // waiter -- `available` doesn't change.
+            Some(tx) => tx.send(()),
+            None => guard.available += 1,
+        }
+    }
+}
+
 impl<T> Future for OneshotFuture<T> {
     type Output = T;
 

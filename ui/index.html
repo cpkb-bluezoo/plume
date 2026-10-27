@@ -22,7 +22,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self' ipc: tauri:; img-src 'self' https: data:; media-src 'self' https:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: tauri: https:">
+    <!-- No CSP meta tag here on purpose: Tauri injects one from tauri.conf.json's
+         app.security.csp at build time (tauri-utils::html::inject_csp), appending
+         it to <head> rather than replacing anything already there. A second,
+         hardcoded tag here used to carry the old pre-Tor policy (img-src/media-src
+         allowing https: directly, no torimg:) -- with both tags present, the
+         webview enforced their intersection, which allowed neither https: nor
+         torimg:, silently blocking every image load before it ever reached Rust. -->
     <title>Plume</title>
     <link rel="stylesheet" href="style.css">
     <link rel="icon" type="image/svg+xml" href="plume.svg">
