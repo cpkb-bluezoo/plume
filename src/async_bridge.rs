@@ -316,31 +316,10 @@ pub mod mpsc {
         }
     }
 
-    /// Error returned by [`UnboundedReceiver::try_recv`] (mirrors
-    /// `tokio::sync::mpsc::error::TryRecvError`'s role).
-    #[derive(Debug)]
-    pub enum TryRecvError {
-        Empty,
-        Disconnected,
-    }
-
     impl<T> UnboundedReceiver<T> {
         /// Await the next value, or `None` once every sender has been dropped.
         pub fn recv(&mut self) -> RecvFuture<'_, T> {
             RecvFuture { state: &self.state }
-        }
-
-        /// Non-blocking poll for the next value.
-        pub fn try_recv(&mut self) -> Result<T, TryRecvError> {
-            let mut guard = self.state.lock().unwrap();
-            if let Some(value) = guard.queue.pop_front() {
-                return Ok(value);
-            }
-            if guard.sender_count == 0 {
-                Err(TryRecvError::Disconnected)
-            } else {
-                Err(TryRecvError::Empty)
-            }
         }
     }
 

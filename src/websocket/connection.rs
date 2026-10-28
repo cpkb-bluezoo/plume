@@ -119,6 +119,21 @@ impl WebSocketConnection {
         Ok(())
     }
 
+    /// Tears the underlying transport down immediately, freeing its
+    /// socket/fd. Unlike [`send_close`](Self::send_close), which only
+    /// writes a WebSocket-level close *frame* onto the wire and still
+    /// waits on the peer to finish the handshake, this closes our side of
+    /// the connection outright -- callers that use a connection for exactly
+    /// one round trip (a fetch, a publish, a stream that exits on its own)
+    /// must call this once they're done with it, since nothing does so
+    /// implicitly: this type derives `Clone` over a cheap handle, so it
+    /// can't itself be the thing a `Drop` impl closes on scope exit
+    /// (closing on every clone's drop would tear down a connection still
+    /// in use elsewhere).
+    pub fn close(&self) {
+        self.conn.close();
+    }
+
     /// Attach `handler` and wait until the connection closes, fails, or
     /// `handler.should_stop()` becomes true. Replays any frames that
     /// arrived before this call (`opened`/early messages can race ahead of

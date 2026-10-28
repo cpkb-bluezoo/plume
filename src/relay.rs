@@ -18,209 +18,26 @@
  * along with Plume.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-//! Async relay connections using our WebSocket client and JSON push parser.
-//! All functions are async; no blocking code.
+//! Nostr relay message types and JSON push-parser, plus the fetch/publish
+//! wrapper functions the rest of the app calls. Connection lifecycle (one
+//! persistent, auto-reconnecting WebSocket per relay, demultiplexed across
+//! every caller) lives in [`crate::relay_pool`] -- every function below
+//! sends/receives over whatever connection that module maintains rather
+//! than dialing or closing anything itself.
 
 use bytes::BytesMut;
-use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant};
 
 use crate::async_bridge::{self, mpsc};
 use crate::debug_log;
 use crate::json::{JsonContentHandler, JsonNumber, JsonParser};
 use crate::nostr;
-use crate::tor;
-use crate::websocket::connection::WebSocketConnection;
-use crate::websocket::{WebSocketClient, WebSocketHandler};
-
-/// Connection timeout for WebSocket connect (seconds).
-///
-/// Generous on purpose: every connection is dialed through Tor
-/// ([`crate::net::tor_dial`]), and a cold SOCKS circuit to a relay host
-/// Tor hasn't talked to yet commonly takes several seconds to build. The
-/// old pre-Tor value (5s, tuned for a direct connection) made most first
-/// contacts with a relay time out and get recorded as a failure before the
-/// circuit had a chance to finish.
-const CONNECT_TIMEOUT_SECS: u64 = 20;
-
-/// How long to wait for Tor to finish bootstrapping before giving up on a
-/// relay dial, when it's merely [`tor::TorStatus::Starting`] (as opposed to
-/// genuinely `Failed`). Without this, a relay connect attempt that races
-/// Tor's own startup -- which the feed stream always does, since it fires
-/// the instant login/app-launch completes, well before a cold Tor bootstrap
-/// (several seconds to tens of seconds) finishes -- fails instantly and
-/// permanently for that attempt, with nothing retrying it until the next
-/// 45s poll tick. Matches the wait [`crate::media_proxy`] already uses for
-/// the same reason on the webview-image path.
-const TOR_READY_WAIT_SECS: u64 = 45;
+use crate::relay_pool;
 
 /// Default budget for waiting on a relay's response after connecting
-/// (EOSE, a fetch's results, a publish ack, …) -- same Tor-latency
-/// reasoning as [`CONNECT_TIMEOUT_SECS`].
+/// (EOSE, a fetch's results, a publish ack, …) -- Tor adds latency to
+/// every round trip, so this is generous relative to what a direct
+/// connection would need.
 pub(crate) const RESPONSE_TIMEOUT_SECS: u32 = 20;
-
-/// Minimum backoff wait after a connection failure (seconds).
-const BACKOFF_BASE_SECS: u64 = 10;
-
-/// Maximum backoff wait (seconds) — caps the exponential growth.
-const BACKOFF_MAX_SECS: u64 = 300; // 5 minutes
-
-// ============================================================
-// Relay connection backoff
-// ============================================================
-
-struct RelayBackoffState {
-    last_failure: Instant,
-    consecutive_failures: u32,
-}
-
-fn relay_backoff_map() -> &'static Mutex<HashMap<String, RelayBackoffState>> {
-    static INSTANCE: OnceLock<Mutex<HashMap<String, RelayBackoffState>>> = OnceLock::new();
-    INSTANCE.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-/// Calculate how many seconds to wait given a failure count.
-/// 10, 20, 40, 80, 160, 300, 300, ...
-fn backoff_seconds(failures: u32) -> u64 {
-    if failures == 0 {
-        return 0;
-    }
-    let exp = (failures - 1).min(31);
-    let secs = BACKOFF_BASE_SECS.saturating_mul(1u64 << exp);
-    secs.min(BACKOFF_MAX_SECS)
-}
-
-/// Check if a relay is in backoff.
-/// Returns `None` if OK to connect, or `Some(remaining_seconds)` if in backoff.
-pub fn check_relay_backoff(relay_url: &str) -> Option<u64> {
-    let map = relay_backoff_map().lock().unwrap();
-    if let Some(state) = map.get(relay_url) {
-        let wait = backoff_seconds(state.consecutive_failures);
-        let elapsed = state.last_failure.elapsed().as_secs();
-        if elapsed < wait {
-            return Some(wait - elapsed);
-        }
-    }
-    None
-}
-
-/// Record a connection failure for a relay.
-/// Only escalates the backoff counter when the previous backoff period has
-/// expired (i.e. this is a fresh retry that failed).  Concurrent failures
-/// during the same backoff window are ignored to prevent rapid escalation.
-pub fn record_relay_failure(relay_url: &str) {
-    let mut map = relay_backoff_map().lock().unwrap();
-    if let Some(state) = map.get_mut(relay_url) {
-        let wait = backoff_seconds(state.consecutive_failures);
-        let elapsed = state.last_failure.elapsed().as_secs();
-        if elapsed >= wait {
-            // Backoff expired and we tried again — this is a genuinely new failure
-            state.consecutive_failures += 1;
-            state.last_failure = Instant::now();
-            let new_wait = backoff_seconds(state.consecutive_failures);
-            debug_log!("[backoff] {} failed (attempt {}), next retry in {}s",
-                relay_url, state.consecutive_failures, new_wait);
-        }
-        // else: still in backoff period — concurrent failure, don't escalate
-    } else {
-        // First failure for this relay
-        map.insert(relay_url.to_string(), RelayBackoffState {
-            last_failure: Instant::now(),
-            consecutive_failures: 1,
-        });
-        debug_log!("[backoff] {} failed (attempt 1), next retry in {}s",
-            relay_url, BACKOFF_BASE_SECS);
-    }
-}
-
-/// Record a successful connection, clearing backoff state for the relay.
-pub fn record_relay_success(relay_url: &str) {
-    let mut map = relay_backoff_map().lock().unwrap();
-    if map.remove(relay_url).is_some() {
-        debug_log!("[backoff] {} connected successfully, backoff cleared", relay_url);
-    }
-}
-
-/// Hard cap on simultaneous open relay connections, process-wide, across
-/// every kind of operation (feed, DM, profile/following/followers/relay-list
-/// lookups, publishes). Each one holds a file descriptor for as long as
-/// it's open -- anywhere from a quick publish-and-ack to the full
-/// connect+response timeout budget (up to tens of seconds), or indefinitely
-/// for the long-lived feed/DM streams.
-///
-/// Before this existed, a feed with many distinct note authors needing a
-/// profile lookup (each now fanning out to every configured relay
-/// concurrently, since that's exactly what fixed the "profiles take
-/// forever" regression) could add up to far more simultaneous dials than
-/// the process's fd limit allows, on top of whatever the main feed/DM
-/// streams themselves need -- and since every relay operation competes for
-/// the same limited Tor circuits and fds, an unbounded flood of background
-/// metadata lookups could starve/slow the user-visible feed stream too.
-/// Acquiring a permit before connecting means excess callers queue (FIFO)
-/// instead of either failing outright or free-for-all competing.
-const MAX_CONCURRENT_RELAY_CONNECTIONS: usize = 24;
-
-static RELAY_DIAL_SEMAPHORE: OnceLock<async_bridge::Semaphore> = OnceLock::new();
-
-fn relay_dial_semaphore() -> &'static async_bridge::Semaphore {
-    RELAY_DIAL_SEMAPHORE.get_or_init(|| async_bridge::Semaphore::new(MAX_CONCURRENT_RELAY_CONNECTIONS))
-}
-
-/// Connect to a relay with timeout and backoff.
-/// Multiple operations (feed, DM, profile fetch) may connect to the same relay
-/// concurrently — each gets its own WebSocket connection, bounded in total
-/// (across every relay and every kind of operation) by
-/// [`MAX_CONCURRENT_RELAY_CONNECTIONS`]. The backoff system only prevents
-/// retries while a relay is in its cooldown window after a failure.
-pub async fn connect_to_relay(
-    relay_url: &str,
-) -> Result<(WebSocketConnection, async_bridge::SemaphorePermit<'static>), String> {
-    // Wait out a merely-still-starting Tor instead of failing instantly —
-    // see [`TOR_READY_WAIT_SECS`]. A genuinely `Failed` Tor still fails
-    // closed immediately, with no wait.
-    if let Err(e) = tor::wait_for_ready_async(Duration::from_secs(TOR_READY_WAIT_SECS)).await {
-        record_relay_failure(relay_url);
-        return Err(format!("Tor not ready: {}", e));
-    }
-
-    let permit = relay_dial_semaphore().acquire().await;
-
-    // Check backoff — if the relay recently failed, skip it
-    {
-        let map = relay_backoff_map().lock().unwrap();
-        if let Some(state) = map.get(relay_url) {
-            let wait = backoff_seconds(state.consecutive_failures);
-            let elapsed = state.last_failure.elapsed().as_secs();
-            if elapsed < wait {
-                return Err(format!(
-                    "Relay {} in backoff ({} seconds remaining)",
-                    relay_url, wait - elapsed
-                ));
-            }
-        }
-    }
-
-    let result = async_bridge::timeout(
-        Duration::from_secs(CONNECT_TIMEOUT_SECS),
-        WebSocketClient::connect(relay_url),
-    ).await;
-
-    match result {
-        Ok(Ok(conn)) => {
-            record_relay_success(relay_url);
-            Ok((conn, permit))
-        }
-        Ok(Err(e)) => {
-            record_relay_failure(relay_url);
-            Err(format!("Failed to connect to {}: {}", relay_url, e))
-        }
-        Err(_) => {
-            record_relay_failure(relay_url);
-            Err(format!("Connection timeout to {}", relay_url))
-        }
-    }
-}
 
 // ============================================================
 // Relay Message Types
@@ -455,234 +272,14 @@ pub fn parse_relay_message(message: &str) -> Result<RelayMessage, String> {
 }
 
 // ============================================================
-// WebSocket handler for Nostr relay streams
-// ============================================================
-
-/// WebSocket handler: parses each text frame as JSON and sends StreamMessage to tx.
-struct NostrRelayHandler {
-    tx: mpsc::UnboundedSender<StreamMessage>,
-    should_stop: bool,
-    exit_on_eose: bool,
-    filter_kind_dm: Option<u32>,
-}
-
-impl WebSocketHandler for NostrRelayHandler {
-    fn connected(&mut self) {}
-
-    fn text_frame(&mut self, data: &[u8]) {
-        let text = match std::str::from_utf8(data) {
-            Ok(t) => t,
-            Err(e) => {
-                debug_log!("[relay] invalid UTF-8 in text frame ({} bytes): {}", data.len(), e);
-                return;
-            }
-        };
-        debug_log!("[relay] text frame ({} bytes): {}",
-            text.len(),
-            match text.char_indices().nth(120) { Some((idx, _)) => &text[..idx], None => text }
-        );
-        match parse_relay_message(text) {
-            Ok(RelayMessage::Event { event, .. }) => {
-                debug_log!("[relay] EVENT kind={} id={}", event.kind, &event.id[..8.min(event.id.len())]);
-                let send = match self.filter_kind_dm {
-                    Some(kind) => event.kind == kind,
-                    None => true,
-                };
-                if send && self.tx.send(StreamMessage::Event(event)).is_err() {
-                    self.should_stop = true;
-                }
-            }
-            Ok(RelayMessage::EndOfStoredEvents { .. }) => {
-                debug_log!("[relay] EOSE");
-                let _ = self.tx.send(StreamMessage::Eose);
-                if self.exit_on_eose {
-                    self.should_stop = true;
-                }
-            }
-            Ok(RelayMessage::Notice { message }) => {
-                debug_log!("[relay] NOTICE: {}", message);
-                let _ = self.tx.send(StreamMessage::Notice(message));
-            }
-            Ok(_) => {
-                debug_log!("[relay] other message type");
-            }
-            Err(e) => {
-                debug_log!("[relay] parse error: {}", e);
-            }
-        }
-    }
-
-    fn binary_frame(&mut self, _data: &[u8]) {}
-
-    fn close(&mut self, _code: Option<u16>, _reason: &str) {
-        self.should_stop = true;
-    }
-
-    fn ping(&mut self, _data: &[u8]) {}
-    fn pong(&mut self, _data: &[u8]) {}
-
-    fn failed(&mut self, _error: &std::io::Error) {
-        self.should_stop = true;
-    }
-
-    fn should_stop(&self) -> bool {
-        self.should_stop
-    }
-}
-
-// ============================================================
-// Async stream functions
-// ============================================================
-
-/// Run one relay's feed stream. Each text frame is parsed and turned into StreamMessage.
-pub async fn run_relay_feed_stream(
-    relay_url: String,
-    filter: nostr::Filter,
-    timeout_seconds: u32,
-    tx: mpsc::UnboundedSender<StreamMessage>,
-) {
-    let (conn, _permit) = match connect_to_relay(&relay_url).await {
-        Ok(c) => c,
-        Err(e) => {
-            debug_log!("[relay] feed stream: {}", e);
-            let _ = tx.send(StreamMessage::Eose); // signal completion so EOSE count isn't stuck
-            return;
-        }
-    };
-
-    debug_log!("Connected to {}", relay_url);
-
-    let subscription_id = format!(
-        "plume_{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis()
-    );
-    let filter_json = nostr::filter_to_json(&filter);
-    let req_message = format!("[\"REQ\",\"{}\",{}]", subscription_id, filter_json);
-
-    let conn = conn;
-    debug_log!("[relay] sending REQ to {}: {}", relay_url, req_message);
-    if let Err(e) = conn.send_text(req_message.as_bytes()) {
-        debug_log!("[relay] failed to send REQ to {}: {}", relay_url, e);
-        let _ = tx.send(StreamMessage::Eose);
-        return;
-    }
-    debug_log!("[relay] REQ sent to {}, waiting for data (timeout {}s)...", relay_url, timeout_seconds);
-
-    let handler = NostrRelayHandler {
-        tx: tx.clone(),
-        should_stop: false,
-        exit_on_eose: true,
-        filter_kind_dm: None,
-    };
-
-    let timeout_duration = Duration::from_secs(timeout_seconds as u64);
-    match async_bridge::timeout(timeout_duration, conn.run(handler)).await {
-        Ok(Ok(())) => debug_log!("[relay] run completed normally for {}", relay_url),
-        Ok(Err(e)) => {
-            debug_log!("[relay] run error for {}: {}", relay_url, e);
-            let _ = tx.send(StreamMessage::Eose); // ensure count isn't stuck on error
-        }
-        Err(_) => {
-            debug_log!("[relay] run timed out for {}", relay_url);
-            let _ = tx.send(StreamMessage::Eose); // ensure count isn't stuck on timeout
-        }
-    }
-}
-
-/// Run a long-lived DM subscription (kind 4) with two filters. Does not exit on EOSE.
-#[allow(dead_code)]
-pub async fn run_relay_dm_stream(
-    relay_url: String,
-    filter_received: nostr::Filter,
-    filter_sent: nostr::Filter,
-    tx: mpsc::UnboundedSender<StreamMessage>,
-) {
-    let (conn, _permit) = match connect_to_relay(&relay_url).await {
-        Ok(c) => c,
-        Err(e) => {
-            debug_log!("[relay] DM stream: {}", e);
-            return;
-        }
-    };
-
-    let subscription_id = format!(
-        "plume_dm_{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis()
-    );
-    let f1 = nostr::filter_to_json(&filter_received);
-    let f2 = nostr::filter_to_json(&filter_sent);
-    let req_message = format!("[\"REQ\",\"{}\",{},{}]", subscription_id, f1, f2);
-
-    let conn = conn;
-    if conn.send_text(req_message.as_bytes()).is_err() {
-        return;
-    }
-
-    let handler = NostrRelayHandler {
-        tx,
-        should_stop: false,
-        exit_on_eose: false,
-        filter_kind_dm: Some(nostr::KIND_DM),
-    };
-    let _ = conn.run(handler).await;
-}
-
-/// Run a long-lived DM subscription for both NIP-04 (kind 4) and NIP-17 (kind 1059).
-/// Three filters: kind 4 received, kind 4 sent, and kind 1059 gift wraps addressed to us.
-pub async fn run_relay_dm_stream_nip17(
-    relay_url: String,
-    filter_received: nostr::Filter,
-    filter_sent: nostr::Filter,
-    filter_gift_wraps: nostr::Filter,
-    tx: mpsc::UnboundedSender<StreamMessage>,
-) {
-    let (conn, _permit) = match connect_to_relay(&relay_url).await {
-        Ok(c) => c,
-        Err(e) => {
-            debug_log!("[relay] DM stream NIP-17: {}", e);
-            let _ = tx.send(StreamMessage::Eose);
-            return;
-        }
-    };
-
-    let subscription_id = format!(
-        "plume_dm17_{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis()
-    );
-    let f1 = nostr::filter_to_json(&filter_received);
-    let f2 = nostr::filter_to_json(&filter_sent);
-    let f3 = nostr::filter_to_json(&filter_gift_wraps);
-    let req_message = format!("[\"REQ\",\"{}\",{},{},{}]", subscription_id, f1, f2, f3);
-
-    let conn = conn;
-    if conn.send_text(req_message.as_bytes()).is_err() {
-        let _ = tx.send(StreamMessage::Eose);
-        return;
-    }
-
-    let handler = NostrRelayHandler {
-        tx,
-        should_stop: false,
-        exit_on_eose: false,
-        filter_kind_dm: None, // accept all kinds (4 and 1059)
-    };
-    let _ = conn.run(handler).await;
-}
-
-// ============================================================
 // One-off async relay functions (fetch, publish)
 // ============================================================
 
-/// Fetch notes from a single relay (async, with timeout).
+/// Fetch notes from a single relay (async, with timeout). Sends the REQ
+/// over that relay's shared, persistent connection (dialing/waiting for
+/// one to come up first if necessary) via
+/// [`relay_pool::query_streaming`] -- it does not dial or close anything
+/// of its own.
 pub async fn fetch_notes_from_relay(
     relay_url: &str,
     filter: &nostr::Filter,
@@ -694,9 +291,8 @@ pub async fn fetch_notes_from_relay(
     let filter = filter.clone();
     let timeout = timeout_seconds;
 
-    // Run the feed stream which collects events and sends Eose when done
     async_bridge::spawn(async move {
-        run_relay_feed_stream(url, filter, timeout, tx).await;
+        relay_pool::query_streaming(url, filter, timeout, tx).await;
     });
 
     let mut events: Vec<nostr::Event> = Vec::new();
@@ -756,9 +352,8 @@ pub async fn fetch_profile_from_relay(
 }
 
 /// Fetch profile from multiple relays, trying all of them at once (each
-/// relay dial is its own Tor circuit, so trying them one at a time would
-/// stack every relay's connect+response timeout on top of the last --
-/// see [`run_relay_feed_stream`]'s dispatcher for the same reasoning).
+/// relay's connection is independent of the others, so trying them one at
+/// a time would stack every relay's response timeout on top of the last).
 /// Takes the first successful result.
 pub async fn fetch_profile_from_relays(
     relay_urls: &Vec<String>,
@@ -1055,80 +650,7 @@ pub async fn publish_event_to_relay(
     event: &nostr::Event,
     timeout_seconds: u32,
 ) -> Result<PublishResult, String> {
-    // Connect with timeout and backoff
-    let (conn, _permit) = connect_to_relay(relay_url).await?;
-
-    // Send the EVENT message
-    let event_json = nostr::event_to_json(event);
-    let publish_message = format!("[\"EVENT\",{}]", event_json);
-    conn.send_text(publish_message.as_bytes())
-        .map_err(|e| format!("Failed to send to {}: {}", relay_url, e))?;
-
-    // Wait for OK response using a handler
-    let (tx, mut rx) = mpsc::unbounded_channel::<RelayMessage>();
-
-    struct PublishHandler {
-        tx: mpsc::UnboundedSender<RelayMessage>,
-        should_stop: bool,
-    }
-
-    impl WebSocketHandler for PublishHandler {
-        fn connected(&mut self) {}
-        fn text_frame(&mut self, data: &[u8]) {
-            if let Ok(text) = std::str::from_utf8(data) {
-                if let Ok(msg) = parse_relay_message(text) {
-                    match &msg {
-                        RelayMessage::Ok { .. } | RelayMessage::Notice { .. } => {
-                            self.should_stop = true;
-                        }
-                        _ => {}
-                    }
-                    let _ = self.tx.send(msg);
-                }
-            }
-        }
-        fn binary_frame(&mut self, _data: &[u8]) {}
-        fn close(&mut self, _code: Option<u16>, _reason: &str) { self.should_stop = true; }
-        fn ping(&mut self, _data: &[u8]) {}
-        fn pong(&mut self, _data: &[u8]) {}
-        fn failed(&mut self, _error: &std::io::Error) { self.should_stop = true; }
-        fn should_stop(&self) -> bool { self.should_stop }
-    }
-
-    let handler = PublishHandler { tx, should_stop: false };
-    let timeout_duration = Duration::from_secs(timeout_seconds as u64);
-    let _ = async_bridge::timeout(timeout_duration, conn.run(handler)).await;
-
-    // Check what we got
-    while let Ok(msg) = rx.try_recv() {
-        match msg {
-            RelayMessage::Ok { event_id, success, message } => {
-                if event_id == event.id {
-                    return Ok(PublishResult {
-                        relay_url: relay_url.to_string(),
-                        success,
-                        message,
-                    });
-                }
-            }
-            RelayMessage::Notice { message } => {
-                if message.contains(&event.id) || message.to_lowercase().contains("error") {
-                    return Ok(PublishResult {
-                        relay_url: relay_url.to_string(),
-                        success: false,
-                        message,
-                    });
-                }
-            }
-            _ => {}
-        }
-    }
-
-    Ok(PublishResult {
-        relay_url: relay_url.to_string(),
-        success: false,
-        message: String::from("Timeout waiting for response"),
-    })
+    relay_pool::publish(relay_url, event, timeout_seconds).await
 }
 
 /// Publish an event to multiple relays.
@@ -1198,48 +720,14 @@ pub fn publish_results_to_json(results: &Vec<PublishResult>) -> String {
 /// Diagnostic test for the "no profiles loading" report: times
 /// `fetch_profile_from_relays` against a real, already-bootstrapped Tor
 /// instance and a real relay list to confirm/refute that trying relays
-/// sequentially (rather than racing them like `run_relay_feed_stream`
-/// does) stacks each relay's timeout on top of the last.
+/// sequentially (rather than racing them) stacks each relay's timeout on
+/// top of the last. The Tor-readiness-wait and "exactly one connection per
+/// relay" regression tests live in `relay_pool::diag_tests` now, since
+/// that's the module that actually owns connection lifecycle.
 #[cfg(test)]
 mod diag_tests {
     use super::*;
-
-    /// Regression test for "still waiting a long time for any notes": when
-    /// a relay connect is attempted while Tor is merely `Starting` (exactly
-    /// what happens at app launch, since the feed stream fires the instant
-    /// login completes, well before even a fast Tor bootstrap finishes),
-    /// `connect_to_relay` must wait for Tor to become ready instead of
-    /// failing instantly and permanently for that attempt. No real Tor is
-    /// needed: this only proves the wait-then-proceed behavior, not that
-    /// the resulting dial succeeds -- once the wait ends, "Tor" points at
-    /// an address nothing is listening on, so the dial fails fast with a
-    /// distinct, recognizable error instead of ever touching the network.
-    #[test]
-    fn connect_to_relay_waits_out_a_still_starting_tor() {
-        tor::force_starting_for_test();
-        let nothing_listening: std::net::SocketAddr = "127.0.0.1:1".parse().unwrap();
-        std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(300));
-            tor::force_ready_for_test(nothing_listening);
-        });
-
-        let start = Instant::now();
-        let result = async_bridge::block_on(connect_to_relay("wss://127.0.0.1:1"));
-
-        assert!(
-            start.elapsed() >= Duration::from_millis(250),
-            "returned after {:?} -- should have waited for Tor instead of \
-             failing instantly while it was still Starting",
-            start.elapsed()
-        );
-        let err = result.err().expect("dial through a nothing-listening address must fail");
-        assert!(
-            !err.contains("Tor not ready") && !err.contains("still starting"),
-            "should have proceeded past the Tor-readiness gate and failed on \
-             the dial itself instead, got: {}",
-            err
-        );
-    }
+    use std::time::{Duration, Instant};
 
     /// Traces per-message arrival timing straight from a real relay, to
     /// settle whether individual EVENTs are actually delivered as they
@@ -1267,7 +755,7 @@ mod diag_tests {
         let filter = nostr::filter_recent_notes_since(200, None);
         let start = Instant::now();
         async_bridge::spawn(async move {
-            run_relay_feed_stream(relay_url, filter, RESPONSE_TIMEOUT_SECS, tx).await;
+            relay_pool::query_streaming(relay_url, filter, RESPONSE_TIMEOUT_SECS, tx).await;
         });
 
         let mut event_count = 0usize;
@@ -1360,7 +848,7 @@ mod diag_tests {
             let filter = nostr::filter_recent_notes_since(20, None);
             let tx = tx.clone();
             async_bridge::spawn(async move {
-                run_relay_feed_stream(relay_url, filter, RESPONSE_TIMEOUT_SECS, tx).await;
+                relay_pool::query_streaming(relay_url, filter, RESPONSE_TIMEOUT_SECS, tx).await;
             });
         }
         drop(tx);
@@ -1378,7 +866,7 @@ mod diag_tests {
 
         assert!(first_signal.is_some(), "feed stream produced nothing at all under background load");
         assert!(
-            elapsed < Duration::from_secs(CONNECT_TIMEOUT_SECS + RESPONSE_TIMEOUT_SECS as u64),
+            elapsed < Duration::from_secs(relay_pool::CONNECT_TIMEOUT_SECS + RESPONSE_TIMEOUT_SECS as u64),
             "feed stream's first signal took {elapsed:?} -- the background burst is starving it rather than just queuing behind it"
         );
     }
@@ -1421,9 +909,9 @@ mod diag_tests {
     }
 
     /// Same, but under the kind of concurrent load the real app generates at
-    /// startup: a feed-stream fan-out and a long-lived DM stream opened
-    /// against the same relays at the same time, in case contention for
-    /// Tor circuits (not the lone-request case above) is what's actually
+    /// startup: a feed-stream fan-out and a standing DM subscription against
+    /// the same relays at the same time, in case contention for Tor
+    /// circuits (not the lone-request case above) is what's actually
     /// slow/hanging.
     #[test]
     fn fetch_profile_timing_under_load() {
@@ -1444,32 +932,29 @@ mod diag_tests {
 
         let relay_urls: Vec<String> = relays_str.split(',').map(|s| s.to_string()).collect();
 
-        // Fire off a feed-stream-style fan-out (one connection per relay,
-        // same shape as `start_feed_stream`) and a DM-stream-style
-        // connection per relay (same shape as the DM sync at startup), to
-        // occupy the same Tor circuits the profile fetch will want.
+        // Fire off a feed-stream-style fan-out (same shape as
+        // `start_feed_stream`) and a standing DM-style subscription per
+        // relay (same shape as the DM sync at startup) to occupy the same
+        // relay connections the profile fetch will want -- under the
+        // pool, these now share a connection with the profile fetch rather
+        // than each dialing their own, which is exactly the thing this
+        // test needs to still be exercising realistically.
         for relay_url in &relay_urls {
             let url = relay_url.clone();
             let filter = nostr::filter_recent_notes_since(20, None);
             async_bridge::spawn(async move {
                 let (tx, mut rx) = mpsc::unbounded_channel();
                 async_bridge::spawn(async move {
-                    run_relay_feed_stream(url, filter, RESPONSE_TIMEOUT_SECS, tx).await;
+                    relay_pool::query_streaming(url, filter, RESPONSE_TIMEOUT_SECS, tx).await;
                 });
                 while rx.recv().await.is_some() {}
             });
         }
         for relay_url in &relay_urls {
-            let url = relay_url.clone();
-            let f1 = nostr::filter_profile_by_author(&pubkey);
-            let f2 = nostr::filter_profile_by_author(&pubkey);
-            async_bridge::spawn(async move {
-                let (tx, mut rx) = mpsc::unbounded_channel();
-                async_bridge::spawn(async move {
-                    run_relay_dm_stream(url, f1, f2, tx).await;
-                });
-                while rx.recv().await.is_some() {}
-            });
+            let f = nostr::filter_profile_by_author(&pubkey);
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            let _handle = relay_pool::subscribe_persistent(relay_url, "diag-test-load-dm", vec![f], tx);
+            async_bridge::spawn(async move { while rx.recv().await.is_some() {} });
         }
 
         let start = Instant::now();
@@ -1489,6 +974,7 @@ mod diag_tests {
             start.elapsed(),
         );
     }
+
 }
 
 fn escape_json_string(input: &str) -> String {

@@ -26,6 +26,7 @@ rand = "0.8"
 bytes = "1"
 rfd = "0.15"
 tauri-plugin-clipboard-manager = "2"
+libc = "0.2"
 hopf = { version = "0.6", default-features = false, features = ["http", "websocket", "socks"] }
 # hopf-core 0.5.0 uses aws-lc-rs ML_DSA/PqdsaKeyPair symbols that only exist from 1.18
 # onward, but its own Cargo.toml allows any "1" — pin explicitly so a fresh lockfile

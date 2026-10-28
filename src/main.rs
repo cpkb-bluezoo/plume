@@ -35,6 +35,7 @@ mod messages_store;
 mod net;
 mod nostr;
 mod relay;
+mod relay_pool;
 mod tls;
 mod tor;
 mod websocket;
@@ -544,7 +545,7 @@ fn start_feed_stream(
                 let filter = filter.clone();
                 let tx = tx.clone();
                 async_bridge::spawn(async move {
-                    relay::run_relay_feed_stream(relay_url, filter, relay::RESPONSE_TIMEOUT_SECS, tx).await;
+                    relay_pool::query_streaming(relay_url, filter, relay::RESPONSE_TIMEOUT_SECS, tx).await;
                 });
             }
             drop(tx);
@@ -668,8 +669,12 @@ async fn test_relay_connection(relay_url: String) -> Result<String, String> {
         std::time::Duration::from_secs(relay::RESPONSE_TIMEOUT_SECS as u64),
         crate::websocket::WebSocketClient::connect(&relay_url),
     ).await {
-        Ok(Ok(_conn)) => {
-            relay::record_relay_success(&relay_url);
+        Ok(Ok(conn)) => {
+            // One-shot: this handle is never used again, so close it right
+            // away rather than leaking the socket for the rest of the
+            // process's life (see `relay::CloseOnReturn`'s doc comment).
+            conn.close();
+            relay_pool::record_relay_success(&relay_url);
             Ok(String::from("Connection successful"))
         }
         Ok(Err(e)) => Err(format!("Failed to connect: {}", e)),
@@ -684,7 +689,7 @@ fn get_relay_backoff_status(relay_urls: Vec<String>) -> String {
     let mut json = String::from("{");
     let mut first = true;
     for url in &relay_urls {
-        if let Some(remaining) = relay::check_relay_backoff(url) {
+        if let Some(remaining) = relay_pool::check_relay_backoff(url) {
             if !first {
                 json.push(',');
             }
@@ -1152,6 +1157,12 @@ async fn send_dm(state: tauri::State<'_, AppState>, recipient_pubkey: String, pl
 
 /// Start the DM stream: subscribes to both kind 4 (NIP-04) and kind 1059 (NIP-17 gift wraps).
 /// Uses incremental sync with dm_sync_since (2-day safety margin for NIP-17 timestamp randomization).
+/// Handles for the standing DM subscriptions `start_dm_stream` registers,
+/// kept alive for the life of the app rather than discarded -- they're
+/// never cancelled today, but stashing them here (instead of letting them
+/// drop) keeps that an explicit choice rather than looking like a bug.
+static DM_SUBSCRIPTIONS: std::sync::OnceLock<std::sync::Mutex<Vec<relay_pool::SubscriptionHandle>>> = std::sync::OnceLock::new();
+
 #[tauri::command(rename_all = "snake_case")]
 fn start_dm_stream(app: tauri::AppHandle, state: tauri::State<AppState>) -> Result<(), String> {
     let config_dir = state.config_dir();
@@ -1187,16 +1198,12 @@ fn start_dm_stream(app: tauri::AppHandle, state: tauri::State<AppState>) -> Resu
         async_bridge::block_on(async move {
             let num_relays = all_relays.len() as u32;
             let (tx, mut rx) = async_bridge::mpsc::unbounded_channel();
+            let mut handles = DM_SUBSCRIPTIONS.get_or_init(|| std::sync::Mutex::new(Vec::new())).lock().unwrap();
             for relay_url in &all_relays {
-                let tx = tx.clone();
-                let url = relay_url.clone();
-                let f1 = filter_received.clone();
-                let f2 = filter_sent.clone();
-                let f3 = filter_gift_wraps.clone();
-                async_bridge::spawn(async move {
-                    relay::run_relay_dm_stream_nip17(url, f1, f2, f3, tx).await;
-                });
+                let filters = vec![filter_received.clone(), filter_sent.clone(), filter_gift_wraps.clone()];
+                handles.push(relay_pool::subscribe_persistent(relay_url, "dm", filters, tx.clone()));
             }
+            drop(handles);
             drop(tx);
 
             let mut eose_count = 0u32;
@@ -2110,7 +2117,64 @@ fn events_to_json_array(events: &Vec<nostr::Event>) -> String {
 // Main Entry Point
 // ============================================================
 
+/// Raise the process's soft open-file limit to its hard limit (or, on
+/// macOS, to `OPEN_MAX` when the hard limit reports as infinite) before
+/// anything that opens a socket runs. A GUI app launched via launchd on
+/// macOS defaults to a soft `RLIMIT_NOFILE` of just 256 -- comfortably
+/// exhausted by this app's own concurrent Tor dials alone (relay WebSocket
+/// connections, image/avatar HTTP fetches, media uploads) once stacked on
+/// top of whatever fds Tauri/WebKit already hold at baseline, well before
+/// any of this app's own internal concurrency caps
+/// (`relay::MAX_CONCURRENT_RELAY_CONNECTIONS`, `media_proxy::MAX_CONCURRENT_FETCHES`)
+/// come anywhere near their limits. This is the same fix Chromium and other
+/// desktop apps apply on launch; best-effort only -- a failure here is
+/// logged and otherwise ignored rather than treated as fatal, since the app
+/// can still run (just with more "Too many open files" risk) at whatever
+/// limit the OS handed it.
+#[cfg(unix)]
+fn raise_fd_limit() {
+    use std::mem::MaybeUninit;
+    unsafe {
+        let mut limit = MaybeUninit::<libc::rlimit>::uninit();
+        if libc::getrlimit(libc::RLIMIT_NOFILE, limit.as_mut_ptr()) != 0 {
+            warn_log!("[startup] getrlimit(RLIMIT_NOFILE) failed: {}", std::io::Error::last_os_error());
+            return;
+        }
+        let mut limit = limit.assume_init();
+
+        #[cfg(target_os = "macos")]
+        let hard = if limit.rlim_max == libc::RLIM_INFINITY {
+            // setrlimit(..., RLIM_INFINITY) is rejected outright on Darwin,
+            // and libc doesn't expose a usable OPEN_MAX constant for it (it
+            // varies by kernel config, via `sysctl kern.maxfilesperproc`).
+            // 10240 is the same fallback ceiling Chromium uses for exactly
+            // this case -- comfortably above anything this app needs, well
+            // under what the kernel will actually grant.
+            10240
+        } else {
+            limit.rlim_max
+        };
+        #[cfg(not(target_os = "macos"))]
+        let hard = limit.rlim_max;
+
+        if limit.rlim_cur >= hard {
+            return;
+        }
+        limit.rlim_cur = hard;
+        if libc::setrlimit(libc::RLIMIT_NOFILE, &limit) != 0 {
+            warn_log!("[startup] setrlimit(RLIMIT_NOFILE, {}) failed: {}", hard, std::io::Error::last_os_error());
+        } else {
+            debug_log!("[startup] raised RLIMIT_NOFILE soft limit to {}", hard);
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn raise_fd_limit() {}
+
 fn main() {
+    raise_fd_limit();
+
     let base_dir: String = match config::get_config_dir() {
         Some(path) => path,
         None => {
@@ -2266,6 +2330,7 @@ fn main() {
 
     app.run(|_app_handle, event| {
         if let tauri::RunEvent::Exit = event {
+            relay_pool::shutdown();
             tor::shutdown();
         }
     });
