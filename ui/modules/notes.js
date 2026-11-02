@@ -42,6 +42,16 @@ export function getAuthorDisplay(pubkey) {
     return { name: '…', nip05: '' };
 }
 
+// Fetches already in flight, keyed by pubkey -- shared across every call site
+// below, since the feed streams notes in one at a time (appendNoteCardToFeed
+// calls ensureProfilesForNotes per note, not batched) and the same author's
+// posts routinely arrive faster than their first profile fetch resolves.
+// Without this, each arrival sees an empty state.profileCache[pubkey] and
+// fires its own redundant fetch_profile -- confirmed live to repeat the same
+// pubkey's kind:0 query dozens of times in a few seconds, flooding a relay's
+// one shared connection badly enough that it starts rejecting REQs outright.
+var profileFetchInFlight = {};
+
 // Fetch profiles for note authors (and reply-to targets) and update cache + DOM.
 export async function ensureProfilesForNotes(notes) {
     const relays = getEffectiveRelays();
@@ -68,20 +78,28 @@ export async function ensureProfilesForNotes(notes) {
     if (toFetch.length === 0) {
         return;
     }
-    await Promise.all(toFetch.map(async (pubkey) => {
-        try {
-            const json = await invoke('fetch_profile', { pubkey, relay_urls: relays });
-            if (!json || json === '{}') {
-                return;
-            }
-            const p = JSON.parse(json);
-            state.profileCache[pubkey] = {
-                name: p.name || null,
-                nip05: p.nip05 || null,
-                picture: p.picture || null,
-                lud16: p.lud16 || null
-            };
-        } catch (_) { /* ignore */ }
+    await Promise.all(toFetch.map((pubkey) => {
+        if (profileFetchInFlight[pubkey]) {
+            return profileFetchInFlight[pubkey];
+        }
+        const promise = (async () => {
+            try {
+                const json = await invoke('fetch_profile', { pubkey, relay_urls: relays });
+                if (!json || json === '{}') {
+                    return;
+                }
+                const p = JSON.parse(json);
+                state.profileCache[pubkey] = {
+                    name: p.name || null,
+                    nip05: p.nip05 || null,
+                    picture: p.picture || null,
+                    lud16: p.lud16 || null
+                };
+            } catch (_) { /* ignore */ }
+        })();
+        profileFetchInFlight[pubkey] = promise;
+        promise.finally(() => { delete profileFetchInFlight[pubkey]; });
+        return promise;
     }));
     // Update cards for all authors that we have in cache (including just-seeded viewed profile)
     unique.forEach(function(pubkey) {
@@ -944,8 +962,12 @@ export function processNoteContent(content, depth) {
         if (urlOnly) {
             var safe = sanitizeUrl(urlOnly[1]);
             if (safe) {
-                lines[li] = '<img src="' + torImgUrl(safe) + '" class="note-media-probe" loading="lazy"'
-                    + ' onerror="this.onerror=null;var v=document.createElement(\'video\');v.src=this.src;v.controls=true;v.preload=\'metadata\';v.className=\'note-media-probe\';v.onerror=function(){var a=document.createElement(\'a\');a.href=v.src;a.target=\'_blank\';a.rel=\'noopener noreferrer\';a.textContent=v.src;v.replaceWith(a)};this.replaceWith(v)">';
+                // data-original-url carries the real https:// URL through the
+                // img->video->link fallback chain, so a failed probe never
+                // surfaces the internal torimg:// proxy URL to the user --
+                // only this.src/v.src (torimg://) are available otherwise.
+                lines[li] = '<img src="' + torImgUrl(safe) + '" data-original-url="' + safe + '" class="note-media-probe" loading="lazy"'
+                    + ' onerror="this.onerror=null;var v=document.createElement(\'video\');v.src=this.src;v.dataset.originalUrl=this.dataset.originalUrl;v.controls=true;v.preload=\'metadata\';v.className=\'note-media-probe\';v.onerror=function(){var a=document.createElement(\'a\');a.href=v.dataset.originalUrl;a.target=\'_blank\';a.rel=\'noopener noreferrer\';a.textContent=v.dataset.originalUrl;v.replaceWith(a)};this.replaceWith(v)">';
             }
         }
     }

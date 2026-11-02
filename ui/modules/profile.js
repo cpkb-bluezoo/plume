@@ -697,8 +697,7 @@ function loadProfileZaps() {
                 var unique = senderPubkeys.filter(function(pk, i) { return senderPubkeys.indexOf(pk) === i; });
                 var missing = unique.filter(function(pk) { return !state.profileCache || !state.profileCache[pk]; });
                 if (missing.length > 0) {
-                    invoke('fetch_profile', { pubkey: missing.slice(0, 20).join(','), relay_urls: fetchRelays })
-                        .catch(function() {});
+                    ensureProfilesForNotes(missing.map(function(pk) { return { pubkey: pk }; }));
                 }
             }
         })

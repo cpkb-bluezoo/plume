@@ -219,16 +219,37 @@ fn fresh_sub_id(prefix: &str) -> String {
     format!("{prefix}_{n}")
 }
 
+/// Collapses URLs that name the same relay but spell it differently -- so
+/// far, just a bare trailing slash on an otherwise-pathless URL (e.g. a
+/// relay hint copied from someone else's NIP-19 `nevent`/`naddr` can carry
+/// one where our own config never would). Confirmed live: without this, the
+/// pool opens a *second* persistent connection for the `/`-suffixed spelling
+/// of a relay we already hold a connection to, which is exactly the
+/// multiple-connections-per-relay problem this module exists to prevent.
+/// Deliberately conservative: only strips the slash when the path is
+/// nothing but that slash, so a relay genuinely served off a non-root path
+/// (`wss://example.com/relay/`) is left untouched rather than guessed at.
+fn normalize_relay_url(relay_url: &str) -> String {
+    match url::Url::parse(relay_url) {
+        Ok(u) if u.path() == "/" && u.query().is_none() && u.fragment().is_none() => {
+            relay_url.trim_end_matches('/').to_string()
+        }
+        _ => relay_url.to_string(),
+    }
+}
+
 /// Returns the shared state for `relay_url`, starting its supervisor on
-/// first use. Idempotent: a later call for the same URL just returns the
-/// existing state -- never starts a second supervisor for it.
+/// first use. Idempotent: a later call for the same URL (after
+/// [`normalize_relay_url`] collapses it) just returns the existing state --
+/// never starts a second supervisor for it.
 fn ensure_supervisor(relay_url: &str) -> Arc<RelayState> {
+    let relay_url = normalize_relay_url(relay_url);
     let mut map = pool().lock().unwrap();
-    if let Some(state) = map.get(relay_url) {
+    if let Some(state) = map.get(&relay_url) {
         return Arc::clone(state);
     }
     let state = Arc::new(RelayState {
-        relay_url: relay_url.to_string(),
+        relay_url: relay_url.clone(),
         inner: Mutex::new(RelayInner { conn: None, connect_waiters: Vec::new() }),
         demux: Arc::new(Mutex::new(DemuxState {
             subs: HashMap::new(),
@@ -237,7 +258,7 @@ fn ensure_supervisor(relay_url: &str) -> Arc<RelayState> {
         })),
         shutting_down: AtomicBool::new(false),
     });
-    map.insert(relay_url.to_string(), Arc::clone(&state));
+    map.insert(relay_url, Arc::clone(&state));
     drop(map);
 
     let supervised = Arc::clone(&state);
@@ -695,7 +716,7 @@ pub fn shutdown() {
 #[cfg(test)]
 fn force_close_for_test(relay_url: &str) -> bool {
     let map = pool().lock().unwrap();
-    let Some(state) = map.get(relay_url) else { return false };
+    let Some(state) = map.get(&normalize_relay_url(relay_url)) else { return false };
     let conn = state.inner.lock().unwrap().conn.clone();
     match conn {
         Some(conn) => {
@@ -704,6 +725,20 @@ fn force_close_for_test(relay_url: &str) -> bool {
         }
         None => false,
     }
+}
+
+#[test]
+fn normalize_relay_url_collapses_a_bare_trailing_slash() {
+    assert_eq!(normalize_relay_url("wss://relay.primal.net"), "wss://relay.primal.net");
+    assert_eq!(normalize_relay_url("wss://relay.primal.net/"), "wss://relay.primal.net");
+}
+
+#[test]
+fn normalize_relay_url_leaves_a_real_path_alone() {
+    // A relay genuinely served off a non-root path keeps its own trailing
+    // slash untouched rather than being guessed at.
+    assert_eq!(normalize_relay_url("wss://example.com/relay/"), "wss://example.com/relay/");
+    assert_eq!(normalize_relay_url("wss://example.com/relay"), "wss://example.com/relay");
 }
 
 #[cfg(test)]
