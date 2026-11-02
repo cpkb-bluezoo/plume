@@ -30,6 +30,7 @@ mod http;
 mod json;
 mod keys;
 mod media;
+mod media_cache;
 mod media_proxy;
 mod messages_store;
 mod net;
@@ -824,14 +825,25 @@ async fn fetch_own_following(state: tauri::State<'_, AppState>) -> Result<String
     }
 }
 
+// Follow/unfollow a single pubkey from the profile page's Follow button.
+//
+// Local-cache-first: builds the updated contact list from `cfg.following`
+// (kept in sync with every successful fetch/update already) instead of
+// fetching the current list from relays first, and returns as soon as
+// that's signed and saved locally -- publishing to relays happens
+// afterward, in the background. The old version fetched from relays
+// *then* published and awaited both round trips before ever returning,
+// which is what made the Follow button feel unresponsive: the frontend
+// only updates its own button state once this command resolves.
 #[tauri::command]
 async fn update_contact_list(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     add: bool,
     target_pubkey: String,
-) -> Result<String, String> {
+) -> Result<(), String> {
     let config_dir = state.config_dir();
-    let cfg = match config::load_config(&config_dir) {
+    let mut cfg = match config::load_config(&config_dir) {
         Ok(c) => c,
         Err(e) => return Err(format!("Failed to load config: {}", e)),
     };
@@ -844,31 +856,54 @@ async fn update_contact_list(
     }
     let target_hex = keys::public_key_to_hex(&target_pubkey)
         .map_err(|e| format!("Invalid target pubkey: {}", e))?;
-    let mut pubkeys: Vec<String> = match relay::fetch_following_from_relays(&cfg.relays, &cfg.public_key, relay::RESPONSE_TIMEOUT_SECS).await {
-        Ok(Some(contact_list)) => nostr::get_following_pubkeys(&contact_list),
-        Ok(None) => Vec::new(),
-        Err(e) => return Err(format!("Failed to fetch current following: {}", e)),
+
+    // The fast path above assumes `cfg.following` is an accurate snapshot.
+    // The one time it safely can't be trusted is when it's never been
+    // populated at all this install (empty, not just stale) -- starting
+    // from nothing there would publish a contact list containing only
+    // `target_hex` and wipe out the user's real one on every relay that
+    // accepts it. That one case still fetches from relays first, exactly
+    // like every click used to.
+    let mut pubkeys = if cfg.following.is_empty() {
+        match relay::fetch_following_from_relays(&cfg.relays, &cfg.public_key, relay::RESPONSE_TIMEOUT_SECS).await {
+            Ok(Some(contact_list)) => nostr::get_following_pubkeys(&contact_list),
+            Ok(None) => Vec::new(),
+            Err(e) => return Err(format!("Failed to fetch current following: {}", e)),
+        }
+    } else {
+        cfg.following.clone()
     };
     if add {
         if !pubkeys.contains(&target_hex) {
-            pubkeys.push(target_hex);
+            pubkeys.push(target_hex.clone());
         }
     } else {
         pubkeys.retain(|p| p != &target_hex);
     }
     let event = crypto::create_signed_contact_list(&pubkeys, &secret_key)?;
-    let results = relay::publish_event_to_relays(&cfg.relays, &event, relay::RESPONSE_TIMEOUT_SECS).await;
-    let success_count = results.iter().filter(|r| r.success).count();
-    if success_count == 0 {
-        return Err(String::from("Failed to publish contact list to any relay"));
-    }
-    // Persist following list locally
-    let mut cfg = cfg;
+
     cfg.following = pubkeys;
     if let Err(e) = config::save_config(&config_dir, &cfg) {
-        warn_log!("Warning: published contact list but failed to save locally: {}", e);
+        warn_log!("Warning: failed to save contact list locally: {}", e);
     }
-    Ok(relay::publish_results_to_json(&results))
+
+    let relays = cfg.relays.clone();
+    async_bridge::spawn(async move {
+        let results = relay::publish_event_to_relays(&relays, &event, relay::RESPONSE_TIMEOUT_SECS).await;
+        let success_count = results.iter().filter(|r| r.success).count();
+        if success_count == 0 {
+            warn_log!("Contact list update failed to publish to any relay");
+            // Lets the frontend revert its optimistic update and tell the
+            // user, rather than silently drifting from what relays
+            // actually have.
+            let payload = format!(r#"{{"pubkey":"{target_hex}","add":{add}}}"#);
+            let _ = app.emit("contact-list-sync-failed", payload);
+        } else {
+            debug_log!("Contact list update published to {success_count}/{} relays", results.len());
+        }
+    });
+
+    Ok(())
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -2190,6 +2225,8 @@ fn main() {
             std::process::exit(1);
         }
     }
+
+    media_cache::init(&base_dir);
 
     // Load app-level config to determine the active profile
     let mut app_config = match config::load_app_config(&base_dir) {

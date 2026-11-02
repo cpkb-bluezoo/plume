@@ -27,7 +27,7 @@
 use std::io;
 use std::sync::Arc;
 
-use hopf::core::{Endpoint, ProtocolHandler, Runtime, SecurityInfo, SharedTlsConnector};
+use hopf::core::{Endpoint, LoopBuf, ProtocolHandler, Runtime, SecurityInfo, SharedTlsConnector};
 use hopf::socks::{socks_connect_config, SocksClientConfig, SocksClientVersion};
 use sha2::{Digest, Sha256};
 
@@ -104,8 +104,8 @@ impl ProtocolHandler for TlsBridgeHandler {
         }
     }
 
-    fn receive(&mut self, endpoint: &mut dyn Endpoint, data: &mut &[u8]) {
-        self.inner.receive(endpoint, data);
+    fn receive(&mut self, endpoint: &mut dyn Endpoint, buf: &mut LoopBuf) {
+        self.inner.receive(endpoint, buf);
     }
 
     fn disconnected(&mut self, endpoint: &mut dyn Endpoint) {

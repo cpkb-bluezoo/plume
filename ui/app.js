@@ -50,7 +50,7 @@ import {
 } from './modules/profile.js';
 import {
     fetchFollowingAndFollowers, handleFollowClick, switchFollowTab,
-    loadFollowsPanel, renderFollowsPanel, saveFollowsPanel
+    loadFollowsPanel, renderFollowsPanel, saveFollowsPanel, handleContactListSyncFailed
 } from './modules/follows.js';
 import {
     loadMessagesView, selectConversation, loadConversationMessages,
@@ -268,6 +268,12 @@ async function init() {
                     state.unreadMessageCount = (state.unreadMessageCount || 0) + 1;
                     updateMessagesNavUnread();
                 }
+            });
+
+            // A Follow/Unfollow click's background relay publish never
+            // reached any relay -- revert the optimistic local update.
+            window.__TAURI__.event.listen('contact-list-sync-failed', function(ev) {
+                handleContactListSyncFailed(ev.payload);
             });
 
             // Initial DM sync complete — re-count unread and refresh messages view

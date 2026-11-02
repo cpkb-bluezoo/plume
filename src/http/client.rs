@@ -115,37 +115,63 @@ fn close_pooled(conn: &PooledConn) {
     POOLED_COUNT.fetch_sub(1, Ordering::SeqCst);
 }
 
-/// Periodically closes and drops any pooled connection that's been idle
-/// longer than [`POOL_IDLE_TTL`], so a host visited once and never again
-/// doesn't hold a connection (and its fd) open for the rest of the process's
-/// life.
+/// Whether a pooled connection is still worth handing out: not past its
+/// idle TTL, and not already known closed from the peer's side.
+///
+/// `idle_since.elapsed() < POOL_IDLE_TTL` alone isn't enough -- plenty of
+/// real servers/CDNs close an idle connection well inside our 30s
+/// `POOL_IDLE_TTL`, and that close is visible immediately via
+/// `ConnHandle::is_probably_open()` (the reactor keeps polling the socket
+/// for read-readiness for as long as it's registered, in-flight request or
+/// not, so a peer FIN flips this the moment it arrives -- not only when
+/// something next tries to use the connection). Without this check, a
+/// request handed a connection the peer already hung up on fails outright
+/// with no retry (see `drive_connection`'s `!queued` path), which is why a
+/// feed/thread referencing the same popular media host many times used to
+/// see a cluster of images fail right after the first one or two succeeded.
+fn conn_is_usable(conn: &PooledConn) -> bool {
+    conn.idle_since.elapsed() < POOL_IDLE_TTL
+        && conn.conn_handle.as_ref().map(ConnHandle::is_probably_open).unwrap_or(true)
+}
+
+/// Periodically closes and drops any pooled connection that's past its idle
+/// TTL or already known closed by the peer, so a host visited once and
+/// never again doesn't hold a connection (and its fd) open for the rest of
+/// the process's life, and a dead connection doesn't sit occupying one of
+/// [`MAX_POOLED_IDLE`]'s slots until something next tries (and fails) to
+/// reuse it.
 fn sweep_idle_connections() {
     loop {
         std::thread::sleep(POOL_SWEEP_INTERVAL);
         let mut guard = pool().lock().unwrap();
         for conns in guard.values_mut() {
             conns.retain(|c| {
-                let expired = c.idle_since.elapsed() >= POOL_IDLE_TTL;
-                if expired {
+                let usable = conn_is_usable(c);
+                if !usable {
                     close_pooled(c);
                 }
-                !expired
+                usable
             });
         }
         guard.retain(|_, conns| !conns.is_empty());
     }
 }
 
-/// Pop one usable, unexpired idle connection for `key`, closing and
-/// discarding any expired ones found along the way.
+/// Pop one usable idle connection for `key`, closing and discarding any
+/// expired or peer-closed ones found along the way (see [`conn_is_usable`]).
 fn checkout_pooled(key: &PoolKey) -> Option<mpsc::Sender<Command>> {
     let mut guard = pool().lock().unwrap();
     let conns = guard.get_mut(key)?;
     while let Some(conn) = conns.pop() {
-        if conn.idle_since.elapsed() < POOL_IDLE_TTL {
+        if conn_is_usable(&conn) {
             POOLED_COUNT.fetch_sub(1, Ordering::SeqCst);
             return Some(conn.cmd_tx);
         }
+        let dead = conn.conn_handle.as_ref().map(|h| !h.is_probably_open()).unwrap_or(false);
+        debug_log!(
+            "[http] discarding pooled connection for {key:?}: {}",
+            if dead { "peer already closed it" } else { "idle too long" }
+        );
         close_pooled(&conn);
     }
     None

@@ -122,6 +122,7 @@
     "unfollow": "Unfollow",
     "message": "Message",
     "mute": "Mute",
+    "unmute": "Unmute",
     "following": "following",
     "followers": "followers",
     "lastModified": "Profile updated",

@@ -119,7 +119,27 @@ export function updateFollowButtonState() {
     followBtn.dataset.following = isFollowing ? '1' : '0';
 }
 
-// Follow or unfollow the currently viewed profile user. Updates contact list and publishes to relays immediately.
+// Add or remove `pubkey` from the local follow-list cache, kept in sync
+// with `update_contact_list`'s own local-first update on the Rust side.
+function setLocallyFollowing(pubkey, following) {
+    var pk = String(pubkey).toLowerCase();
+    if (following) {
+        if (!state.ownFollowingPubkeys) {
+            state.ownFollowingPubkeys = [];
+        }
+        if (!state.ownFollowingPubkeys.some(function(p) { return String(p).toLowerCase() === pk; })) {
+            state.ownFollowingPubkeys.push(pubkey);
+        }
+    } else if (state.ownFollowingPubkeys) {
+        state.ownFollowingPubkeys = state.ownFollowingPubkeys.filter(function(p) { return String(p).toLowerCase() !== pk; });
+    }
+}
+
+// Follow or unfollow the currently viewed profile user: updates the local
+// follow-list cache and the button immediately (no relay round trip on
+// this path at all -- see `update_contact_list` on the Rust side), then
+// publishes to relays in the background. `handleContactListSyncFailed`
+// below reverts this if that background publish never reaches any relay.
 export async function handleFollowClick() {
     if (!state.viewedProfilePubkey || state.viewedProfilePubkey === state.publicKeyHex) {
         return;
@@ -130,19 +150,7 @@ export async function handleFollowClick() {
     followBtn && (followBtn.disabled = true);
     try {
         await invoke('update_contact_list', { add: add, targetPubkey: state.viewedProfilePubkey });
-        var pk = String(state.viewedProfilePubkey).toLowerCase();
-        if (add) {
-            if (!state.ownFollowingPubkeys) {
-                state.ownFollowingPubkeys = [];
-            }
-            if (!state.ownFollowingPubkeys.some(function(p) { return String(p).toLowerCase() === pk; })) {
-                state.ownFollowingPubkeys.push(state.viewedProfilePubkey);
-            }
-        } else {
-            if (state.ownFollowingPubkeys) {
-                state.ownFollowingPubkeys = state.ownFollowingPubkeys.filter(function(p) { return String(p).toLowerCase() !== pk; });
-            }
-        }
+        setLocallyFollowing(state.viewedProfilePubkey, add);
         updateFollowButtonState();
     } catch (e) {
         console.error('Follow/unfollow failed:', e);
@@ -152,6 +160,24 @@ export async function handleFollowClick() {
             followBtn.disabled = false;
         }
     }
+}
+
+// `contact-list-sync-failed`: the background publish that follows a
+// Follow/Unfollow click never reached any relay. The local cache (and the
+// button, if still showing this profile) already reflect the change the
+// user asked for, so revert both and let them know rather than silently
+// drifting from what relays actually have.
+export function handleContactListSyncFailed(payload) {
+    var data = typeof payload === 'string' ? JSON.parse(payload) : payload;
+    if (!data || !data.pubkey) {
+        return;
+    }
+    setLocallyFollowing(data.pubkey, !data.add);
+    if (state.viewedProfilePubkey && String(state.viewedProfilePubkey).toLowerCase() === String(data.pubkey).toLowerCase()) {
+        updateFollowButtonState();
+    }
+    var t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
+    alert((t('errors.failedToPublish') || 'Failed to update follow') + ': no relay accepted the update');
 }
 
 // Fetch followers (who follows you)

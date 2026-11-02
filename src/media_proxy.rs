@@ -31,6 +31,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use crate::http::{HttpClient, Response as PlumeResponse, ResponseHandler};
+use crate::media_cache;
 use crate::debug_log;
 
 /// Hard cap on simultaneous outbound dials for `torimg://` fetches.
@@ -53,6 +54,16 @@ use crate::debug_log;
 /// them all dial at once keeps total open sockets bounded regardless of how
 /// many distinct hosts/URLs a feed references.
 const MAX_CONCURRENT_FETCHES: usize = 16;
+
+/// Hop cap for HTTP redirects (`3xx` + `Location`) followed within one
+/// fetch. Many media/CDN hosts (blossom servers in particular) answer
+/// every request with a `302`/`307` to the actual object URL -- without
+/// following it ourselves, the webview receives exactly that redirect
+/// status with no body, which it can't render, so such a host's images
+/// never load regardless of how reliable the rest of the pipeline is. A
+/// real browser would follow it transparently; this is the same thing for
+/// a custom protocol handler that has to do it by hand.
+const MAX_REDIRECTS: u8 = 5;
 
 static IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
 static QUEUE: OnceLock<Mutex<VecDeque<(String, tauri::UriSchemeResponder)>>> = OnceLock::new();
@@ -131,32 +142,21 @@ fn start_fetch(request_path: &str, responder: tauri::UriSchemeResponder) {
     };
     debug_log!("[torimg] decoded target: {target}");
 
-    let parsed = match url::Url::parse(&target) {
-        Ok(u) => u,
+    let revalidate = match media_cache::lookup(&target) {
+        media_cache::Lookup::Fresh(entry) => {
+            debug_log!("[torimg] cache hit (fresh): {target}");
+            return respond_cached(request_path, responder, &entry);
+        }
+        media_cache::Lookup::Stale(stale) => Some(stale),
+        media_cache::Lookup::Miss => None,
+    };
+
+    let (secure, host, port, path) = match resolve_url_parts(&target) {
+        Ok(parts) => parts,
         Err(e) => {
-            debug_log!("[torimg] url parse failed for {target:?}: {e}");
+            debug_log!("[torimg] {e} in {target:?}");
             return respond_status(request_path, responder, 400);
         }
-    };
-    let secure = match parsed.scheme() {
-        "https" => true,
-        "http" => false,
-        other => {
-            debug_log!("[torimg] unsupported scheme {other:?} in {target:?}");
-            return respond_status(request_path, responder, 400);
-        }
-    };
-    let host = match parsed.host_str() {
-        Some(h) => h.to_string(),
-        None => {
-            debug_log!("[torimg] no host in {target:?}");
-            return respond_status(request_path, responder, 400);
-        }
-    };
-    let port = parsed.port().unwrap_or(if secure { 443 } else { 80 });
-    let path = match parsed.query() {
-        Some(q) => format!("{}?{}", parsed.path(), q),
-        None => parsed.path().to_string(),
     };
     let request_path = request_path.to_string();
 
@@ -174,35 +174,135 @@ fn start_fetch(request_path: &str, responder: tauri::UriSchemeResponder) {
         std::thread::spawn(move || {
             if let Err(e) = crate::tor::wait_for_ready(std::time::Duration::from_secs(45)) {
                 debug_log!("[torimg] gave up waiting for Tor for {host}:{port}: {e}");
-                respond_status(&request_path, responder, 502);
-                return;
+                return respond_fallback(&request_path, responder, 502, revalidate);
             }
-            dial_and_respond(host, port, secure, path, request_path, responder);
+            let current_url = target.clone();
+            dial_and_respond(host, port, secure, path, target, current_url, request_path, responder, revalidate, MAX_REDIRECTS);
         });
         return;
     }
 
-    dial_and_respond(host, port, secure, path, request_path, responder);
+    let current_url = target.clone();
+    dial_and_respond(host, port, secure, path, target, current_url, request_path, responder, revalidate, MAX_REDIRECTS);
 }
 
+/// Splits a parsed URL into what [`HttpClient::new`]/[`HttpClient::get`]
+/// need: scheme-implied security, host, port and the request path (with
+/// query string, if any).
+fn resolve_url_parts(url_str: &str) -> Result<(bool, String, u16, String), String> {
+    let parsed = url::Url::parse(url_str).map_err(|e| format!("url parse failed: {e}"))?;
+    let secure = match parsed.scheme() {
+        "https" => true,
+        "http" => false,
+        other => return Err(format!("unsupported scheme {other:?}")),
+    };
+    let host = match parsed.host_str() {
+        Some(h) => h.to_string(),
+        None => return Err("no host".to_string()),
+    };
+    let port = parsed.port().unwrap_or(if secure { 443 } else { 80 });
+    let path = match parsed.query() {
+        Some(q) => format!("{}?{}", parsed.path(), q),
+        None => parsed.path().to_string(),
+    };
+    Ok((secure, host, port, path))
+}
+
+/// Resolves a `Location` header value (absolute or relative) against the
+/// URL that produced it.
+fn resolve_redirect(base: &str, location: &str) -> Option<String> {
+    let base_url = url::Url::parse(base).ok()?;
+    Some(base_url.join(location).ok()?.to_string())
+}
+
+/// Whether `status` is a redirect this module will follow by hand (see
+/// [`MAX_REDIRECTS`]). `300 Multiple Choices` is deliberately excluded --
+/// it has no single canonical target to follow unambiguously.
+fn is_redirect_status(status: u16) -> bool {
+    matches!(status, 301 | 302 | 303 | 307 | 308)
+}
+
+/// Dials `host:port` and fetches `path`, following up to `redirects_left`
+/// further `3xx` + `Location` hops within the same logical fetch (same
+/// concurrency slot, same [`IN_FLIGHT_BY_PATH`] entry, same eventual
+/// responder) -- see [`ProxyHandler::finish`].
+///
+/// `target` is the original `torimg://` URL (the cache key and what every
+/// coalesced waiter is keyed on); `current_url` is the URL this specific
+/// hop is dialing, used only to resolve a relative `Location` on this hop.
+/// They're the same string on the first hop and diverge only once a
+/// redirect is followed.
 fn dial_and_respond(
     host: String,
     port: u16,
     secure: bool,
     path: String,
+    target: String,
+    current_url: String,
     request_path: String,
     responder: tauri::UriSchemeResponder,
+    revalidate: Option<media_cache::StaleEntry>,
+    redirects_left: u8,
 ) {
     debug_log!("[torimg] dialing {host}:{port} secure={secure} path={path}");
     let client = HttpClient::new(&host, port, secure);
-    client.get(&path).send(Box::new(ProxyHandler {
+    let mut request = client.get(&path);
+    if let Some(stale) = &revalidate {
+        if let Some(etag) = &stale.etag {
+            request.header("If-None-Match", etag);
+        }
+        if let Some(last_modified) = &stale.last_modified {
+            request.header("If-Modified-Since", last_modified);
+        }
+    }
+    request.send(Box::new(ProxyHandler {
         host,
+        target,
+        current_url,
         request_path,
         responder: Some(responder),
         status: 0,
         content_type: None,
+        etag: None,
+        last_modified: None,
+        cache_control: None,
+        location: None,
         body: Vec::new(),
+        revalidate,
+        redirects_left,
     }));
+}
+
+/// Fan `entry`'s status/content-type/body out to `responder` and every
+/// request that coalesced onto this same path (see [`IN_FLIGHT_BY_PATH`]),
+/// without any network I/O.
+fn respond_cached(request_path: &str, responder: tauri::UriSchemeResponder, entry: &media_cache::CacheEntry) {
+    let mut responders = vec![responder];
+    responders.extend(in_flight_by_path().lock().unwrap().remove(request_path).unwrap_or_default());
+    for r in responders {
+        let mut builder = tauri::http::Response::builder().status(entry.status);
+        if let Some(ct) = &entry.content_type {
+            builder = builder.header(tauri::http::header::CONTENT_TYPE, ct.clone());
+        }
+        r.respond(builder.body(entry.body.clone()).unwrap());
+    }
+    release_slot();
+}
+
+/// Used where a fetch can't even be attempted (Tor never came up in time):
+/// serve `revalidate`'s stale cached copy if there is one -- better than an
+/// error when we already have *something* to show -- otherwise fall back
+/// to `status`.
+fn respond_fallback(
+    request_path: &str,
+    responder: tauri::UriSchemeResponder,
+    status: u16,
+    revalidate: Option<media_cache::StaleEntry>,
+) {
+    match revalidate {
+        Some(stale) => respond_cached(request_path, responder, &stale.entry),
+        None => respond_status(request_path, responder, status),
+    }
 }
 
 /// Used only for the early-rejection paths in `start_fetch` (bad encoding,
@@ -222,24 +322,100 @@ fn respond_status(request_path: &str, responder: tauri::UriSchemeResponder, stat
 
 struct ProxyHandler {
     host: String,
+    target: String,
+    /// The URL this specific hop dialed -- only used to resolve a relative
+    /// `Location` against, should this response be a redirect. See
+    /// [`dial_and_respond`]'s doc comment for how this relates to `target`.
+    current_url: String,
     request_path: String,
     responder: Option<tauri::UriSchemeResponder>,
     status: u16,
     content_type: Option<String>,
+    etag: Option<String>,
+    last_modified: Option<String>,
+    cache_control: Option<String>,
+    location: Option<String>,
     body: Vec<u8>,
+    /// The stale cached entry, if any, this fetch was conditionally
+    /// revalidating -- consulted on a `304`, and as a fallback if the
+    /// fetch otherwise failed outright.
+    revalidate: Option<media_cache::StaleEntry>,
+    /// Remaining redirect hops this fetch may still follow. See
+    /// [`MAX_REDIRECTS`].
+    redirects_left: u8,
 }
 
 impl ProxyHandler {
-    /// Responds to the original requester, then fans the exact same
-    /// status/content-type/body out to every request that coalesced onto
-    /// this fetch (see [`IN_FLIGHT_BY_PATH`]) while it was in flight --
-    /// they share this one fetch's result rather than each triggering
-    /// their own.
+    /// Decides what to actually hand back given how the fetch went, then
+    /// fans it out to the original requester plus every request that
+    /// coalesced onto this fetch (see [`IN_FLIGHT_BY_PATH`]) while it was
+    /// in flight -- they share this one fetch's result rather than each
+    /// triggering their own.
     fn finish(&mut self) {
+        if is_redirect_status(self.status) && self.redirects_left > 0 {
+            if let Some(next_url) = self.location.take().and_then(|loc| resolve_redirect(&self.current_url, &loc)) {
+                if let Ok((secure, host, port, path)) = resolve_url_parts(&next_url) {
+                    debug_log!("[torimg] following redirect for {}: {} -> {next_url}", self.host, self.status);
+                    let Some(responder) = self.responder.take() else { return };
+                    dial_and_respond(
+                        host,
+                        port,
+                        secure,
+                        path,
+                        std::mem::take(&mut self.target),
+                        next_url,
+                        std::mem::take(&mut self.request_path),
+                        responder,
+                        // The validators we had, if any, are for the
+                        // *original* resource at `target` -- they don't
+                        // apply to whatever's at the redirect target, so
+                        // don't send them. `self.revalidate` stays intact
+                        // here (not `.take()`n) so it's still available as
+                        // a fallback below if this redirect can't be
+                        // resolved after all.
+                        None,
+                        self.redirects_left - 1,
+                    );
+                    return;
+                }
+                debug_log!("[torimg] redirect target {next_url:?} unusable, giving up");
+            }
+        }
+
         let Some(responder) = self.responder.take() else { return };
+
+        let (status, content_type, mut body) = if (200..300).contains(&self.status) {
+            media_cache::store(
+                &self.target,
+                self.status,
+                self.content_type.as_deref(),
+                self.etag.as_deref(),
+                self.last_modified.as_deref(),
+                self.cache_control.as_deref(),
+                &self.body,
+            );
+            (self.status, self.content_type.clone(), std::mem::take(&mut self.body))
+        } else if self.status == 304 {
+            media_cache::touch_fresh(
+                &self.target,
+                self.etag.as_deref(),
+                self.last_modified.as_deref(),
+                self.cache_control.as_deref(),
+            );
+            match self.revalidate.take() {
+                Some(stale) => (stale.entry.status, stale.entry.content_type, stale.entry.body),
+                None => (self.status, self.content_type.clone(), std::mem::take(&mut self.body)),
+            }
+        } else {
+            match self.revalidate.take() {
+                Some(stale) => (stale.entry.status, stale.entry.content_type, stale.entry.body),
+                None => (self.status, self.content_type.clone(), std::mem::take(&mut self.body)),
+            }
+        };
+
         debug_log!(
             "[torimg] responding for {}: status={} content_type={:?} body_len={}",
-            self.host, self.status, self.content_type, self.body.len()
+            self.host, status, content_type, body.len()
         );
 
         let mut responders = vec![responder];
@@ -247,12 +423,12 @@ impl ProxyHandler {
 
         let last = responders.len() - 1;
         for (i, r) in responders.into_iter().enumerate() {
-            let mut builder = tauri::http::Response::builder().status(self.status);
-            if let Some(ct) = &self.content_type {
+            let mut builder = tauri::http::Response::builder().status(status);
+            if let Some(ct) = &content_type {
                 builder = builder.header(tauri::http::header::CONTENT_TYPE, ct.clone());
             }
-            let body = if i == last { std::mem::take(&mut self.body) } else { self.body.clone() };
-            r.respond(builder.body(body).unwrap());
+            let b = if i == last { std::mem::take(&mut body) } else { body.clone() };
+            r.respond(builder.body(b).unwrap());
         }
         release_slot();
     }
@@ -272,6 +448,14 @@ impl ResponseHandler for ProxyHandler {
     fn header(&mut self, name: &str, value: &str) {
         if name.eq_ignore_ascii_case("content-type") {
             self.content_type = Some(value.to_string());
+        } else if name.eq_ignore_ascii_case("etag") {
+            self.etag = Some(value.to_string());
+        } else if name.eq_ignore_ascii_case("last-modified") {
+            self.last_modified = Some(value.to_string());
+        } else if name.eq_ignore_ascii_case("cache-control") {
+            self.cache_control = Some(value.to_string());
+        } else if name.eq_ignore_ascii_case("location") {
+            self.location = Some(value.to_string());
         }
     }
 
