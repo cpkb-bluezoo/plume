@@ -363,23 +363,9 @@ async fn search_hashtag(
     }
     let filter = nostr::filter_notes_by_hashtag(&tag, limit);
 
-    let mut all_events: Vec<nostr::Event> = Vec::new();
     let relay_count = relay_urls.len();
-    let mut fail_count: usize = 0;
-
-    for relay_url in &relay_urls {
-        match relay::fetch_notes_from_relay(relay_url, &filter, relay::RESPONSE_TIMEOUT_SECS).await {
-            Ok(events) => {
-                for event in events {
-                    all_events.push(event);
-                }
-            }
-            Err(e) => {
-                fail_count += 1;
-                debug_log!("search_hashtag: error from {}: {}", relay_url, e);
-            }
-        }
-    }
+    let (mut all_events, fail_count) =
+        relay::fetch_notes_from_relays(&relay_urls, &filter, relay::RESPONSE_TIMEOUT_SECS).await;
 
     if fail_count == relay_count {
         return Err(String::from("Could not reach any relay."));
@@ -423,23 +409,9 @@ async fn search_notes(
     let author_list = authors.filter(|a| !a.is_empty());
     let filter = nostr::filter_notes_by_search(&q, limit, author_list.clone(), since, until);
 
-    let mut all_events: Vec<nostr::Event> = Vec::new();
     let relay_count = relay_urls.len();
-    let mut fail_count: usize = 0;
-
-    for relay_url in &relay_urls {
-        match relay::fetch_notes_from_relay(relay_url, &filter, relay::RESPONSE_TIMEOUT_SECS).await {
-            Ok(events) => {
-                for event in events {
-                    all_events.push(event);
-                }
-            }
-            Err(e) => {
-                fail_count += 1;
-                debug_log!("search_notes: error from {}: {}", relay_url, e);
-            }
-        }
-    }
+    let (mut all_events, fail_count) =
+        relay::fetch_notes_from_relays(&relay_urls, &filter, relay::RESPONSE_TIMEOUT_SECS).await;
 
     // If NIP-50 search yielded nothing (relay may not support it), fall back to
     // fetching recent notes and filtering client-side.
@@ -449,19 +421,14 @@ async fn search_notes(
         } else {
             nostr::filter_recent_notes_since(limit * 4, since)
         };
-        for relay_url in &relay_urls {
-            match relay::fetch_notes_from_relay(relay_url, &fallback_filter, relay::RESPONSE_TIMEOUT_SECS).await {
-                Ok(events) => {
-                    let lower_q = q.to_lowercase();
-                    for event in events {
-                        if event.content.to_lowercase().contains(&lower_q) {
-                            all_events.push(event);
-                        }
-                    }
-                }
-                Err(_) => {}
-            }
-        }
+        let (fallback_events, _) =
+            relay::fetch_notes_from_relays(&relay_urls, &fallback_filter, relay::RESPONSE_TIMEOUT_SECS).await;
+        let lower_q = q.to_lowercase();
+        all_events.extend(
+            fallback_events
+                .into_iter()
+                .filter(|event| event.content.to_lowercase().contains(&lower_q)),
+        );
     }
 
     if fail_count == relay_count && all_events.is_empty() {

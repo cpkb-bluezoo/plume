@@ -314,6 +314,45 @@ pub async fn fetch_notes_from_relay(
     Ok(events)
 }
 
+/// Fetch notes matching `filter` from every relay in `relay_urls` at once,
+/// merging every relay's events together -- each relay's connection is
+/// independent of the others (see [`fetch_profile_from_relays`]), so
+/// querying them one at a time would stack every relay's own response
+/// timeout on top of the last instead of bounding the whole call by the
+/// slowest single relay. Returns the merged events plus how many relays
+/// failed outright, so callers can tell "every relay failed" apart from
+/// "some relays simply had no matches."
+pub async fn fetch_notes_from_relays(
+    relay_urls: &Vec<String>,
+    filter: &nostr::Filter,
+    timeout_seconds: u32,
+) -> (Vec<nostr::Event>, usize) {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    for relay_url in relay_urls {
+        let relay_url = relay_url.clone();
+        let filter = filter.clone();
+        let tx = tx.clone();
+        async_bridge::spawn(async move {
+            let result = fetch_notes_from_relay(&relay_url, &filter, timeout_seconds).await;
+            let _ = tx.send((relay_url, result));
+        });
+    }
+    drop(tx);
+
+    let mut all_events: Vec<nostr::Event> = Vec::new();
+    let mut fail_count: usize = 0;
+    while let Some((relay_url, result)) = rx.recv().await {
+        match result {
+            Ok(events) => all_events.extend(events),
+            Err(e) => {
+                fail_count += 1;
+                debug_log!("fetch_notes_from_relays: error from {}: {}", relay_url, e);
+            }
+        }
+    }
+    (all_events, fail_count)
+}
+
 /// Fetch profile metadata for a public key from a relay.
 pub async fn fetch_profile_from_relay(
     relay_url: &str,
@@ -868,6 +907,54 @@ mod diag_tests {
         assert!(
             elapsed < Duration::from_secs(relay_pool::CONNECT_TIMEOUT_SECS + RESPONSE_TIMEOUT_SECS as u64),
             "feed stream's first signal took {elapsed:?} -- the background burst is starving it rather than just queuing behind it"
+        );
+    }
+
+    /// `search_notes`/`search_hashtag` used to query every relay in a plain
+    /// sequential loop, so an N-relay search was bounded by N times a
+    /// single relay's response timeout (plus another N times over again
+    /// for the NIP-50 fallback pass) instead of by the slowest relay --
+    /// exactly what a user reported as search "taking a long time". This
+    /// asserts `fetch_notes_from_relays` stays bounded by one timeout
+    /// window across several relays, confirming the concurrent fan-out
+    /// fixed it rather than just reports and plausible fixes.
+    #[test]
+    fn fetch_notes_from_relays_is_bounded_by_one_timeout_not_the_relay_count() {
+        let addr_str = match std::env::var("PLUME_TEST_SOCKS_ADDR") {
+            Ok(v) => v,
+            Err(_) => {
+                eprintln!("skipping: set PLUME_TEST_SOCKS_ADDR=[::1]:PORT to run this");
+                return;
+            }
+        };
+        let relays_str = std::env::var("PLUME_TEST_RELAYS")
+            .unwrap_or_else(|_| "wss://relay.damus.io,wss://nos.lol,wss://relay.primal.net,wss://nostr.land".to_string());
+
+        let addr: std::net::SocketAddr = addr_str.parse().expect("bad PLUME_TEST_SOCKS_ADDR");
+        crate::tor::force_ready_for_test(addr);
+
+        let relay_urls: Vec<String> = relays_str.split(',').map(|s| s.to_string()).collect();
+        let filter = nostr::filter_recent_notes_since(20, None);
+
+        let start = Instant::now();
+        let (events, fail_count) =
+            async_bridge::block_on(fetch_notes_from_relays(&relay_urls, &filter, RESPONSE_TIMEOUT_SECS));
+        let elapsed = start.elapsed();
+        eprintln!(
+            "[diag] fetch_notes_from_relays across {} relays took {:?}: {} events, {} failures",
+            relay_urls.len(),
+            elapsed,
+            events.len(),
+            fail_count,
+        );
+
+        // Sequential would be bounded by relay_urls.len() * RESPONSE_TIMEOUT_SECS;
+        // concurrent must stay close to one relay's own timeout regardless of
+        // how many relays are queried.
+        assert!(
+            elapsed < Duration::from_secs(RESPONSE_TIMEOUT_SECS as u64) + Duration::from_secs(10),
+            "fetch_notes_from_relays across {} relays took {elapsed:?} -- looks sequential, not concurrent",
+            relay_urls.len(),
         );
     }
 
