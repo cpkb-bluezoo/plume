@@ -8,6 +8,7 @@ A cross-platform Nostr desktop client built with Rust and Tauri.
 
 ## Features
 
+- All network traffic (relay connections, media and DM fetches, publishing) is routed through Tor
 - Browse Nostr notes from multiple relays
 - Search notes by text, hashtag, or advanced filters
 - View images and videos embedded in notes
@@ -29,12 +30,13 @@ above.
 
 ## Relay I/O architecture
 
-Feed streaming uses an **async, selector-based** design for scalability and performance:
+Networking is built on [hopf](https://crates.io/crates/hopf), Plume's own async I/O library, with every connection dialed through Tor:
 
-- **Selector-based I/O** – One Tokio runtime multiplexes many relay connections. When any socket has data, the runtime wakes and dispatches to that relay’s handler instead of blocking one thread per connection.
-- **Per-relay push-parser pipeline** – Each relay has a dedicated channel handler. Incoming WebSocket messages are pushed into a streaming JSON parser; the handler pulls parser events and recognises complete Nostr events as they are parsed. Notes are submitted to the UI as soon as they are available, with no separate thread “monitoring” for complete messages.
-- **Scalability** – Connecting to many relays no longer implies many OS threads. A small number of threads serve all connections via non-blocking I/O and async tasks.
-- **Performance** – Events are streamed to the UI as they arrive; parsing is incremental and event-driven, so the app stays responsive under load.
+- **One persistent connection per relay**: a single, auto-reconnecting WebSocket is opened per relay URL and shared by every purpose (feed loading and polling, profile/follow lookups, publishing, DM subscriptions). Connections are never dialed per operation, and stay open until the app exits; a backoff-and-reconnect supervisor resubscribes standing subscriptions automatically after a drop.
+- **Tor-only dialing**: every relay and media connection is a SOCKS5 CONNECT through the local Tor process, with the target hostname resolved by Tor rather than locally. There is no direct-connection fallback.
+- **Push-based, incremental parsing**: incoming WebSocket frames and HTTP responses are parsed as bytes arrive, with no full-message buffering; events are submitted to the UI as soon as they are recognised.
+- **Demultiplexing**: many logical queries and standing subscriptions share one relay connection, dispatched by subscription id rather than needing one connection per request.
+- **Scalability**: a small number of threads serve every relay and media connection via non-blocking, event-driven I/O rather than one OS thread per connection.
 
 ## Nostr Protocol Support
 
