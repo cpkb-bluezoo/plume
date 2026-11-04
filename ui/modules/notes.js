@@ -746,10 +746,13 @@ function renderMarkdown(md) {
         return safeUrl ? '<img src="' + torImgUrl(safeUrl) + '" alt="' + alt + '" loading="lazy">' : alt;
     });
 
-    // Links: [text](url)
+    // Links: [text](url) -- rendered as the plain URL, never clickable.
+    // Nostr content carries no native markup, so any <a> here is purely
+    // something we chose to inject; a stray click would navigate the OS
+    // webview directly, bypassing the app's Tor-only dial path entirely.
     html = html.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, function(_m, text, url) {
         var safeUrl = sanitizeUrl(url);
-        return safeUrl ? '<a href="' + safeUrl + '" target="_blank" rel="noopener noreferrer">' + text + '</a>' : text;
+        return safeUrl || text;
     });
 
     // Headings (# to ######)
@@ -780,12 +783,8 @@ function renderMarkdown(md) {
     // Ordered lists
     html = html.replace(/^\d+\.\s+(.+)$/gm, '<li>$1</li>');
 
-    // Bare URLs
-    var urlRegex = /(?<!src="|href=")(https?:\/\/[^\s<]+)(?![^<]*>)/gi;
-    html = html.replace(urlRegex, function(url) {
-        var safeUrl = sanitizeUrl(url);
-        return safeUrl ? '<a href="' + safeUrl + '" target="_blank" rel="noopener noreferrer">' + url + '</a>' : url;
-    });
+    // Bare URLs are left as plain text, not turned into links -- see the
+    // note above on injected markup.
 
     // Paragraphs: convert double newlines into paragraph breaks
     html = html.replace(/\n\n+/g, '</p><p>');
@@ -967,18 +966,16 @@ export function processNoteContent(content, depth) {
                 // surfaces the internal torimg:// proxy URL to the user --
                 // only this.src/v.src (torimg://) are available otherwise.
                 lines[li] = '<img src="' + torImgUrl(safe) + '" data-original-url="' + safe + '" class="note-media-probe" loading="lazy"'
-                    + ' onerror="this.onerror=null;var v=document.createElement(\'video\');v.src=this.src;v.dataset.originalUrl=this.dataset.originalUrl;v.controls=true;v.preload=\'metadata\';v.className=\'note-media-probe\';v.onerror=function(){var a=document.createElement(\'a\');a.href=v.dataset.originalUrl;a.target=\'_blank\';a.rel=\'noopener noreferrer\';a.textContent=v.dataset.originalUrl;v.replaceWith(a)};this.replaceWith(v)">';
+                    + ' onerror="this.onerror=null;var v=document.createElement(\'video\');v.src=this.src;v.dataset.originalUrl=this.dataset.originalUrl;v.controls=true;v.preload=\'metadata\';v.className=\'note-media-probe\';v.onerror=function(){v.replaceWith(document.createTextNode(v.dataset.originalUrl))};this.replaceWith(v)">';
             }
         }
     }
     html = lines.join('\n');
 
-    // Convert remaining plain URLs to links (skip ones already in tags)
-    const urlRegex = /(?<!src="|href="|data=")(https?:\/\/[^\s<]+)(?![^<]*>)/gi;
-    html = html.replace(urlRegex, function(match) {
-        var safe = sanitizeUrl(match);
-        return safe ? '<a href="' + safe + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(match) + '</a>' : escapeHtml(match);
-    });
+    // Any other plain URL in the content is left as-is: already-escaped
+    // text, never a link (see the img->video->text fallback above and the
+    // module-level note on why we never let the OS webview navigate to a
+    // host the user didn't deliberately choose to visit).
 
     return html;
 }
