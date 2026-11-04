@@ -179,7 +179,7 @@ pub fn start(app: tauri::AppHandle, base_dir: &str) {
         .arg("notice stdout")
         .env("PATH", augmented_path())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .stdin(Stdio::null());
 
     let mut child = match cmd.spawn() {
@@ -208,12 +208,28 @@ pub fn start(app: tauri::AppHandle, base_dir: &str) {
             return;
         }
     };
+    // Tor logs everything we care about (including startup errors) to
+    // stdout via `--Log "notice stdout"`, but a handful of very early
+    // failures -- argument parsing, a lock it couldn't acquire -- print to
+    // stderr before that logging target even takes effect. Capturing it
+    // means a failure here is diagnosable instead of a bare "exited before
+    // bootstrapping" with no indication of why.
+    let stderr_lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    if let Some(stderr) = child.stderr.take() {
+        let stderr_lines = Arc::clone(&stderr_lines);
+        std::thread::spawn(move || {
+            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                debug_log!("[tor:stderr] {}", line);
+                stderr_lines.lock().unwrap().push(line);
+            }
+        });
+    }
 
     let _ = std::fs::write(pid_file_path(&data_dir), child.id().to_string());
     *TOR_CHILD.get_or_init(|| Mutex::new(None)).lock().unwrap() = Some(child);
 
     let app_for_reader = app.clone();
-    std::thread::spawn(move || watch_bootstrap(stdout, app_for_reader));
+    std::thread::spawn(move || watch_bootstrap(stdout, stderr_lines, app_for_reader));
 
     std::thread::spawn(move || {
         std::thread::sleep(BOOTSTRAP_TIMEOUT);
@@ -230,8 +246,10 @@ pub fn start(app: tauri::AppHandle, base_dir: &str) {
 /// Reads `tor`'s stdout until both its SOCKS listener address and a 100%
 /// bootstrap notice have been seen (in either order), then flips the status
 /// to [`TorStatus::Ready`]. If the process exits first, flips to
-/// [`TorStatus::Failed`] instead.
-fn watch_bootstrap(stdout: impl std::io::Read, app: tauri::AppHandle) {
+/// [`TorStatus::Failed`] instead -- including whatever `stderr_lines` and
+/// the process's own exit status can add, since a bare "exited before
+/// bootstrapping" with no further detail isn't actionable.
+fn watch_bootstrap(stdout: impl std::io::Read, stderr_lines: Arc<Mutex<Vec<String>>>, app: tauri::AppHandle) {
     let mut socks_addr: Option<SocketAddr> = None;
     let mut bootstrapped = false;
 
@@ -260,8 +278,23 @@ fn watch_bootstrap(stdout: impl std::io::Read, app: tauri::AppHandle) {
 
     // stdout closed (process exited) before both signals arrived.
     if matches!(status(), TorStatus::Starting) {
-        set_status(TorStatus::Failed("tor process exited before bootstrapping".to_string()), &app);
+        let mut reason = "tor process exited before bootstrapping".to_string();
+        if let Some(code) = tor_exit_status() {
+            reason.push_str(&format!(" (exit status: {code})"));
+        }
+        let stderr_tail = stderr_lines.lock().unwrap().join("; ");
+        if !stderr_tail.is_empty() {
+            reason.push_str(&format!(" -- stderr: {stderr_tail}"));
+        }
+        set_status(TorStatus::Failed(reason), &app);
     }
+}
+
+/// The managed Tor child's exit status, if it has already exited. Used only
+/// for the diagnostic message when stdout closes unexpectedly -- by that
+/// point the process has exited, so `try_wait` reaps it without blocking.
+fn tor_exit_status() -> Option<std::process::ExitStatus> {
+    TOR_CHILD.get()?.lock().unwrap().as_mut()?.try_wait().ok()?
 }
 
 /// Parses Tor's own notice-log line for the address it actually bound --
@@ -346,11 +379,46 @@ fn kill_stale_tor(data_dir: &Path) {
             if alive {
                 warn_log!("[tor] killing a stale tor process from a previous run (pid {})", pid);
                 let _ = Command::new("kill").arg(pid.to_string()).output();
-                std::thread::sleep(Duration::from_millis(200));
+                if !wait_for_pid_exit(pid, Duration::from_secs(2)) {
+                    // Still holding its SocksPort/DataDirectory lock: SIGTERM alone
+                    // wasn't enough (e.g. busy writing cached descriptors). A fresh
+                    // `tor` spawned right after would otherwise race it for that
+                    // lock and exit immediately -- the exact "exited before
+                    // bootstrapping" failure this is guarding against.
+                    warn_log!(
+                        "[tor] stale tor process (pid {}) did not exit after SIGTERM, sending SIGKILL",
+                        pid
+                    );
+                    let _ = Command::new("kill").arg("-9").arg(pid.to_string()).output();
+                    wait_for_pid_exit(pid, Duration::from_secs(1));
+                }
             }
         }
     }
     let _ = std::fs::remove_file(&pid_file);
+}
+
+/// Polls `kill -0 pid` until it reports the process gone or `max_wait`
+/// elapses. Returns whether it actually exited, as opposed to [`kill_stale_tor`]'s
+/// previous fixed 200ms sleep, which assumed a quick exit rather than confirming one.
+#[cfg(unix)]
+fn wait_for_pid_exit(pid: u32, max_wait: Duration) -> bool {
+    let deadline = std::time::Instant::now() + max_wait;
+    loop {
+        let alive = Command::new("kill")
+            .arg("-0")
+            .arg(pid.to_string())
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if !alive {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 #[cfg(not(unix))]
@@ -398,6 +466,32 @@ mod tests {
             start.elapsed() >= Duration::from_millis(250),
             "should have actually waited, not returned instantly"
         );
+    }
+
+    /// `kill_stale_tor` used to just sleep a fixed 200ms after `kill` and
+    /// assume the process was gone -- a real risk of racing a still-exiting
+    /// Tor for its SocksPort/DataDirectory lock. `wait_for_pid_exit` must
+    /// actually confirm the process exited rather than guessing a delay.
+    #[test]
+    #[cfg(unix)]
+    fn wait_for_pid_exit_confirms_rather_than_guessing_a_delay() {
+        let mut child = Command::new("sleep").arg("0.3").spawn().unwrap();
+        let pid = child.id();
+        // Reap it as its real parent would: `kill_stale_tor`'s target is an
+        // orphan reparented to init, which reaps it the instant it exits. An
+        // unreaped child of *this* process would instead sit as a zombie --
+        // still "alive" to `kill -0` -- and mask the very thing this test
+        // checks for.
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+
+        // Still alive: a near-zero budget must report it as not yet exited,
+        // not assume it died.
+        assert!(!wait_for_pid_exit(pid, Duration::from_millis(1)));
+
+        // Give it enough time to actually finish, then confirm it's seen as gone.
+        assert!(wait_for_pid_exit(pid, Duration::from_secs(2)));
     }
 
     #[test]
