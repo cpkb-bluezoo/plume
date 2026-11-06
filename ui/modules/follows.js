@@ -21,20 +21,81 @@
 import { state, getEffectiveRelays } from './state.js';
 import { invoke } from './tauri.js';
 import { escapeHtml, shortenKey, torImgUrl } from './utils.js';
-import { setSavingState } from './config.js';
+import { setSavingState, saveConfig, updateFeedInitialState } from './config.js';
 import { getAuthorDisplay, ensureProfilesForNotes } from './notes.js';
 import { validatePublicKey } from './keys.js';
+import { startInitialFeedFetch } from './feed.js';
 
 // ============================================================
 // Following / Followers Management
 // ============================================================
 
-// Fetch following and followers (for own profile)
+// Fetch following and followers (for own profile). Doesn't just delegate to
+// fetchFollowingAndFollowersForUser: that function displays whatever the
+// live fetch returns with no fallback, which is correct for another user
+// (there's no local copy of their contact list to fall back to) but wrong
+// here -- the kind:3 event behind "following" might simply not be on
+// whichever relays answered this particular query, exactly like the kind:0
+// profile fetch, and showing "0" in that case would misrepresent a locally
+// cached, non-empty following list as if it had been lost.
 export async function fetchFollowingAndFollowers() {
     if (!state.config || !state.config.public_key) {
         return;
     }
-    return fetchFollowingAndFollowersForUser(state.config.public_key);
+    var relays = getEffectiveRelays();
+    if (!relays.length) {
+        return;
+    }
+    var cachedCount = Array.isArray(state.config.following) ? state.config.following.length : 0;
+    var fc = document.getElementById('following-count');
+    var fl = document.getElementById('followers-count');
+    if (fc) {
+        fc.textContent = cachedCount > 0 ? String(cachedCount) : '…';
+    }
+    if (fl) {
+        fl.textContent = '…';
+    }
+
+    var followingResult = null;
+    var followersResult = null;
+    try {
+        followingResult = await invoke('fetch_following', { pubkey: state.config.public_key, relayUrls: relays });
+        followersResult = await invoke('fetch_followers', { pubkey: state.config.public_key, relayUrls: relays });
+    } catch (e) {
+        console.error('Failed to fetch following/followers:', e);
+        if (fl) {
+            fl.textContent = '0';
+        }
+        return;
+    }
+    if (followingResult) {
+        try {
+            var data = JSON.parse(followingResult);
+            if ((!data.contacts || data.contacts.length === 0) && cachedCount > 0) {
+                // Nothing came back this time; keep showing what's already
+                // known locally rather than a misleading zero.
+                if (fc) {
+                    fc.textContent = String(cachedCount);
+                }
+            } else {
+                displayFollowing(data);
+            }
+        } catch (_) {
+            if (fc && cachedCount === 0) {
+                fc.textContent = '0';
+            }
+        }
+    }
+    if (followersResult) {
+        try {
+            var data = JSON.parse(followersResult);
+            displayFollowers(data);
+        } catch (_) {
+            if (fl) {
+                fl.textContent = '0';
+            }
+        }
+    }
 }
 
 // Fetch following and followers for any user (profile page counts). pubkey can be hex or npub.
@@ -339,32 +400,87 @@ export function switchFollowTab(tabName) {
 // Follows settings panel
 // ============================================================
 
-export async function loadFollowsPanel() {
+// Populates the panel from the in-memory, already-synced follows list
+// (state.config.following -- kept current by adoptOwnFollowingFromNetwork()
+// at startup/login, same as the home feed's own follows-mode filtering
+// reads it) rather than making its own network round trip every time the
+// panel opens. Profile names/avatars for anyone not yet in the cache are
+// resolved in the background and the list re-rendered once they arrive --
+// a pubkey whose profile genuinely isn't reachable on any configured relay
+// still falls back to its shortened hex form, same as everywhere else.
+export function loadFollowsPanel() {
     var listEl = document.getElementById('follows-list');
     var addInput = document.getElementById('follows-add-input');
     if (!listEl) {
         return;
     }
-    state.followsPanelLoading = true;
-    listEl.innerHTML = '<li class="follows-list-placeholder">' + (window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t('settings.followsLoading') || 'Loading…' : 'Loading…') + '</li>';
     if (addInput) {
         addInput.value = '';
     }
-    try {
-        var data = await fetchFollowing();
-        var contacts = (data && data.contacts) ? data.contacts : [];
-        var notes = contacts.map(function(c) { return { pubkey: c.pubkey }; });
-        await ensureProfilesForNotes(notes);
-        state.followsPanelList = contacts.map(function(c, i) {
-            return { pubkey: c.pubkey, checked: true, listOrder: i };
+    var pubkeys = Array.isArray(state.config && state.config.following) ? state.config.following : [];
+    state.followsPanelList = pubkeys.map(function(pubkey, i) {
+        return { pubkey: pubkey, checked: true, listOrder: i };
+    });
+    state.followsPanelSort = getFollowsPanelSort();
+    renderFollowsPanel();
+    if (pubkeys.length > 0) {
+        ensureProfilesForNotes(pubkeys.map(function(p) { return { pubkey: p }; })).then(function() {
+            renderFollowsPanel();
         });
-        state.followsPanelSort = getFollowsPanelSort();
-        renderFollowsPanel();
+    }
+}
+
+// The locally saved following list may be stale or empty (a fresh login,
+// or a follow/unfollow made on another client) -- the kind:3 contact list
+// published to the network is the real list, same reasoning as
+// adoptOwnRelayListFromNetwork() in profile.js. Safe to call on every
+// login/startup: a no-op once the local list already matches, and
+// harmless if nothing has been published yet. This is what keeps
+// state.config.following current for both the home feed's follows-mode
+// filtering (see getHomeFeedAuthors in feed.js) and this settings panel,
+// instead of either having to fetch it themselves.
+export async function adoptOwnFollowingFromNetwork() {
+    if (!state.config || !state.config.public_key) {
+        return;
+    }
+    try {
+        var json = await invoke('fetch_own_following');
+        var data = json ? JSON.parse(json) : null;
+        var contacts = (data && data.contacts) ? data.contacts : [];
+        var pubkeys = contacts.map(function(c) { return c.pubkey; }).filter(Boolean);
+        if (pubkeys.length === 0) {
+            return;
+        }
+        var current = Array.isArray(state.config.following) ? state.config.following : [];
+        var changed = pubkeys.length !== current.length || pubkeys.some(function(p) { return current.indexOf(p) === -1; });
+        if (!changed) {
+            return;
+        }
+        state.config.following = pubkeys;
+        await saveConfig();
+
+        var followsPanel = document.getElementById('settings-panel-follows');
+        if (followsPanel && followsPanel.style.display !== 'none') {
+            loadFollowsPanel();
+        }
+
+        // Follows-mode feed filtering reads state.config.following directly
+        // -- restart it so a changed list takes effect now rather than at
+        // the next poll.
+        if (state.homeFeedMode === 'follows') {
+            state.initialFeedLoadDone = false;
+            state.notes = [];
+            if (state.feedPollIntervalId) {
+                clearInterval(state.feedPollIntervalId);
+                state.feedPollIntervalId = null;
+            }
+            if (state.currentView === 'feed') {
+                updateFeedInitialState();
+                startInitialFeedFetch();
+            }
+        }
     } catch (e) {
-        console.error('Failed to load follows:', e);
-        listEl.innerHTML = '<li class="follows-list-placeholder">' + (window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t('errors.loadFailed') : 'Failed to load') + '</li>';
-    } finally {
-        state.followsPanelLoading = false;
+        console.warn('[Plume] Failed to fetch own following list:', e);
     }
 }
 

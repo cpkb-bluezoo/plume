@@ -24,7 +24,9 @@ import { escapeHtml, showConfirm, torImgUrl } from './utils.js';
 import { updateUIFromConfig } from './config.js';
 import { updateSidebarAvatar } from './profile.js';
 import { startInitialFeedFetch } from './feed.js';
-import { fetchProfile } from './profile.js';
+import { fetchProfile, adoptOwnRelayListFromNetwork } from './profile.js';
+import { fetchAndMergeOwnMuteList } from './muting.js';
+import { adoptOwnFollowingFromNetwork } from './follows.js';
 
 let _switchView = null;
 export function setSwitchView(fn) {
@@ -37,7 +39,7 @@ export function setSwitchView(fn) {
 // State 3 (full auth): All enabled
 export function updateSidebarAuthState() {
     var hasProfile = !!(state.config && state.config.public_key);
-    var hasNsec = !!(state.config && state.config.private_key);
+    var hasNsec = !!(state.config && (state.config.private_key || state.config.key_storage === 'keyring'));
     var t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
 
     var navMessages = document.querySelector('.nav-item[data-view="messages"]');
@@ -175,25 +177,109 @@ export async function populateWelcomeProfiles() {
     });
 }
 
+// Self-contained promise-based modal, same technique as showConfirm() in
+// utils.js: wires its own handlers per call and tears them down after.
+// A dedicated modal (not the generic confirm dialog) since this choice
+// benefits from its own explanatory copy and the user specifically asked
+// for an unambiguous, modal-only prompt.
+function showKeyringPrompt() {
+    return new Promise(function(resolve) {
+        var modal = document.getElementById('keyring-prompt-modal');
+        var yesBtn = document.getElementById('keyring-prompt-yes');
+        var noBtn = document.getElementById('keyring-prompt-no');
+        var closeBtn = document.getElementById('close-keyring-prompt');
+        if (!modal || !yesBtn || !noBtn) {
+            resolve(false);
+            return;
+        }
+        modal.classList.add('active');
+        modal.setAttribute('aria-hidden', 'false');
+
+        function cleanup() {
+            modal.classList.remove('active');
+            modal.setAttribute('aria-hidden', 'true');
+            yesBtn.removeEventListener('click', onYes);
+            noBtn.removeEventListener('click', onNo);
+            if (closeBtn) {
+                closeBtn.removeEventListener('click', onNo);
+            }
+            modal.removeEventListener('click', onBackdrop);
+        }
+        function onYes() { cleanup(); resolve(true); }
+        function onNo() { cleanup(); resolve(false); }
+        function onBackdrop(e) {
+            if (e.target === modal) {
+                cleanup();
+                resolve(false);
+            }
+        }
+
+        yesBtn.addEventListener('click', onYes);
+        noBtn.addEventListener('click', onNo);
+        if (closeBtn) {
+            closeBtn.addEventListener('click', onNo);
+        }
+        modal.addEventListener('click', onBackdrop);
+        noBtn.focus();
+    });
+}
+
+// Offers to move a freshly-entered or freshly-generated private key into
+// the OS keyring. No-op when there's no keyring backend on this machine,
+// or when no private key was actually just provided (a watch-only npub
+// login has nothing to move). "No" leaves today's plaintext behavior
+// completely unchanged -- this is purely additive and reversible later
+// from Settings -> Keys.
+async function maybeOfferKeyringStorage(hadPrivateKey) {
+    if (!hadPrivateKey || !state.keyringAvailable) {
+        return;
+    }
+    var wantsKeyring = await showKeyringPrompt();
+    if (!wantsKeyring) {
+        return;
+    }
+    try {
+        var configJson = await invoke('set_key_storage_mode', { mode: 'keyring' });
+        state.config = JSON.parse(configJson);
+    } catch (e) {
+        console.error('Failed to move private key to system keyring:', e);
+    }
+}
+
 export async function handleWelcomeLogin() {
+    var t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
     var npubEl = document.getElementById('welcome-npub');
     var nsecEl = document.getElementById('welcome-nsec');
     var errorEl = document.getElementById('welcome-login-error');
+
+    function showError(message) {
+        if (errorEl) {
+            errorEl.textContent = message;
+            errorEl.style.display = 'block';
+        }
+    }
+
     if (errorEl) {
         errorEl.textContent = '';
+        errorEl.style.display = 'none';
     }
 
     var npub = (npubEl ? npubEl.value : '').trim();
     var nsec = (nsecEl ? nsecEl.value : '').trim();
 
-    if (!npub) {
-        if (errorEl) {
-            errorEl.textContent = 'Public key is required';
-        }
+    if (!npub && !nsec) {
+        showError(t('welcome.keyRequired') || 'Enter a public key or a private key');
         return;
     }
 
     try {
+        if (!npub) {
+            // Only a private key was given: derive the matching public key
+            // from it instead of demanding the user supply both.
+            var derivedJson = await invoke('derive_public_key', { private_key: nsec });
+            npub = JSON.parse(derivedJson).npub;
+        }
+
         var configJson = await invoke('login_with_keys', {
             public_key: npub,
             private_key: nsec || null
@@ -218,13 +304,29 @@ export async function handleWelcomeLogin() {
         state.initialFeedLoadDone = false;
         state.notes = [];
         _switchView('feed');
-        startInitialFeedFetch();
-        // Fetch profile from relays in background to update sidebar avatar and local config
+        // Fetch the user's own profile first, before the feed's own burst of
+        // relay queries -- otherwise it's queued behind them and the sidebar
+        // avatar/name take just as long to appear as the first notes do,
+        // even though there's far less to fetch.
         fetchProfile();
+        startInitialFeedFetch();
+        // The relay list just used to start the feed is only ever a
+        // bootstrap (the hardcoded defaults for a brand new profile); once
+        // the user's own published NIP-65 list is known, switch to it.
+        adoptOwnRelayListFromNetwork();
+        // Same reasoning for the follows list: it needs to be in memory at
+        // startup (for follows-mode feed filtering, same as the profile),
+        // not fetched fresh only when Settings -> Follows happens to open.
+        adoptOwnFollowingFromNetwork();
+        // Mutes were local-only until now, with no way to learn about a
+        // mute list another client published -- merge it in.
+        fetchAndMergeOwnMuteList();
+        // Offer keyring storage only for a freshly-typed private key, not
+        // when selecting an existing saved profile (that profile's storage
+        // mode was already decided at its own first login).
+        await maybeOfferKeyringStorage(!!nsec);
     } catch (err) {
-        if (errorEl) {
-            errorEl.textContent = typeof err === 'string' ? err : (err.message || 'Login failed');
-        }
+        showError(typeof err === 'string' ? err : (err.message || t('errors.loginFailed') || 'Login failed'));
     }
 }
 
@@ -258,6 +360,9 @@ export async function handleWelcomeGenerate() {
         } catch (e) {}
 
         alert(t('profile.newIdentityCreated') + '\n\nPublic Key (npub):\n' + keys.npub + '\n\nSecret Key (nsec):\n' + keys.nsec + '\n\n' + t('profile.saveNsecWarning'));
+
+        // generate_keypair always produces a fresh private key.
+        await maybeOfferKeyringStorage(true);
 
         state.initialFeedLoadDone = false;
         state.notes = [];
@@ -293,9 +398,15 @@ export async function handleProfileSelect(npub) {
         state.initialFeedLoadDone = false;
         state.notes = [];
         _switchView('feed');
-        startInitialFeedFetch();
-        // Fetch profile from relays in background to update sidebar avatar and local config
+        // Fetch the user's own profile first -- see handleWelcomeLogin for why.
         fetchProfile();
+        startInitialFeedFetch();
+        // See handleWelcomeLogin: adopt the real NIP-65 relay list once known.
+        adoptOwnRelayListFromNetwork();
+        // See handleWelcomeLogin: adopt the real follows list too.
+        adoptOwnFollowingFromNetwork();
+        // See handleWelcomeLogin: merge in the network's mute list too.
+        fetchAndMergeOwnMuteList();
     } catch (err) {
         alert('Failed to switch profile: ' + (typeof err === 'string' ? err : err.message || err));
     }
@@ -322,6 +433,7 @@ export async function handleLogout() {
         state.config = {
             public_key: '',
             private_key: null,
+            key_storage: 'plaintext',
             relays: DEFAULT_RELAYS.slice(),
             name: 'Anonymous',
             about: null,

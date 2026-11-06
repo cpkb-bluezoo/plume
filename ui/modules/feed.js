@@ -164,7 +164,16 @@ export async function startInitialFeedFetch() {
             if (state.homeFeedMode === 'follows') {
                 authors = await getHomeFeedAuthors();
                 if (!authors || authors.length === 0) {
-                    authors = null;
+                    // start_feed_stream treats a null/empty authors list as
+                    // "no author filter" -- i.e. firehose -- so sending it
+                    // one here would silently show everyone's notes instead
+                    // of respecting the follows-only mode the user chose.
+                    state.loading = false;
+                    state.initialFeedLoadDone = true;
+                    unlistenNote();
+                    unlistenEose();
+                    showMessage(t('feed.noFollowsYet'));
+                    return;
                 }
             }
             await invoke('start_feed_stream', {
@@ -190,7 +199,12 @@ export async function startInitialFeedFetch() {
         if (state.homeFeedMode === 'follows') {
             authors = await getHomeFeedAuthors();
             if (!authors || authors.length === 0) {
-                authors = null;
+                // See the stream-mode branch above: fetchFeedNotes/
+                // start_feed_stream treat no authors as no filter at all.
+                state.notes = [];
+                state.initialFeedLoadDone = true;
+                showMessage(t('feed.noFollowsYet'));
+                return;
             }
         }
         const notes = await fetchFeedNotes(effectiveRelays, authors, null);
@@ -324,6 +338,9 @@ export function appendNoteCardToFeedSync(note) {
 
 export function appendNoteCardToFeed(note) {
     if (!note || (note.kind !== 1 && note.kind !== 30023)) {
+        return;
+    }
+    if (isNoteMuted(note)) {
         return;
     }
     if ((!state.config || state.config.hide_encrypted_notes !== false) && note.kind === 1 && isContentUnreadable(note.content)) {

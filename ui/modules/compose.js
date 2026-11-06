@@ -156,8 +156,9 @@ export async function handleComposeSubmit(event) {
         return;
     }
 
-    // Check if we have a private key
-    if (!state.config || !state.config.private_key) {
+    // Check if we have a private key (it may live in the OS keyring
+    // instead of state.config.private_key -- see key_storage)
+    if (!state.config || !(state.config.private_key || state.config.key_storage === 'keyring')) {
         showComposeError(t('composeModal.noPrivateKey'));
         return;
     }

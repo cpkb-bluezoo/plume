@@ -20,7 +20,7 @@
 
 import { state } from './state.js';
 import { invoke } from './tauri.js';
-import { escapeHtml, clearValidationErrors, showValidationError } from './utils.js';
+import { escapeHtml, clearValidationErrors, showValidationError, showConfirm } from './utils.js';
 import { saveConfig, setSavingState, updateFeedInitialState } from './config.js';
 import { hexToNpub, validatePublicKey, validateSecretKey } from './keys.js';
 import { updateRelayList, bindRelayPanelHandlers, runRelayTests, initRelayTabs } from './relays.js';
@@ -161,11 +161,17 @@ export async function populateKeysPanel() {
     if (!npubEl || !nsecEl) {
         return;
     }
+    var t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
+    // A key stored in the system keyring is never sent back over IPC (see
+    // key_storage in config.rs), so state.config.private_key alone can't
+    // tell us whether a key exists -- key_storage === 'keyring' means one
+    // does, it's just not here.
+    var hasKey = !!(state.config && (state.config.private_key || state.config.key_storage === 'keyring'));
     npubEl.value = '';
     nsecEl.value = '';
-    nsecEl.placeholder = state.config && state.config.private_key
-        ? (window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t('accountModal.privateKeyConfigured') || 'Private key configured (hidden)' : 'Private key configured (hidden)')
-        : (window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t('accountModal.privateKeyPlaceholder') || 'nsec1... or hex (optional)' : 'nsec1... or hex (optional)');
+    nsecEl.placeholder = hasKey
+        ? (t('accountModal.privateKeyConfigured') || 'Private key configured (hidden)')
+        : (t('accountModal.privateKeyPlaceholder') || 'nsec1... or hex (optional)');
     var npubError = document.getElementById('settings-keys-npub-error');
     var nsecError = document.getElementById('settings-keys-nsec-error');
     if (npubError) {
@@ -177,8 +183,9 @@ export async function populateKeysPanel() {
     // Show/hide copy nsec button based on whether key exists
     var copyNsecBtn = document.getElementById('settings-keys-copy-nsec');
     if (copyNsecBtn) {
-        copyNsecBtn.style.display = (state.config && state.config.private_key) ? 'inline-block' : 'none';
+        copyNsecBtn.style.display = hasKey ? 'inline-block' : 'none';
     }
+    renderKeyStorageControl(hasKey);
     if (!state.config) {
         return;
     }
@@ -193,13 +200,96 @@ export async function populateKeysPanel() {
     // Private key is NOT written to the DOM. The input is write-only for entering a new key.
 }
 
-// Copy nsec to clipboard without ever placing it in the DOM
+// Status line + move button for where the private key is stored
+// (plaintext config file vs. OS keyring). Hidden entirely when there's no
+// key to move, or no keyring backend on this machine.
+function renderKeyStorageControl(hasKey) {
+    var row = document.getElementById('settings-keys-storage-row');
+    var statusEl = document.getElementById('settings-keys-storage-status');
+    var moveBtn = document.getElementById('settings-keys-storage-move');
+    if (!row) {
+        return;
+    }
+    var t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
+    if (!hasKey) {
+        row.style.display = 'none';
+        return;
+    }
+    var isKeyring = state.config && state.config.key_storage === 'keyring';
+    if (state.keyringAvailable === false) {
+        if (statusEl) {
+            statusEl.textContent = t('settings.keyringUnavailableHint') || 'System keyring not available on this device; using plaintext config file.';
+        }
+        if (moveBtn) {
+            moveBtn.style.display = 'none';
+        }
+        row.style.display = 'flex';
+        return;
+    }
+    if (statusEl) {
+        statusEl.textContent = isKeyring
+            ? (t('settings.keyStorageKeyring') || 'Stored in: system keyring')
+            : (t('settings.keyStoragePlaintext') || 'Stored in: plaintext config file');
+    }
+    if (moveBtn) {
+        moveBtn.style.display = 'inline-block';
+        moveBtn.textContent = isKeyring
+            ? (t('settings.keyStorageMoveToPlaintext') || 'Move to plaintext config')
+            : (t('settings.keyStorageMoveToKeyring') || 'Move to system keyring');
+        moveBtn.dataset.targetMode = isKeyring ? 'plaintext' : 'keyring';
+    }
+    row.style.display = 'flex';
+}
+
+// Move the active profile's private key between plaintext config and the
+// OS keyring (see set_key_storage_mode in main.rs). Local-only action, no
+// relay round trip -- mirrors saveZapsFromPanel()'s simple-save pattern.
+export async function moveKeyStorageFromPanel() {
+    var moveBtn = document.getElementById('settings-keys-storage-move');
+    if (!moveBtn || !state.config) {
+        return;
+    }
+    var targetMode = moveBtn.dataset.targetMode;
+    if (!targetMode) {
+        return;
+    }
+    var t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
+    var confirmMessage = targetMode === 'keyring'
+        ? (t('settings.keyStorageConfirmToKeyring') || 'Move your private key to the system keyring? It will no longer be stored in the config file.')
+        : (t('settings.keyStorageConfirmToPlaintext') || 'Move your private key back to the plaintext config file?');
+    var confirmed = await showConfirm(confirmMessage);
+    if (!confirmed) {
+        return;
+    }
+    var restoreBtn = setSavingState(moveBtn);
+    var errorMessage = null;
+    try {
+        var configJson = await invoke('set_key_storage_mode', { mode: targetMode });
+        state.config = JSON.parse(configJson);
+    } catch (e) {
+        console.error('Failed to move private key storage:', e);
+        errorMessage = (t('settings.keyStorageMoveFailed') || 'Failed to move private key') + ': ' + e;
+    }
+    // restoreBtn() resets the button to whatever text it had *before* the
+    // click -- run it first, then re-render so the label reflects the new
+    // (or unchanged, on failure) state rather than being stomped by it.
+    restoreBtn();
+    populateKeysPanel();
+    if (errorMessage) {
+        alert(errorMessage);
+    }
+}
+
+// Copy nsec to clipboard without ever placing it in the DOM. Resolved
+// backend-side (works whether the key is in plaintext config or the
+// keyring) rather than reading state.config.private_key, which is absent
+// once the key lives in the keyring.
 export async function copyNsecToClipboard() {
-    if (!state.config || !state.config.private_key) {
+    if (!state.config || !(state.config.private_key || state.config.key_storage === 'keyring')) {
         return;
     }
     try {
-        var nsec = await invoke('convert_hex_to_nsec', { hex_key: state.config.private_key });
+        var nsec = await invoke('get_nsec_string');
         if (!nsec) {
             return;
         }

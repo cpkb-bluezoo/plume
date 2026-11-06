@@ -21,16 +21,21 @@
     "existingIdentity": "¿Ya tienes una identidad Nostr?",
     "knownProfiles": "Tus perfiles",
     "enterKeys": "Introduce tus claves para iniciar sesión:",
-    "publicKeyLabel": "Clave pública",
+    "publicKeyLabel": "Clave pública (opcional si introduces una clave privada)",
     "publicKeyPlaceholder": "npub1... o hex de 64 caracteres",
     "privateKeyLabel": "Clave privada (opcional)",
     "privateKeyPlaceholder": "nsec1... o hex",
-    "privateKeyHint": "Una clave pública te permite explorar y seguir a otros. Una clave privada es necesaria para publicar notas, reaccionar o enviar mensajes directos.",
+    "privateKeyHint": "Una clave pública por sí sola te permite explorar y seguir a otros. Introduce una clave privada para además publicar notas, reaccionar o enviar mensajes directos; su clave pública se deriva automáticamente si dejas ese campo en blanco.",
+    "keyRequired": "Introduce una clave pública o una clave privada",
     "logIn": "Iniciar sesión",
     "or": "o",
     "newIdentity": "¿Nuevo en Nostr?",
     "newIdentityDesc": "Crea una nueva identidad para empezar a publicar y conectar con otros en la red social descentralizada.",
-    "createNewIdentity": "Crear nueva identidad"
+    "createNewIdentity": "Crear nueva identidad",
+    "keyringPromptTitle": "¿Guardar tu clave privada en el llavero del sistema?",
+    "keyringPromptBody": "Este dispositivo tiene un llavero del sistema (Keychain, Credential Manager o Secret Service). Plume puede guardar tu clave privada allí en lugar de en su archivo de configuración en texto plano. Puedes devolverla en cualquier momento desde Ajustes → Claves.",
+    "keyringPromptNo": "Mantener en el archivo de configuración",
+    "keyringPromptYes": "Guardar en el llavero"
   },
   "feed": {
     "title": "Inicio",
@@ -41,6 +46,7 @@
     "noTextNotes": "No se encontraron notas de texto",
     "tryRelays": "Prueba a conectar con otros relays",
     "noRelays": "No hay relays configurados. Añade relays en Ajustes.",
+    "noFollowsYet": "Todavía no sigues a nadie, o no se encontró tu lista de contactos en tus relays.",
     "feedFailed": "Error al cargar el feed. Comprueba los relays e inténtalo de nuevo.",
     "mutedContent": "Esta nota es de una cuenta silenciada o contiene contenido silenciado."
   },
@@ -70,6 +76,15 @@
     "account": "Cuenta",
     "profile": "Perfil",
     "keys": "Claves",
+    "keyStorageLabel": "Almacenamiento de la clave privada",
+    "keyStorageKeyring": "Almacenada en: llavero del sistema",
+    "keyStoragePlaintext": "Almacenada en: archivo de configuración en texto plano",
+    "keyStorageMoveToKeyring": "Mover al llavero del sistema",
+    "keyStorageMoveToPlaintext": "Mover al archivo de configuración",
+    "keyStorageConfirmToKeyring": "¿Mover tu clave privada al llavero del sistema? Ya no se almacenará en el archivo de configuración.",
+    "keyStorageConfirmToPlaintext": "¿Mover tu clave privada de vuelta al archivo de configuración en texto plano?",
+    "keyStorageMoveFailed": "No se pudo mover la clave privada",
+    "keyringUnavailableHint": "El llavero del sistema no está disponible en este dispositivo; se usa el archivo de configuración en texto plano.",
     "homeFeed": "Feed de inicio",
     "homeFeedModalTitle": "Feed de inicio",
     "homeFeedModalHint": "Elige qué aparece en tu página de inicio.",
@@ -109,7 +124,7 @@
     "relayAddPlaceholder": "wss://relay.ejemplo.com",
     "relayDelete": "Eliminar",
     "relayTabMain": "Relés principales",
-    "relayTabDM": "Relés de mensajes",
+    "relayTabDM": "Relés de mensajes de confianza (NIP-17)",
     "relayMainHint": "Relés utilizados para tu feed, perfil y notas públicas. Conéctate a varios para mayor disponibilidad.",
     "relayDMHint": "Relés utilizados para recibir mensajes privados. Mantén la lista pequeña (1\u20133 relés). Otros usuarios descubren estos relés para enviarte mensajes cifrados.",
     "zaps": "Zaps",
@@ -123,6 +138,7 @@
     "message": "Mensaje",
     "mute": "Silenciar",
     "unmute": "Dejar de silenciar",
+    "muteFailed": "No se pudo confirmar la actualización de la lista de silenciados en ningún relay. Inténtalo de nuevo.",
     "following": "siguiendo",
     "followers": "seguidores",
     "lastModified": "Perfil actualizado el",
@@ -140,6 +156,7 @@
     "anonymous": "Anónimo",
     "generating": "Generando…",
     "newIdentityCreated": "¡Nueva identidad creada!",
+    "publishFailed": "No se pudo confirmar la actualización del perfil en ningún relay. Inténtalo de nuevo.",
     "saveNsecWarning": "IMPORTANTE: Guarda tu nsec en un lugar seguro. Lo necesitarás para recuperar tu identidad.",
     "publicKeyQR": "Clave pública",
     "publicKeySelectToCopy": "Clave pública (seleccionar para copiar)"
@@ -231,7 +248,14 @@
   "relays": {
     "statusUnknown": "No probado aún",
     "statusConnected": "Conectado",
-    "statusFailed": "Error de conexión"
+    "statusFailed": "Error de conexión",
+    "publishing": "Publicando…",
+    "confirmed": "Confirmado",
+    "acceptedUnconfirmed": "Aceptado (sin confirmar)",
+    "publishFailed": "Fallido",
+    "publishSummaryOk": "Confirmado en {confirmed} de {total} relays",
+    "publishSummaryFailed": "No se pudo confirmar en ningún relay.",
+    "publishStartFailed": "No se pudo iniciar: "
   },
   "content": {
     "image": "Imagen"
@@ -270,7 +294,8 @@
     "initError": "Error de inicialización",
     "loadFailed": "Error al cargar los marcadores",
     "failedToPublish": "Error al publicar",
-    "allRelaysUnreachable": "No se pudo conectar a ningún relay. Verifica tu conexión y la configuración de relays."
+    "allRelaysUnreachable": "No se pudo conectar a ningún relay. Verifica tu conexión y la configuración de relays.",
+    "loginFailed": "Error al iniciar sesión"
   },
   "alpha": {
     "preLink": "Este es un software alfa. Por favor, informe de cualquier error",

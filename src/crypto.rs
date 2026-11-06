@@ -987,6 +987,35 @@ pub fn create_nip17_dm(
     Ok((wrap_for_recipient, wrap_for_self))
 }
 
+/// Create and sign a kind 10002 (NIP-65 relay list) event. No read/write
+/// marker on any "r" tag -- every relay in Plume's single list is used for
+/// both, so an unmarked tag (meaning both, per NIP-65) is the correct one.
+pub fn create_signed_relay_list(
+    relay_urls: &[String],
+    secret_key_hex: &str,
+) -> Result<Event, String> {
+    let pubkey = get_public_key_from_secret(secret_key_hex)?;
+    let created_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let tags: Vec<Vec<String>> = relay_urls
+        .iter()
+        .map(|url| vec![String::from("r"), url.clone()])
+        .collect();
+    let mut event = Event {
+        id: String::new(),
+        pubkey,
+        created_at,
+        kind: crate::nostr::KIND_RELAY_LIST,
+        tags,
+        content: String::new(),
+        sig: String::new(),
+    };
+    sign_event(&mut event, secret_key_hex)?;
+    Ok(event)
+}
+
 /// Create and sign a kind 10050 (DM relay list) event.
 pub fn create_signed_dm_relay_list(
     relay_urls: &[String],
@@ -1008,6 +1037,74 @@ pub fn create_signed_dm_relay_list(
         kind: crate::nostr::KIND_DM_RELAY_LIST,
         tags,
         content: String::new(),
+        sig: String::new(),
+    };
+    sign_event(&mut event, secret_key_hex)?;
+    Ok(event)
+}
+
+// ============================================================
+// NIP-51 Mute List (kind 10000)
+// ============================================================
+
+/// Decrypts a NIP-51 mute list's private `content` (self-encrypted: the
+/// owner is both sender and recipient). Tries NIP-44 first -- the current
+/// spec recommendation, and what Plume itself encrypts with -- falling
+/// back to NIP-04 for compatibility with other clients that may still
+/// produce (or may only ever have produced) the older format; the spec
+/// changed encryption schemes under this event kind over its lifetime, and
+/// getting this wrong would mean silently failing to see mutes another
+/// client already has. An empty `content` (never-yet-set private list) is
+/// not an error.
+pub fn decrypt_mute_list_content(content: &str, secret_key_hex: &str) -> Result<String, String> {
+    if content.trim().is_empty() {
+        return Ok(String::new());
+    }
+    let own_pubkey = get_public_key_from_secret(secret_key_hex)?;
+    if let Ok(key) = nip44_conversation_key(secret_key_hex, &own_pubkey) {
+        if let Ok(plaintext) = nip44_decrypt(content, &key) {
+            return Ok(plaintext);
+        }
+    }
+    nip04_decrypt(content, secret_key_hex, &own_pubkey)
+}
+
+/// Encrypts plaintext (a NIP-51 private-tags JSON array) for a mute list's
+/// `content`, self-encrypted with NIP-44 -- see [`decrypt_mute_list_content`]
+/// for why reading tries both schemes but writing only ever uses the
+/// current one.
+fn encrypt_mute_list_content(plaintext: &str, secret_key_hex: &str) -> Result<String, String> {
+    let own_pubkey = get_public_key_from_secret(secret_key_hex)?;
+    let key = nip44_conversation_key(secret_key_hex, &own_pubkey)?;
+    nip44_encrypt(plaintext, &key)
+}
+
+/// Create and sign a kind 10000 (NIP-51 mute list) event: `public_tags`
+/// verbatim as the event's own tags, `private_tags` serialized and
+/// self-encrypted into `content` (omitted entirely when empty, rather than
+/// publishing a pointless empty encrypted blob).
+pub fn create_signed_mute_list(
+    public_tags: &[Vec<String>],
+    private_tags: &[Vec<String>],
+    secret_key_hex: &str,
+) -> Result<Event, String> {
+    let pubkey = get_public_key_from_secret(secret_key_hex)?;
+    let created_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let content = if private_tags.is_empty() {
+        String::new()
+    } else {
+        encrypt_mute_list_content(&crate::nostr::tags_to_json(private_tags), secret_key_hex)?
+    };
+    let mut event = Event {
+        id: String::new(),
+        pubkey,
+        created_at,
+        kind: crate::nostr::KIND_MUTE_LIST,
+        tags: public_tags.to_vec(),
+        content,
         sig: String::new(),
     };
     sign_event(&mut event, secret_key_hex)?;
@@ -1216,6 +1313,45 @@ mod tests {
         let bytes = hex_to_bytes(original).unwrap();
         let back = bytes_to_hex(&bytes);
         assert_eq!(original, back);
+    }
+
+    #[test]
+    fn mute_list_round_trips_public_and_private_tags() {
+        let (secret_hex, _pubkey_hex) = generate_keypair().unwrap();
+        let public_tags = vec![vec!["p".to_string(), "alice".to_string()]];
+        let private_tags = vec![
+            vec!["p".to_string(), "bob".to_string()],
+            vec!["word".to_string(), "spam".to_string()],
+        ];
+
+        let event = create_signed_mute_list(&public_tags, &private_tags, &secret_hex).unwrap();
+        assert_eq!(event.kind, crate::nostr::KIND_MUTE_LIST);
+        assert_eq!(event.tags, public_tags);
+        assert!(!event.content.is_empty(), "non-empty private tags must produce encrypted content");
+
+        let decrypted = decrypt_mute_list_content(&event.content, &secret_hex).unwrap();
+        let round_tripped = crate::nostr::parse_mute_list_tags_json(&decrypted).unwrap();
+        assert_eq!(round_tripped, private_tags);
+    }
+
+    #[test]
+    fn mute_list_with_no_private_tags_has_empty_content() {
+        let (secret_hex, _pubkey_hex) = generate_keypair().unwrap();
+        let event = create_signed_mute_list(&[vec!["p".to_string(), "alice".to_string()]], &[], &secret_hex).unwrap();
+        assert!(event.content.is_empty(), "no private tags should mean no pointless encrypted blob");
+    }
+
+    #[test]
+    fn decrypt_mute_list_content_falls_back_to_nip04_for_older_clients() {
+        // Simulates a mute list written by a client that still uses NIP-04
+        // (the scheme NIP-51 originally specified) rather than Plume's own
+        // NIP-44 -- decrypt must still recover it, not just whatever it writes.
+        let (secret_hex, pubkey_hex) = generate_keypair().unwrap();
+        let plaintext = crate::nostr::tags_to_json(&[vec!["p".to_string(), "carol".to_string()]]);
+        let nip04_content = nip04_encrypt(&plaintext, &secret_hex, &pubkey_hex).unwrap();
+
+        let decrypted = decrypt_mute_list_content(&nip04_content, &secret_hex).unwrap();
+        assert_eq!(decrypted, plaintext);
     }
 
     // NIP-44 test vectors from https://github.com/paulmillr/nip44

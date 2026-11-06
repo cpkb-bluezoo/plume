@@ -21,16 +21,21 @@
     "existingIdentity": "Vous avez déjà une identité Nostr ?",
     "knownProfiles": "Vos profils",
     "enterKeys": "Entrez vos clés pour vous connecter :",
-    "publicKeyLabel": "Clé publique",
+    "publicKeyLabel": "Clé publique (facultatif si vous saisissez une clé privée)",
     "publicKeyPlaceholder": "npub1... ou hex 64 caractères",
     "privateKeyLabel": "Clé privée (optionnel)",
     "privateKeyPlaceholder": "nsec1... ou hex",
-    "privateKeyHint": "Une clé publique vous permet de parcourir et de suivre d'autres utilisateurs. Une clé privée est requise pour publier des notes, réagir ou envoyer des messages directs.",
+    "privateKeyHint": "Une clé publique seule vous permet de parcourir et de suivre d'autres utilisateurs. Saisissez une clé privée pour aussi publier des notes, réagir ou envoyer des messages directs ; sa clé publique est dérivée automatiquement si vous laissez ce champ vide.",
+    "keyRequired": "Saisissez une clé publique ou une clé privée",
     "logIn": "Se connecter",
     "or": "ou",
     "newIdentity": "Nouveau sur Nostr ?",
     "newIdentityDesc": "Créez une nouvelle identité pour commencer à publier et à vous connecter sur le réseau social décentralisé.",
-    "createNewIdentity": "Créer une nouvelle identité"
+    "createNewIdentity": "Créer une nouvelle identité",
+    "keyringPromptTitle": "Stocker votre clé privée dans le trousseau système ?",
+    "keyringPromptBody": "Cet appareil dispose d'un trousseau système (Trousseau, Gestionnaire d'identification ou Secret Service). Plume peut y stocker votre clé privée au lieu de la conserver dans son fichier de configuration en clair. Vous pouvez la déplacer de nouveau à tout moment depuis Réglages → Clés.",
+    "keyringPromptNo": "Conserver dans le fichier de configuration",
+    "keyringPromptYes": "Stocker dans le trousseau"
   },
   "feed": {
     "title": "Accueil",
@@ -41,6 +46,7 @@
     "noTextNotes": "Aucune note texte trouvée",
     "tryRelays": "Essayez de vous connecter à d'autres relais",
     "noRelays": "Aucun relais configuré. Ajoutez des relais dans Paramètres.",
+    "noFollowsYet": "Vous ne suivez personne pour le moment, ou votre liste de contacts n'a pas été trouvée sur vos relais.",
     "feedFailed": "Échec du chargement du fil. Vérifiez les relais et réessayez.",
     "mutedContent": "Cette note provient d'un compte masqué ou contient du contenu masqué."
   },
@@ -70,6 +76,15 @@
     "account": "Compte",
     "profile": "Profil",
     "keys": "Clés",
+    "keyStorageLabel": "Stockage de la clé privée",
+    "keyStorageKeyring": "Stockée dans : le trousseau système",
+    "keyStoragePlaintext": "Stockée dans : le fichier de configuration en clair",
+    "keyStorageMoveToKeyring": "Déplacer vers le trousseau système",
+    "keyStorageMoveToPlaintext": "Déplacer vers le fichier de configuration",
+    "keyStorageConfirmToKeyring": "Déplacer votre clé privée vers le trousseau système ? Elle ne sera plus stockée dans le fichier de configuration.",
+    "keyStorageConfirmToPlaintext": "Déplacer votre clé privée de nouveau vers le fichier de configuration en clair ?",
+    "keyStorageMoveFailed": "Impossible de déplacer la clé privée",
+    "keyringUnavailableHint": "Aucun trousseau système n'est disponible sur cet appareil ; utilisation du fichier de configuration en clair.",
     "homeFeed": "Fil d'accueil",
     "homeFeedModalTitle": "Fil d'accueil",
     "homeFeedModalHint": "Choisissez ce qui apparaît sur votre page d'accueil.",
@@ -109,7 +124,7 @@
     "relayAddPlaceholder": "wss://relais.exemple.com",
     "relayDelete": "Supprimer",
     "relayTabMain": "Relais principaux",
-    "relayTabDM": "Relais de messages",
+    "relayTabDM": "Relais de messages de confiance (NIP-17)",
     "relayMainHint": "Relais utilisés pour votre fil, profil et notes publiques. Connectez-vous à plusieurs pour une meilleure disponibilité.",
     "relayDMHint": "Relais utilisés pour recevoir des messages privés. Limitez la liste (1\u20133 relais). Les autres utilisateurs découvrent ces relais pour vous envoyer des messages chiffrés.",
     "zaps": "Zaps",
@@ -123,6 +138,7 @@
     "message": "Message",
     "mute": "Masquer",
     "unmute": "Ne plus masquer",
+    "muteFailed": "Impossible de confirmer la mise à jour de la liste de masquage sur un relais. Veuillez réessayer.",
     "following": "abonnements",
     "followers": "abonnés",
     "lastModified": "Profil mis à jour le",
@@ -140,6 +156,7 @@
     "anonymous": "Anonyme",
     "generating": "Génération…",
     "newIdentityCreated": "Nouvelle identité créée !",
+    "publishFailed": "Impossible de confirmer la mise à jour du profil sur un relais. Veuillez réessayer.",
     "saveNsecWarning": "IMPORTANT : Conservez votre nsec en lieu sûr. Vous en aurez besoin pour récupérer votre identité !",
     "publicKeyQR": "Clé publique",
     "publicKeySelectToCopy": "Clé publique (sélectionner pour copier)"
@@ -231,7 +248,14 @@
   "relays": {
     "statusUnknown": "Non testé",
     "statusConnected": "Connecté",
-    "statusFailed": "Échec de connexion"
+    "statusFailed": "Échec de connexion",
+    "publishing": "Publication…",
+    "confirmed": "Confirmé",
+    "acceptedUnconfirmed": "Accepté (non confirmé)",
+    "publishFailed": "Échoué",
+    "publishSummaryOk": "Confirmé sur {confirmed} relais sur {total}",
+    "publishSummaryFailed": "Impossible de confirmer sur un relais.",
+    "publishStartFailed": "Échec du démarrage : "
   },
   "content": {
     "image": "Image"
@@ -270,7 +294,8 @@
     "initError": "Erreur d'initialisation",
     "loadFailed": "Échec du chargement des favoris",
     "failedToPublish": "Échec de la publication",
-    "allRelaysUnreachable": "Impossible de contacter les relais. Vérifiez votre connexion et vos paramètres de relais."
+    "allRelaysUnreachable": "Impossible de contacter les relais. Vérifiez votre connexion et vos paramètres de relais.",
+    "loginFailed": "Échec de la connexion"
   },
   "alpha": {
     "preLink": "Ceci est un logiciel alpha. Veuillez signaler tout bug",

@@ -21,16 +21,21 @@
     "existingIdentity": "Already have a Nostr identity?",
     "knownProfiles": "Your profiles",
     "enterKeys": "Enter your keys to log in:",
-    "publicKeyLabel": "Public Key",
+    "publicKeyLabel": "Public Key (optional if entering a private key)",
     "publicKeyPlaceholder": "npub1... or 64-char hex",
     "privateKeyLabel": "Private Key (optional)",
     "privateKeyPlaceholder": "nsec1... or hex",
-    "privateKeyHint": "A public key lets you browse and follow others. A private key is required to publish notes, react, or send direct messages.",
+    "privateKeyHint": "A public key alone lets you browse and follow others. Enter a private key to also publish notes, react, or send direct messages - its public key is derived automatically if you leave that field blank.",
+    "keyRequired": "Enter a public key or a private key",
     "logIn": "Log In",
     "or": "or",
     "newIdentity": "New to Nostr?",
     "newIdentityDesc": "Create a fresh identity to start posting and connecting with others on the decentralised social network.",
-    "createNewIdentity": "Create New Identity"
+    "createNewIdentity": "Create New Identity",
+    "keyringPromptTitle": "Store your private key in the system keyring?",
+    "keyringPromptBody": "This device has a system keyring (Keychain, Credential Manager, or Secret Service). Plume can store your private key there instead of in its plaintext config file. You can move it back at any time from Settings → Keys.",
+    "keyringPromptNo": "Keep in config file",
+    "keyringPromptYes": "Store in keyring"
   },
   "feed": {
     "title": "Home",
@@ -41,6 +46,7 @@
     "noTextNotes": "No text notes found (yet)",
     "tryRelays": "This can happen on a slow Tor connection — try reloading, or check your relays in Settings if it keeps happening",
     "noRelays": "No relays configured. Add relays in Settings.",
+    "noFollowsYet": "You're not following anyone yet, or your contact list couldn't be found on your relays.",
     "feedFailed": "Failed to load feed. Check relays and try again.",
     "mutedContent": "This note is from a muted account or contains muted content."
   },
@@ -70,6 +76,15 @@
     "account": "Account",
     "profile": "Profile",
     "keys": "Keys",
+    "keyStorageLabel": "Private key storage",
+    "keyStorageKeyring": "Stored in: system keyring",
+    "keyStoragePlaintext": "Stored in: plaintext config file",
+    "keyStorageMoveToKeyring": "Move to system keyring",
+    "keyStorageMoveToPlaintext": "Move to plaintext config",
+    "keyStorageConfirmToKeyring": "Move your private key to the system keyring? It will no longer be stored in the config file.",
+    "keyStorageConfirmToPlaintext": "Move your private key back to the plaintext config file?",
+    "keyStorageMoveFailed": "Failed to move private key",
+    "keyringUnavailableHint": "System keyring not available on this device; using plaintext config file.",
     "homeFeed": "Home feed",
     "homeFeedModalTitle": "Home feed",
     "homeFeedModalHint": "Choose what appears on your Home page.",
@@ -109,7 +124,7 @@
     "relayAddPlaceholder": "wss://relay.example.com",
     "relayDelete": "Remove",
     "relayTabMain": "Main Relays",
-    "relayTabDM": "Message Relays",
+    "relayTabDM": "NIP-17 trusted message relays",
     "relayMainHint": "Relays used for your feed, profile, and public notes. Connect to several for best availability.",
     "relayDMHint": "Relays used to receive private messages. Keep the list small (1\u20133 relays). Other users discover these relays to send you encrypted messages.",
     "zaps": "Zaps",
@@ -123,6 +138,7 @@
     "message": "Message",
     "mute": "Mute",
     "unmute": "Unmute",
+    "muteFailed": "Could not confirm the mute list update on any relay. Please try again.",
     "following": "following",
     "followers": "followers",
     "lastModified": "Profile updated",
@@ -140,6 +156,7 @@
     "anonymous": "Anonymous",
     "generating": "Generating...",
     "newIdentityCreated": "New identity created!",
+    "publishFailed": "Could not confirm the profile update on any relay. Please try again.",
     "saveNsecWarning": "IMPORTANT: Save your nsec in a safe place. You will need it to recover your identity!",
     "publicKeyQR": "Public key",
     "publicKeySelectToCopy": "Public key (select to copy)"
@@ -231,7 +248,14 @@
   "relays": {
     "statusUnknown": "Not tested yet",
     "statusConnected": "Connected",
-    "statusFailed": "Connection failed"
+    "statusFailed": "Connection failed",
+    "publishing": "Publishing…",
+    "confirmed": "Confirmed",
+    "acceptedUnconfirmed": "Accepted (unconfirmed)",
+    "publishFailed": "Failed",
+    "publishSummaryOk": "Confirmed on {confirmed} of {total} relays",
+    "publishSummaryFailed": "Could not confirm on any relay.",
+    "publishStartFailed": "Failed to start: "
   },
   "content": {
     "image": "Image"
@@ -270,7 +294,8 @@
     "initError": "Initialization error",
     "loadFailed": "Failed to load bookmarks",
     "failedToPublish": "Failed to publish",
-    "allRelaysUnreachable": "Could not reach any relays. Check your connection and relay settings."
+    "allRelaysUnreachable": "Could not reach any relays. Check your connection and relay settings.",
+    "loginFailed": "Login failed"
   },
   "alpha": {
     "preLink": "This is alpha software. Please report any bugs",

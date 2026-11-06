@@ -28,6 +28,7 @@ mod crypto;
 mod debug;
 mod http;
 mod json;
+mod keyring_store;
 mod keys;
 mod media;
 mod media_cache;
@@ -42,7 +43,7 @@ mod tor;
 mod websocket;
 
 // Import what we need from external crates
-use tauri::{Emitter, Manager};
+use tauri::Emitter;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use qrcode::{QrCode, render::svg};
 
@@ -148,6 +149,40 @@ fn convert_secret_key_to_hex(key: String) -> Result<String, String> {
 #[tauri::command]
 fn convert_hex_to_nsec(hex_key: String) -> Result<String, String> {
     return keys::hex_to_nsec(&hex_key);
+}
+
+/// Derive the public key matching a private key the user typed (e.g. at
+/// login, before any profile/config exists) -- unlike
+/// [`get_derived_public_key`], this takes the key directly rather than
+/// reading one already saved to the active profile's config.
+#[tauri::command(rename_all = "snake_case")]
+fn derive_public_key(private_key: String) -> Result<String, String> {
+    let secret_hex = keys::secret_key_to_hex(private_key.trim())?;
+    let pubkey = crypto::get_public_key_from_secret(&secret_hex)?;
+    let npub = keys::hex_to_npub(&pubkey).unwrap_or_default();
+    Ok(format!("{{\"hex\":\"{}\",\"npub\":\"{}\"}}", pubkey, npub))
+}
+
+#[cfg(test)]
+mod derive_public_key_tests {
+    use super::*;
+
+    #[test]
+    fn derives_the_public_key_matching_a_freshly_generated_private_key() {
+        let (secret_hex, pubkey_hex) = crypto::generate_keypair().unwrap();
+        let expected_npub = keys::hex_to_npub(&pubkey_hex).unwrap();
+        let nsec = keys::hex_to_nsec(&secret_hex).unwrap();
+
+        let json = derive_public_key(nsec).unwrap();
+
+        assert!(json.contains(&pubkey_hex), "expected hex pubkey {pubkey_hex} in {json}");
+        assert!(json.contains(&expected_npub), "expected npub {expected_npub} in {json}");
+    }
+
+    #[test]
+    fn rejects_an_invalid_private_key() {
+        assert!(derive_public_key("not a key".to_string()).is_err());
+    }
 }
 
 #[tauri::command]
@@ -413,8 +448,18 @@ async fn search_notes(
     let (mut all_events, fail_count) =
         relay::fetch_notes_from_relays(&relay_urls, &filter, relay::RESPONSE_TIMEOUT_SECS).await;
 
-    // If NIP-50 search yielded nothing (relay may not support it), fall back to
-    // fetching recent notes and filtering client-side.
+    // NIP-50 is inconsistently implemented: some relays reject `search`
+    // outright, others return it unfiltered, and others match loosely
+    // enough to include plainly unrelated results -- there is no relay
+    // response here that can be trusted as already relevant. Keep only
+    // events that actually contain the query, the same check already used
+    // below for the fallback pass.
+    let lower_q = q.to_lowercase();
+    all_events.retain(|event| event.content.to_lowercase().contains(&lower_q));
+
+    // If NIP-50 search yielded nothing (relay may not support it, or nothing
+    // relevant survived the check above), fall back to fetching recent
+    // notes and filtering client-side the same way.
     if all_events.is_empty() {
         let fallback_filter = if let Some(ref auths) = author_list {
             nostr::filter_notes_by_authors_since(auths.clone(), limit * 4, since)
@@ -423,7 +468,6 @@ async fn search_notes(
         };
         let (fallback_events, _) =
             relay::fetch_notes_from_relays(&relay_urls, &fallback_filter, relay::RESPONSE_TIMEOUT_SECS).await;
-        let lower_q = q.to_lowercase();
         all_events.extend(
             fallback_events
                 .into_iter()
@@ -689,21 +733,68 @@ async fn fetch_profile(pubkey: String, relay_urls: Vec<String>) -> Result<String
     }
 }
 
-#[tauri::command]
-async fn fetch_own_profile(state: tauri::State<'_, AppState>) -> Result<String, String> {
+/// Kicks off an event-driven fetch of the user's own profile across every
+/// configured relay and returns immediately -- the result isn't a single
+/// blocking round trip (see [`relay::fetch_profile_from_relays`] for that
+/// shape) because waiting for the slowest relay to answer or time out
+/// before showing anything makes the common case (a fast relay already has
+/// the latest profile) needlessly slow. Instead, each relay reports in on
+/// its own schedule: every time one arrives with a newer `created_at` than
+/// anything seen so far, `own-profile-update` is emitted with it, so the UI
+/// updates incrementally rather than waiting for the whole set. Once every
+/// relay has answered (or failed/timed out), `own-profile-done` is emitted.
+#[tauri::command(rename_all = "snake_case")]
+fn start_own_profile_fetch(app: tauri::AppHandle, state: tauri::State<AppState>) -> Result<(), String> {
     let config_dir = state.config_dir();
-    let cfg = match config::load_config(&config_dir) {
-        Ok(c) => c,
-        Err(e) => return Err(format!("Failed to load config: {}", e)),
-    };
+    let cfg = config::load_config(&config_dir).map_err(|e| format!("Failed to load config: {}", e))?;
     if cfg.public_key.is_empty() {
         return Err(String::from("No public key configured"));
     }
-    match relay::fetch_profile_from_relays(&cfg.relays, &cfg.public_key, relay::RESPONSE_TIMEOUT_SECS).await {
-        Ok(Some(profile)) => Ok(nostr::profile_to_json(&profile)),
-        Ok(None) => Ok(String::from("{}")),
-        Err(e) => Err(format!("Failed to fetch profile: {}", e)),
-    }
+    let relay_urls = config::effective_relays(&cfg);
+    let pubkey = cfg.public_key.clone();
+    let num_relays = relay_urls.len() as u32;
+
+    std::thread::spawn(move || {
+        async_bridge::block_on(async move {
+            if num_relays == 0 {
+                let _ = app.emit("own-profile-done", ());
+                return;
+            }
+
+            let (tx, mut rx) = async_bridge::mpsc::unbounded_channel();
+            for relay_url in relay_urls {
+                let pubkey = pubkey.clone();
+                let tx = tx.clone();
+                async_bridge::spawn(async move {
+                    let result = relay::fetch_profile_from_relay(&relay_url, &pubkey, relay::RESPONSE_TIMEOUT_SECS).await;
+                    let _ = tx.send(result);
+                });
+            }
+            drop(tx);
+
+            let mut best_created_at: Option<u64> = None;
+            let mut responses = 0u32;
+            while let Some(result) = rx.recv().await {
+                responses += 1;
+                if let Ok(Some(profile)) = result {
+                    let is_newer = match best_created_at {
+                        Some(current) => profile.created_at > Some(current),
+                        None => true,
+                    };
+                    if is_newer {
+                        best_created_at = profile.created_at;
+                        let _ = app.emit("own-profile-update", nostr::profile_to_json(&profile));
+                    }
+                }
+                if responses >= num_relays {
+                    let _ = app.emit("own-profile-done", ());
+                    break;
+                }
+            }
+        });
+    });
+
+    Ok(())
 }
 
 // ============================================================
@@ -774,7 +865,8 @@ async fn fetch_own_following(state: tauri::State<'_, AppState>) -> Result<String
     if cfg.public_key.is_empty() {
         return Err(String::from("No public key configured"));
     }
-    match relay::fetch_following_from_relays(&cfg.relays, &cfg.public_key, relay::RESPONSE_TIMEOUT_SECS).await {
+    let relay_urls = config::effective_relays(&cfg);
+    match relay::fetch_following_from_relays(&relay_urls, &cfg.public_key, relay::RESPONSE_TIMEOUT_SECS).await {
         Ok(Some(contact_list)) => {
             // Sync the following list to local config for fast access by the feed
             let pubkeys = nostr::get_following_pubkeys(&contact_list);
@@ -832,7 +924,7 @@ async fn update_contact_list(
     // accepts it. That one case still fetches from relays first, exactly
     // like every click used to.
     let mut pubkeys = if cfg.following.is_empty() {
-        match relay::fetch_following_from_relays(&cfg.relays, &cfg.public_key, relay::RESPONSE_TIMEOUT_SECS).await {
+        match relay::fetch_following_from_relays(&config::effective_relays(&cfg), &cfg.public_key, relay::RESPONSE_TIMEOUT_SECS).await {
             Ok(Some(contact_list)) => nostr::get_following_pubkeys(&contact_list),
             Ok(None) => Vec::new(),
             Err(e) => return Err(format!("Failed to fetch current following: {}", e)),
@@ -854,7 +946,7 @@ async fn update_contact_list(
         warn_log!("Warning: failed to save contact list locally: {}", e);
     }
 
-    let relays = cfg.relays.clone();
+    let relays = config::effective_relays(&cfg);
     async_bridge::spawn(async move {
         let results = relay::publish_event_to_relays(&relays, &event, relay::RESPONSE_TIMEOUT_SECS).await;
         let success_count = results.iter().filter(|r| r.success).count();
@@ -893,7 +985,7 @@ async fn set_contact_list(state: tauri::State<'_, AppState>, pubkeys: Vec<String
         hex_pubkeys.push(hex);
     }
     let event = crypto::create_signed_contact_list(&hex_pubkeys, &secret_key)?;
-    let results = relay::publish_event_to_relays(&cfg.relays, &event, relay::RESPONSE_TIMEOUT_SECS).await;
+    let results = relay::publish_event_to_relays(&config::effective_relays(&cfg), &event, relay::RESPONSE_TIMEOUT_SECS).await;
     let success_count = results.iter().filter(|r| r.success).count();
     if success_count == 0 {
         return Err(String::from("Failed to publish contact list to any relay"));
@@ -928,7 +1020,7 @@ async fn fetch_own_followers(state: tauri::State<'_, AppState>) -> Result<String
     if cfg.public_key.is_empty() {
         return Err(String::from("No public key configured"));
     }
-    match relay::fetch_followers_from_relays(&cfg.relays, &cfg.public_key, relay::RESPONSE_TIMEOUT_SECS).await {
+    match relay::fetch_followers_from_relays(&config::effective_relays(&cfg), &cfg.public_key, relay::RESPONSE_TIMEOUT_SECS).await {
         Ok(followers) => Ok(nostr::followers_to_json(&followers)),
         Err(e) => Err(format!("Failed to fetch followers: {}", e)),
     }
@@ -974,13 +1066,11 @@ async fn post_note(
         Ok(c) => c,
         Err(e) => return Err(format!("Failed to load config: {}", e)),
     };
+    let relay_urls = config::effective_relays(&cfg);
     let secret_key = match cfg.private_key {
         Some(key) => key,
         None => return Err(String::from("No private key configured. Add your nsec in Settings to post notes.")),
     };
-    if cfg.relays.is_empty() {
-        return Err(String::from("No relays configured"));
-    }
     let mut tags: Vec<Vec<String>> = Vec::new();
     if let (Some(eid), Some(pk)) = (reply_to_event_id, reply_to_pubkey) {
         if !eid.is_empty() && !pk.is_empty() {
@@ -992,7 +1082,7 @@ async fn post_note(
         Ok(e) => e,
         Err(e) => return Err(format!("Failed to create note: {}", e)),
     };
-    let results = relay::publish_event_to_relays(&cfg.relays, &event, relay::RESPONSE_TIMEOUT_SECS).await;
+    let results = relay::publish_event_to_relays(&relay_urls, &event, relay::RESPONSE_TIMEOUT_SECS).await;
     let success_count = results.iter().filter(|r| r.success).count();
     if success_count == 0 {
         return Err(String::from("Failed to publish to any relay"));
@@ -1021,7 +1111,7 @@ async fn post_reaction(
     }
     let content = emoji.as_deref().filter(|s| !s.is_empty()).unwrap_or("❤️");
     let event = crypto::create_signed_reaction(&event_id, &author_pubkey, content, &secret_key)?;
-    let results = relay::publish_event_to_relays(&cfg.relays, &event, relay::RESPONSE_TIMEOUT_SECS).await;
+    let results = relay::publish_event_to_relays(&config::effective_relays(&cfg), &event, relay::RESPONSE_TIMEOUT_SECS).await;
     let success_count = results.iter().filter(|r| r.success).count();
     if success_count == 0 {
         return Err(String::from("Failed to publish reaction to any relay"));
@@ -1050,7 +1140,7 @@ async fn post_repost(
     }
     let content = content_optional.as_deref().unwrap_or("");
     let event = crypto::create_signed_repost(&event_id, &author_pubkey, content, &secret_key)?;
-    let results = relay::publish_event_to_relays(&cfg.relays, &event, relay::RESPONSE_TIMEOUT_SECS).await;
+    let results = relay::publish_event_to_relays(&config::effective_relays(&cfg), &event, relay::RESPONSE_TIMEOUT_SECS).await;
     let success_count = results.iter().filter(|r| r.success).count();
     if success_count == 0 {
         return Err(String::from("Failed to publish repost to any relay"));
@@ -1114,7 +1204,7 @@ async fn send_dm(state: tauri::State<'_, AppState>, recipient_pubkey: String, pl
         .map_err(|e| format!("Invalid recipient: {}", e))?;
 
     // Check if recipient supports NIP-17 by looking up their kind 10050 DM relay list
-    let recipient_dm_relays = relay::fetch_dm_relay_list_from_relays(&cfg.relays, &recipient_hex, relay::RESPONSE_TIMEOUT_SECS).await
+    let recipient_dm_relays = relay::fetch_dm_relay_list_from_relays(&config::effective_relays(&cfg), &recipient_hex, relay::RESPONSE_TIMEOUT_SECS).await
         .unwrap_or_default();
 
     if !recipient_dm_relays.is_empty() {
@@ -1132,8 +1222,8 @@ async fn send_dm(state: tauri::State<'_, AppState>, recipient_pubkey: String, pl
         }
 
         // Publish self-copy to our own DM relays (or regular relays if none configured)
-        let our_dm_relays = if cfg.dm_relays.is_empty() { &cfg.relays } else { &cfg.dm_relays };
-        let _ = relay::publish_event_to_relays(our_dm_relays, &wrap_for_self, relay::RESPONSE_TIMEOUT_SECS).await;
+        let our_dm_relays = if cfg.dm_relays.is_empty() { config::effective_relays(&cfg) } else { cfg.dm_relays.clone() };
+        let _ = relay::publish_event_to_relays(&our_dm_relays, &wrap_for_self, relay::RESPONSE_TIMEOUT_SECS).await;
 
         // Store raw gift wraps locally
         let raw_recip = nostr::event_to_json(&wrap_for_recipient);
@@ -1145,7 +1235,7 @@ async fn send_dm(state: tauri::State<'_, AppState>, recipient_pubkey: String, pl
     } else {
         // NIP-04 fallback: existing kind 4 path
         let event = crypto::create_signed_dm(&recipient_hex, &plaintext, &secret_hex)?;
-        let results = relay::publish_event_to_relays(&cfg.relays, &event, relay::RESPONSE_TIMEOUT_SECS).await;
+        let results = relay::publish_event_to_relays(&config::effective_relays(&cfg), &event, relay::RESPONSE_TIMEOUT_SECS).await;
         let success_count = results.iter().filter(|r| r.success).count();
         if success_count == 0 {
             return Err(String::from("Failed to publish DM to any relay"));
@@ -1171,7 +1261,7 @@ fn start_dm_stream(app: tauri::AppHandle, state: tauri::State<AppState>) -> Resu
     let cfg = config::load_config(&config_dir).map_err(|e| format!("Config: {}", e))?;
     let our_pubkey_hex = keys::public_key_to_hex(cfg.public_key.trim()).map_err(|e| format!("Public key: {}", e))?;
     let our_secret_hex = cfg.private_key.clone();
-    if our_pubkey_hex.is_empty() || cfg.relays.is_empty() {
+    if our_pubkey_hex.is_empty() {
         return Ok(());
     }
 
@@ -1189,7 +1279,7 @@ fn start_dm_stream(app: tauri::AppHandle, state: tauri::State<AppState>) -> Resu
     let filter_gift_wraps = nostr::filter_gift_wraps_received(&our_pubkey_hex, 500, since);
 
     // Collect all relay URLs (regular + DM relays, deduplicated)
-    let mut all_relays: Vec<String> = cfg.relays.clone();
+    let mut all_relays: Vec<String> = config::effective_relays(&cfg);
     for dm_relay in &cfg.dm_relays {
         if !all_relays.iter().any(|r| r == dm_relay) {
             all_relays.push(dm_relay.clone());
@@ -1298,23 +1388,149 @@ fn start_dm_stream(app: tauri::AppHandle, state: tauri::State<AppState>) -> Resu
     Ok(())
 }
 
-/// Save DM relay list locally and publish kind 10050 event to relays.
+/// Publish a new DM relay list (kind 10050). See
+/// [`start_publish_and_confirm`] for the shared publish/confirm/adopt
+/// mechanism and why nothing is written to the local config here directly.
+///
+/// Publishes to the union of the *old* dm_relays (so clients still watching
+/// them see the move) and the *new* ones being saved -- publishing only to
+/// the new list would mean anyone still watching the old one never finds
+/// out it changed. This also fixes publishing having gone to the regular
+/// relay list instead of any DM relay at all.
 #[tauri::command(rename_all = "snake_case")]
-async fn save_dm_relays(state: tauri::State<'_, AppState>, dm_relays: Vec<String>) -> Result<String, String> {
+fn start_save_dm_relay_list(app: tauri::AppHandle, state: tauri::State<AppState>, dm_relays: Vec<String>) -> Result<(), String> {
     let config_dir = state.config_dir();
-    let mut cfg = config::load_config(&config_dir).map_err(|e| format!("Config: {}", e))?;
-    let secret_hex = cfg.private_key.as_ref()
-        .ok_or("No private key configured.")?
-        .clone();
-    cfg.dm_relays = dm_relays.clone();
-    config::save_config(&config_dir, &cfg)?;
+    let cfg = config::load_config(&config_dir).map_err(|e| format!("Config: {}", e))?;
+    let secret_hex = cfg.private_key.clone().ok_or_else(|| String::from("No private key configured."))?;
     let event = crypto::create_signed_dm_relay_list(&dm_relays, &secret_hex)?;
-    let results = relay::publish_event_to_relays(&cfg.relays, &event, relay::RESPONSE_TIMEOUT_SECS).await;
-    let success_count = results.iter().filter(|r| r.success).count();
-    if success_count == 0 {
-        return Err(String::from("DM relays saved locally but failed to publish to any relay"));
+
+    let mut relay_urls = dm_relays;
+    for r in &cfg.dm_relays {
+        if !relay_urls.contains(r) {
+            relay_urls.push(r.clone());
+        }
     }
-    Ok(relay::publish_results_to_json(&results))
+    if relay_urls.is_empty() {
+        relay_urls = config::effective_relays(&cfg);
+    }
+
+    start_publish_and_confirm(app, "dm_relays", relay_urls, event, None);
+    Ok(())
+}
+
+/// Publish a new main relay list (kind 10002) -- previously, saving the
+/// main relay list only ever wrote it locally; nothing published it to the
+/// network at all, so every other client (and Plume itself, after a config
+/// reset) had no way to learn about it. See [`start_publish_and_confirm`]
+/// for the shared mechanism and the DM relay list version above for why the
+/// old list is included in the publish target, not just the new one.
+#[tauri::command(rename_all = "snake_case")]
+fn start_save_relay_list(app: tauri::AppHandle, state: tauri::State<AppState>, relays: Vec<String>) -> Result<(), String> {
+    let config_dir = state.config_dir();
+    let cfg = config::load_config(&config_dir).map_err(|e| format!("Config: {}", e))?;
+    let secret_hex = cfg.private_key.clone().ok_or_else(|| String::from("No private key configured."))?;
+    let event = crypto::create_signed_relay_list(&relays, &secret_hex)?;
+
+    let mut relay_urls = relays;
+    for r in &cfg.relays {
+        if !relay_urls.contains(r) {
+            relay_urls.push(r.clone());
+        }
+    }
+    if relay_urls.is_empty() {
+        relay_urls = config::effective_relays(&cfg);
+    }
+
+    start_publish_and_confirm(app, "relays", relay_urls, event, None);
+    Ok(())
+}
+
+/// Publish a new mute list (kind 10000, NIP-51): `pubkeys`/`words`/`hashtags`
+/// are the desired *flat* lists (what the UI shows, with no public/private
+/// distinction) -- unlike the relay-list saves, this can't just build a
+/// fresh event from them, since doing that would default everything to one
+/// side and silently flip any entry the user (or another client) had
+/// already published as public. Fetches the current network mute list
+/// first and reconciles onto it (see [`nostr::MuteList::reconcile_pubkeys`]),
+/// so an existing public entry stays public and only genuinely new entries
+/// default to private. Publishes to the union of currently configured
+/// relays and whatever relay already had the previous mute list, same
+/// "don't strand clients still watching the old location" reasoning as
+/// the relay-list saves.
+#[tauri::command(rename_all = "snake_case")]
+fn start_save_mute_list(
+    app: tauri::AppHandle,
+    state: tauri::State<AppState>,
+    pubkeys: Vec<String>,
+    words: Vec<String>,
+    hashtags: Vec<String>,
+) -> Result<(), String> {
+    let config_dir = state.config_dir();
+    let cfg = config::load_config(&config_dir).map_err(|e| format!("Config: {}", e))?;
+    let secret_hex = cfg.private_key.clone().ok_or_else(|| String::from("No private key configured."))?;
+    let pubkey = crypto::get_public_key_from_secret(&secret_hex)?;
+    let relay_urls = config::effective_relays(&cfg);
+
+    std::thread::spawn(move || {
+        async_bridge::block_on(async move {
+            let mut list = relay::fetch_mute_list_from_relays(&relay_urls, &pubkey, Some(secret_hex.clone()), relay::RESPONSE_TIMEOUT_SECS)
+                .await
+                .unwrap_or_else(|| nostr::MuteList::new(0));
+            list.reconcile_pubkeys(&pubkeys);
+            list.reconcile_words(&words);
+            list.reconcile_hashtags(&hashtags);
+
+            let event = match crypto::create_signed_mute_list(&list.public_tags, &list.private_tags, &secret_hex) {
+                Ok(e) => e,
+                Err(e) => {
+                    let done = format!(
+                        "{{\"context\":\"mute_list\",\"any_confirmed\":false,\"confirmed_count\":0,\"total\":0,\"adopted\":null,\"error\":\"{}\"}}",
+                        config::escape_json_string(&e),
+                    );
+                    let _ = app.emit("publish-confirm-done", done);
+                    return;
+                }
+            };
+
+            publish_and_confirm_core(app, "mute_list", relay_urls, event, Some(secret_hex)).await;
+        });
+    });
+
+    Ok(())
+}
+
+/// Kicks off an event-driven fetch of the user's own mute list and merges
+/// it into the locally cached one -- same event-driven shape as
+/// [`start_own_profile_fetch`], and the same "union with what's local"
+/// reasoning as the relay-list/following adoption elsewhere: the network
+/// copy is authoritative for anything it has, but a mute added in Plume
+/// this session that hasn't been published yet must not be discarded just
+/// because the network hasn't heard about it yet.
+#[tauri::command(rename_all = "snake_case")]
+fn start_own_mute_list_fetch(app: tauri::AppHandle, state: tauri::State<AppState>) -> Result<(), String> {
+    let config_dir = state.config_dir();
+    let cfg = config::load_config(&config_dir).map_err(|e| format!("Failed to load config: {}", e))?;
+    if cfg.public_key.is_empty() {
+        return Err(String::from("No public key configured"));
+    }
+    let relay_urls = config::effective_relays(&cfg);
+    let pubkey = cfg.public_key.clone();
+    let secret_hex = cfg.private_key.clone();
+
+    std::thread::spawn(move || {
+        async_bridge::block_on(async move {
+            let list = relay::fetch_mute_list_from_relays(&relay_urls, &pubkey, secret_hex, relay::RESPONSE_TIMEOUT_SECS).await;
+            let done = match list {
+                Some(list) => format!(
+                    "{{\"any_confirmed\":true,\"adopted\":{}}}",
+                    nostr::mute_list_to_json(&list),
+                ),
+                None => String::from("{\"any_confirmed\":false,\"adopted\":null}"),
+            };
+            let _ = app.emit("own-mute-list-fetch-done", done);
+        });
+    });
+    Ok(())
 }
 
 /// Fetch a user's DM relay list (kind 10050) from relays.
@@ -1653,7 +1869,7 @@ async fn request_zap_invoice(
     let path = format!("/.well-known/lnurlp/{}", lnurl_user);
     let handler = Box::new(LnurlDiscoveryResponseHandler {
         app,
-        relays: cfg.relays.clone(),
+        relays: config::effective_relays(&cfg),
         target_pubkey,
         event_id,
         amount_msats,
@@ -1671,47 +1887,138 @@ async fn request_zap_invoice(
 // Profile Metadata
 // ============================================================
 
-#[tauri::command]
-async fn set_profile_metadata(state: tauri::State<'_, AppState>, profile_json: String) -> Result<String, String> {
+/// Shared publish-then-confirm-and-adopt core for every replaceable-event
+/// save (profile metadata/kind 0, main relay list/kind 10002, DM relay
+/// list/kind 10050). A bare relay `OK` only means "accepted," never
+/// "durably stored and retrievable," and the thing a client should treat
+/// as current is whatever the network actually has, not what it merely
+/// intended to publish -- so this publishes `event` to every relay in
+/// `relay_urls`, re-queries each one for its own resulting latest event,
+/// and only then reports what to adopt locally. `publish-confirm-progress`
+/// is emitted as each relay answers (never waiting for the slowest one
+/// before any of them are visible), and one `publish-confirm-done` once
+/// they've all reported, carrying whatever was actually confirmed. Both
+/// events carry `context` so the frontend can drive one shared progress UI
+/// for all three saves and still dispatch the adopted payload correctly.
+fn start_publish_and_confirm(
+    app: tauri::AppHandle,
+    context: &'static str,
+    relay_urls: Vec<String>,
+    event: nostr::Event,
+    secret_key_hex: Option<String>,
+) {
+    std::thread::spawn(move || {
+        async_bridge::block_on(publish_and_confirm_core(app, context, relay_urls, event, secret_key_hex));
+    });
+}
+
+/// The async core of [`start_publish_and_confirm`], split out so a command
+/// that needs an async step of its own first (the mute list save needs to
+/// fetch the current network state before it can even build the event to
+/// publish) can run that, then drive this directly inside its own
+/// thread/block_on, instead of nesting a second one.
+async fn publish_and_confirm_core(
+    app: tauri::AppHandle,
+    context: &'static str,
+    relay_urls: Vec<String>,
+    event: nostr::Event,
+    secret_key_hex: Option<String>,
+) {
+    let total = relay_urls.len();
+    let (tx, mut rx) = async_bridge::mpsc::unbounded_channel();
+    async_bridge::spawn({
+        let relay_urls = relay_urls.clone();
+        let event = event.clone();
+        async move {
+            relay::publish_and_confirm(&relay_urls, &event, relay::RESPONSE_TIMEOUT_SECS, tx).await;
+        }
+    });
+
+    let mut confirmed_count = 0usize;
+    let mut best_event: Option<nostr::Event> = None;
+    while let Some(outcome) = rx.recv().await {
+        if outcome.confirmed {
+            confirmed_count += 1;
+        }
+        if let Some(e) = &outcome.latest_event {
+            let is_newer = best_event.as_ref().map(|b| e.created_at > b.created_at).unwrap_or(true);
+            if is_newer {
+                best_event = Some(e.clone());
+            }
+        }
+        let progress = format!(
+            "{{\"context\":\"{}\",\"relay_url\":\"{}\",\"accepted\":{},\"confirmed\":{}}}",
+            context,
+            config::escape_json_string(&outcome.relay_url),
+            outcome.accepted,
+            outcome.confirmed,
+        );
+        let _ = app.emit("publish-confirm-progress", progress);
+    }
+
+    let adopted_json = if confirmed_count > 0 {
+        best_event.as_ref().and_then(|e| match context {
+            "profile" => {
+                let mut p = nostr::parse_profile(&e.content).ok()?;
+                p.created_at = Some(e.created_at);
+                Some(nostr::profile_to_json(&p))
+            }
+            "relays" => Some(string_array_to_json(&nostr::parse_relay_list(e).ok()?)),
+            "dm_relays" => Some(string_array_to_json(&nostr::parse_dm_relay_list(e).ok()?)),
+            "mute_list" => {
+                let mut list = nostr::parse_mute_list_public_tags(e).ok()?;
+                if let Some(secret_hex) = &secret_key_hex {
+                    if !e.content.trim().is_empty() {
+                        if let Ok(plaintext) = crypto::decrypt_mute_list_content(&e.content, secret_hex) {
+                            list.private_tags = nostr::parse_mute_list_tags_json(&plaintext).unwrap_or_default();
+                        }
+                    }
+                }
+                Some(nostr::mute_list_to_json(&list))
+            }
+            _ => None,
+        })
+    } else {
+        None
+    };
+
+    let done = format!(
+        "{{\"context\":\"{}\",\"any_confirmed\":{},\"confirmed_count\":{},\"total\":{},\"adopted\":{}}}",
+        context,
+        confirmed_count > 0,
+        confirmed_count,
+        total,
+        adopted_json.as_deref().unwrap_or("null"),
+    );
+    let _ = app.emit("publish-confirm-done", done);
+}
+
+fn string_array_to_json(items: &[String]) -> String {
+    let mut json = String::from("[");
+    for (i, item) in items.iter().enumerate() {
+        if i > 0 {
+            json.push(',');
+        }
+        json.push('"');
+        json.push_str(&config::escape_json_string(item));
+        json.push('"');
+    }
+    json.push(']');
+    json
+}
+
+#[tauri::command(rename_all = "snake_case")]
+fn start_save_profile(app: tauri::AppHandle, state: tauri::State<AppState>, profile_json: String) -> Result<(), String> {
     let config_dir = state.config_dir();
-    let mut cfg = match config::load_config(&config_dir) {
-        Ok(c) => c,
-        Err(e) => return Err(format!("Failed to load config: {}", e)),
-    };
-    let secret_key = match cfg.private_key.as_ref() {
-        Some(k) => k.clone(),
-        None => return Err(String::from("No private key configured.")),
-    };
-    if cfg.relays.is_empty() {
-        return Err(String::from("No relays configured"));
-    }
-    let profile = match nostr::parse_profile(&profile_json) {
-        Ok(p) => p,
-        Err(e) => return Err(format!("Invalid profile JSON: {}", e)),
-    };
+    let cfg = config::load_config(&config_dir).map_err(|e| format!("Failed to load config: {}", e))?;
+    let secret_key = cfg.private_key.clone().ok_or_else(|| String::from("No private key configured."))?;
+    let profile = nostr::parse_profile(&profile_json).map_err(|e| format!("Invalid profile JSON: {}", e))?;
     let content = nostr::profile_to_content(&profile);
-    let event = match crypto::create_signed_metadata_event(&content, &secret_key) {
-        Ok(e) => e,
-        Err(e) => return Err(format!("Failed to create profile event: {}", e)),
-    };
-    let results = relay::publish_event_to_relays(&cfg.relays, &event, relay::RESPONSE_TIMEOUT_SECS).await;
-    let success_count = results.iter().filter(|r| r.success).count();
-    if success_count == 0 {
-        return Err(String::from("Failed to publish profile to any relay"));
-    }
-    if let Some(ref name) = profile.name {
-        cfg.name = name.clone();
-    }
-    cfg.about = profile.about.clone();
-    cfg.picture = profile.picture.clone();
-    cfg.nip05 = profile.nip05.clone();
-    cfg.banner = profile.banner.clone();
-    cfg.website = profile.website.clone();
-    cfg.lud16 = profile.lud16.clone();
-    if let Err(e) = config::save_config(&config_dir, &cfg) {
-        return Err(format!("Profile published but failed to save local config: {}", e));
-    }
-    Ok(relay::publish_results_to_json(&results))
+    let event = crypto::create_signed_metadata_event(&content, &secret_key)
+        .map_err(|e| format!("Failed to create profile event: {}", e))?;
+    let relay_urls = config::effective_relays(&cfg);
+    start_publish_and_confirm(app, "profile", relay_urls, event, None);
+    Ok(())
 }
 
 /// Fetch zap receipts (kind 9735) for a given pubkey (for profile zaps tab).
@@ -1889,6 +2196,60 @@ fn sign_event(state: tauri::State<AppState>, event_json: String) -> Result<Strin
     return Ok(nostr::event_to_json(&event));
 }
 
+#[tauri::command(rename_all = "snake_case")]
+fn is_keyring_available() -> bool {
+    keyring_store::is_available()
+}
+
+/// Returns the active profile's private key as an nsec string, for the
+/// one-shot "copy to clipboard" action -- resolves transparently from
+/// plaintext config or the OS keyring, same as every signing command, so
+/// the frontend never needs to hold the raw secret in `state.config` just
+/// to perform this conversion itself.
+#[tauri::command(rename_all = "snake_case")]
+fn get_nsec_string(state: tauri::State<AppState>) -> Result<String, String> {
+    let cfg = config::load_config(&state.config_dir())
+        .map_err(|e| format!("Failed to load config: {}", e))?;
+    let secret_key = cfg.private_key.ok_or_else(|| String::from("No private key configured"))?;
+    keys::hex_to_nsec(&secret_key)
+}
+
+/// Moves the active profile's private key between plaintext config and the
+/// OS keyring. Shared by the first-login "store in keyring?" prompt and the
+/// Settings → Keys panel's move control. Returns the updated config JSON.
+#[tauri::command(rename_all = "snake_case")]
+fn set_key_storage_mode(state: tauri::State<AppState>, mode: String) -> Result<String, String> {
+    let target = config::KeyStorage::from_str(&mode);
+    let config_dir = state.config_dir();
+    let mut cfg = config::load_config(&config_dir)
+        .map_err(|e| format!("Failed to load config: {}", e))?;
+
+    if cfg.key_storage == target {
+        return Ok(config::config_to_json(&cfg));
+    }
+
+    match target {
+        config::KeyStorage::Keyring => {
+            if !keyring_store::is_available() {
+                return Err(String::from("No system keyring is available on this device."));
+            }
+            let secret_key = cfg.private_key.clone().ok_or_else(|| String::from("No private key configured"))?;
+            keyring_store::store(&cfg.public_key, &secret_key)?;
+            cfg.key_storage = config::KeyStorage::Keyring;
+            config::save_config(&config_dir, &cfg)?;
+        }
+        config::KeyStorage::Plaintext => {
+            // cfg.private_key is already resolved in memory (load_config's
+            // keyring fallback), so just flip the mode and persist it.
+            cfg.key_storage = config::KeyStorage::Plaintext;
+            config::save_config(&config_dir, &cfg)?;
+            let _ = keyring_store::delete(&cfg.public_key);
+        }
+    }
+
+    Ok(config::config_to_json(&cfg))
+}
+
 #[tauri::command]
 fn get_derived_public_key(state: tauri::State<AppState>) -> Result<String, String> {
     let config_dir = state.config_dir();
@@ -2035,6 +2396,14 @@ fn logout(state: tauri::State<AppState>) -> Result<(), String> {
 fn delete_profile(state: tauri::State<AppState>, npub: String) -> Result<(), String> {
     let profile_dir = config::get_profile_dir(&state.base_dir, &npub);
     if std::path::Path::new(&profile_dir).exists() {
+        // Best-effort: if this profile's key lived in the OS keyring,
+        // remove it too, so deleting a profile doesn't leave an orphaned
+        // secret behind. Must happen before the directory goes away.
+        if let Ok(cfg) = config::load_config(&profile_dir) {
+            if cfg.key_storage == config::KeyStorage::Keyring {
+                let _ = keyring_store::delete(&cfg.public_key);
+            }
+        }
         std::fs::remove_dir_all(&profile_dir)
             .map_err(|e| format!("Failed to delete profile directory: {}", e))?;
     }
@@ -2265,6 +2634,7 @@ fn main() {
             convert_hex_to_npub,
             convert_secret_key_to_hex,
             convert_hex_to_nsec,
+            derive_public_key,
             parse_key,
             decode_nostr_uri,
             fetch_notes,
@@ -2279,8 +2649,11 @@ fn main() {
             get_relay_backoff_status,
             get_tor_status,
             fetch_profile,
-            fetch_own_profile,
-            set_profile_metadata,
+            start_own_profile_fetch,
+            start_save_profile,
+            start_save_relay_list,
+            start_save_mute_list,
+            start_own_mute_list_fetch,
             verify_event,
             verify_event_id,
             verify_event_signature,
@@ -2301,7 +2674,7 @@ fn main() {
             start_dm_stream,
             count_unread_dms,
             mark_dms_read,
-            save_dm_relays,
+            start_save_dm_relay_list,
             fetch_dm_relay_list,
             request_zap_invoice,
             fetch_zap_receipts,
@@ -2310,6 +2683,9 @@ fn main() {
             upload_media,
             delete_media,
             sign_event,
+            is_keyring_available,
+            get_nsec_string,
+            set_key_storage_mode,
             get_derived_public_key,
             generate_keypair,
             get_app_config,
@@ -2320,11 +2696,6 @@ fn main() {
             list_profiles,
         ])
         .setup(move |app| {
-            let _window = app.get_webview_window("main").unwrap();
-            #[cfg(debug_assertions)]
-            {
-                _window.open_devtools();
-            }
             warn_log!("Plume is starting...");
             tor::start(app.handle().clone(), &base_dir_for_tor);
             Ok(())

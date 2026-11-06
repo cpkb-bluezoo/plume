@@ -70,6 +70,7 @@ export async function loadConfig() {
         state.config = {
             public_key: '',
             private_key: null,
+            key_storage: 'plaintext',
             relays: DEFAULT_RELAYS.slice(),
             name: 'Anonymous',
             about: null,
@@ -92,21 +93,34 @@ export async function loadConfig() {
     }
 }
 
+// Copy whichever of name/about/picture/nip05/banner/website/lud16 `profile`
+// actually has a value for into state.config -- never blanking a field just
+// because this particular profile snapshot (a fresh fetch, a partial edit,
+// whatever was in memory at the time) doesn't happen to carry it. Shared by
+// every place that needs to reflect a profile into config: saveConfig's own
+// pre-save sync, the event-driven own-profile fetch, and the edit-profile
+// save flow -- all three used to hand-roll this same copy independently.
+export function applyProfileFieldsToConfig(profile) {
+    if (!profile || !state.config) {
+        return;
+    }
+    ['name', 'about', 'picture', 'nip05', 'banner', 'website', 'lud16'].forEach(function(f) {
+        if (profile[f]) {
+            state.config[f] = profile[f];
+        }
+    });
+}
+
 // Save configuration to the backend
 export async function saveConfig() {
     try {
-        // Sync profile fields into config before saving
-        if (state.profile) {
-            if (state.profile.name) {
-                state.config.name = state.profile.name;
-            }
-            state.config.about = state.profile.about || null;
-            state.config.picture = state.profile.picture || null;
-            state.config.nip05 = state.profile.nip05 || null;
-            state.config.banner = state.profile.banner || null;
-            state.config.website = state.profile.website || null;
-            state.config.lud16 = state.profile.lud16 || null;
-        }
+        // Sync profile fields into config before saving. saveConfig() runs
+        // from many unrelated call sites (any settings change, follow/
+        // unfollow, relay edits, ...), every time state.profile happens to
+        // be set -- see applyProfileFieldsToConfig for why this must never
+        // treat an unset field on whatever snapshot is in memory right now
+        // as "the user cleared it."
+        applyProfileFieldsToConfig(state.profile);
         const configJson = JSON.stringify(state.config);
         await invoke('save_config', { configJson: configJson });
         console.log('Config saved');

@@ -19,10 +19,12 @@
  */
 
 import { state } from './state.js';
+import { invoke } from './tauri.js';
 import { escapeHtml, shortenKey, torImgUrl } from './utils.js';
 import { saveConfig } from './config.js';
 import { updateProfileDisplay } from './profile.js';
 import { ensureProfilesForNotes } from './notes.js';
+import { publishWithProgress } from './publish.js';
 
 // Muted: ensure config arrays exist
 export function ensureMutedConfig() {
@@ -37,6 +39,56 @@ export function ensureMutedConfig() {
     }
     if (!Array.isArray(state.config.muted_hashtags)) {
         state.config.muted_hashtags = [];
+    }
+}
+
+// Fetches the user's own NIP-51 mute list (kind 10000) from the network and
+// merges it into the locally cached one. Mutes were purely local before
+// this -- never published, never fetched -- so another client's mute list
+// (public or private) was invisible to Plume even when it had hundreds of
+// entries. A union, not a replace: something muted in Plume this session
+// but not yet published must survive this merge too.
+export async function fetchAndMergeOwnMuteList() {
+    if (!state.config || !state.config.public_key) {
+        return;
+    }
+    if (!(window.__TAURI__ && window.__TAURI__.event && typeof window.__TAURI__.event.listen === 'function')) {
+        return;
+    }
+    ensureMutedConfig();
+    try {
+        var unlisten = await window.__TAURI__.event.listen('own-mute-list-fetch-done', function(ev) {
+            unlisten();
+            var data = typeof ev.payload === 'string' ? JSON.parse(ev.payload) : ev.payload;
+            if (!data || !data.any_confirmed || !data.adopted) {
+                return;
+            }
+            var mergeInto = function(localList, networkList) {
+                var merged = localList.slice();
+                (networkList || []).forEach(function(v) {
+                    if (merged.indexOf(v) === -1) {
+                        merged.push(v);
+                    }
+                });
+                return merged;
+            };
+            var changed = false;
+            ['pubkeys', 'words', 'hashtags'].forEach(function(key) {
+                var localKey = key === 'pubkeys' ? 'muted_users' : (key === 'words' ? 'muted_words' : 'muted_hashtags');
+                var merged = mergeInto(state.config[localKey], data.adopted[key]);
+                if (merged.length !== state.config[localKey].length) {
+                    changed = true;
+                }
+                state.config[localKey] = merged;
+            });
+            if (changed) {
+                saveConfig();
+                renderMutedPanels();
+            }
+        });
+        await invoke('start_own_mute_list_fetch');
+    } catch (e) {
+        console.error('Failed to fetch own mute list:', e);
     }
 }
 
@@ -92,6 +144,12 @@ export function isContentUnreadable(content) {
     if (/^[A-Za-z0-9+\/]+=*$/.test(trimmed)) {
         return true;
     }
+    // NIP-04 ciphertext: "<base64 ciphertext>?iv=<base64 iv>" -- the most
+    // common form of leaked encrypted content, but the literal "?iv=" in
+    // the middle means it never matches the pure-base64 check above.
+    if (/^[A-Za-z0-9+\/]+=*\?iv=[A-Za-z0-9+\/]+=*$/.test(trimmed)) {
+        return true;
+    }
     // Raw JSON blob (WebRTC signaling, SDP offers, machine-to-machine payloads)
     if ((trimmed[0] === '{' && trimmed[trimmed.length - 1] === '}') ||
         (trimmed[0] === '[' && trimmed[trimmed.length - 1] === ']')) {
@@ -114,40 +172,67 @@ export function isContentUnreadable(content) {
             // Not valid JSON after tag — fall through
         }
     }
+    // General case: one long, unbroken token (no whitespace at all) made
+    // up of nothing but encoded-data characters -- hex, base64, and the
+    // handful of separators formats like these commonly mix in (., _, -,
+    // :, =, ?, &). Rather than recognising every exact shape a hash, key,
+    // or ciphertext dump can take (the checks above only ever cover the
+    // ones already seen), this catches the one thing they all have in
+    // common: nobody types a 40+ character word with no spaces in it.
+    // Explicitly excluded: a bare URL is unbroken too, but it's still
+    // meaningfully readable as-is, so it's let through even at this length.
+    if (!/\s/.test(trimmed) && trimmed.length >= 50 && /^[A-Za-z0-9+/=_.:?&-]+$/.test(trimmed)) {
+        var isUrl = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed);
+        if (!isUrl) {
+            return true;
+        }
+    }
     return false;
 }
 
 // Mute or unmute the currently viewed profile user. Updates local config immediately and saves to disk.
 export function handleMuteClick() {
+    var t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
     var pubkey = state.viewedProfilePubkey;
     if (!pubkey || !state.config) {
         return;
     }
     var muteBtn = document.getElementById('mute-btn');
-    if (muteBtn) {
-        muteBtn.disabled = true;
-    }
     ensureMutedConfig();
     var pk = String(pubkey).toLowerCase();
     var idx = state.config.muted_users.findIndex(function(p) { return String(p).toLowerCase() === pk; });
+    var desiredPubkeys = state.config.muted_users.slice();
     if (idx === -1) {
-        state.config.muted_users.push(pubkey);
+        desiredPubkeys.push(pubkey);
     } else {
-        state.config.muted_users.splice(idx, 1);
+        desiredPubkeys.splice(idx, 1);
     }
-    saveConfig()
-        .then(function() {
-            updateProfileDisplay();
-        })
-        .catch(function(err) {
-            console.error('Failed to save mute:', err);
-            alert((window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t('errors.failedToSaveSettings') : 'Failed to save') + ': ' + err);
-        })
-        .finally(function() {
-            if (muteBtn) {
-                muteBtn.disabled = false;
-            }
+    // Mute list changes go through the same publish-and-confirm pipeline
+    // as profile/relay-list saves: this is still local-only data loss
+    // waiting to happen otherwise -- see fetchAndMergeOwnMuteList's
+    // comment for why that was the actual bug behind "Settings says I
+    // have no muted users."
+    publishWithProgress('mute_list', muteBtn, function() {
+        return invoke('start_save_mute_list', {
+            pubkeys: desiredPubkeys,
+            words: state.config.muted_words || [],
+            hashtags: state.config.muted_hashtags || []
         });
+    }).then(function(result) {
+        if (!result.anyConfirmed || !result.adopted) {
+            alert(t('profile.muteFailed') || 'Could not confirm the mute list update on any relay. Please try again.');
+            return;
+        }
+        state.config.muted_users = result.adopted.pubkeys || [];
+        state.config.muted_words = result.adopted.words || [];
+        state.config.muted_hashtags = result.adopted.hashtags || [];
+        return saveConfig();
+    }).then(function() {
+        updateProfileDisplay();
+    }).catch(function(err) {
+        console.error('Failed to save mute:', err);
+        alert((t('errors.failedToSaveSettings') || 'Failed to save') + ': ' + err);
+    });
 }
 
 export async function loadMutedPanel() {
@@ -234,27 +319,32 @@ export function renderMutedPanels() {
 }
 
 export function saveMutedFromPanel() {
+    var t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
     ensureMutedConfig();
-    if (state.mutedUsersPanelList) {
-        state.config.muted_users = state.mutedUsersPanelList.filter(function(x) { return x.checked; }).map(function(x) { return x.pubkey; });
-    }
-    var restoreBtn = (function() {
-        var btn = document.getElementById('settings-muted-save');
-        if (!btn) {
-            return function() {};
+    var desiredPubkeys = state.mutedUsersPanelList
+        ? state.mutedUsersPanelList.filter(function(x) { return x.checked; }).map(function(x) { return x.pubkey; })
+        : state.config.muted_users.slice();
+    var desiredWords = state.config.muted_words.slice();
+    var desiredHashtags = state.config.muted_hashtags.slice();
+    var saveBtn = document.getElementById('settings-muted-save');
+
+    publishWithProgress('mute_list', saveBtn, function() {
+        return invoke('start_save_mute_list', {
+            pubkeys: desiredPubkeys,
+            words: desiredWords,
+            hashtags: desiredHashtags
+        });
+    }).then(function(result) {
+        if (!result.anyConfirmed || !result.adopted) {
+            alert(t('profile.muteFailed') || 'Could not confirm the mute list update on any relay. Please try again.');
+            return;
         }
-        var t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
-        var original = btn.textContent;
-        btn.disabled = true;
-        btn.textContent = t('editProfileModal.saving') || 'Saving...';
-        return function() {
-            btn.disabled = false;
-            btn.textContent = original || t('accountModal.save') || 'Save';
-        };
-    })();
-    saveConfig().then(function() {
-        var t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
+        state.config.muted_users = result.adopted.pubkeys || [];
+        state.config.muted_words = result.adopted.words || [];
+        state.config.muted_hashtags = result.adopted.hashtags || [];
+        loadMutedPanel();
         alert(t('settings.mutedSaved') || 'Muted lists saved.');
-    }).catch(function(err) { console.error('Failed to save muted lists:', err); })
-    .finally(restoreBtn);
+    }).catch(function(err) {
+        console.error('Failed to save muted lists:', err);
+    });
 }

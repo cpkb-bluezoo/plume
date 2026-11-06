@@ -18,8 +18,16 @@
  * along with Plume.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-// Default relays used for anonymous firehose browsing when no user config is loaded
-export const DEFAULT_RELAYS = ['wss://relay.damus.io', 'wss://relay.primal.net', 'wss://nos.lol'];
+// Default relays used for anonymous firehose browsing when no user config is
+// loaded. Onion addresses, same as Config::new()'s bootstrap list in
+// config.rs and for the same reason: reached through Tor's own hidden-service
+// rendezvous rather than a public exit node, so they're unaffected by relays
+// that block or rate-limit Tor exit traffic.
+export const DEFAULT_RELAYS = [
+    'ws://oxtrdevav64z64yb7x6rjg4ntzqjhedm5b5zjqulugknhzr46ny2qbad.onion', // nostr.oxtr.dev
+    'ws://gnostr2jnapk72mnagq3cuykfon73temzp77hcbncn4silgt77boruid.onion', // nostr.girino.org
+    'ws://35vr3xigzjv2xyzfyif6o2gksmkioppy4rmwag7d4bqmwuccs2u4jaid.onion'  // Noderunners relay
+];
 
 // Returns the relay list to use: user's configured relays if available, otherwise defaults
 export function getEffectiveRelays() {
@@ -46,6 +54,7 @@ export const state = {
     config: {
         public_key: '',
         private_key: null,
+        key_storage: 'plaintext',
         relays: DEFAULT_RELAYS.slice(),
         name: 'Anonymous',
         about: null, picture: null, nip05: null, banner: null, website: null, lud16: null,
@@ -58,6 +67,10 @@ export const state = {
     currentView: 'feed',
     notes: [],
     loading: false,
+    // Whether a usable OS keyring backend exists on this machine; null
+    // until the one-time startup probe (invoke('is_keyring_available'))
+    // resolves. Cached for the session -- see maybeOfferKeyringStorage().
+    keyringAvailable: null,
     publicKeyHex: null,
     publicKeyNpub: null,
     profile: null,
@@ -97,7 +110,6 @@ export const state = {
     // Follows settings panel: working copy [{ pubkey (hex), checked, listOrder }], sort key
     followsPanelList: [],
     followsPanelSort: 'name',
-    followsPanelLoading: false,
     // Track where user was before entering edit-profile in settings (so Save navigates back)
     editProfilePreviousView: null,
     // Muted users panel: working copy [{ pubkey, checked }], no config change until Save

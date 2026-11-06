@@ -23,6 +23,7 @@ use crate::json::{JsonContentHandler, JsonNumber, JsonParser};
 
 // A Nostr event - the fundamental data structure in Nostr
 // See: https://github.com/nostr-protocol/nips/blob/master/01.md
+#[derive(Clone)]
 pub struct Event {
     // Unique identifier (32-byte hex, SHA256 of serialized event)
     pub id: String,
@@ -75,6 +76,11 @@ pub const KIND_DM_RELAY_LIST: u32 = 10050;
 pub const KIND_LONG_FORM: u32 = 30023;  // NIP-23 Long-form content (articles)
 /// NIP-65: Relay list metadata (tags: ["r", "relay_url"] or ["r", "url", "read"/"write"])
 pub const KIND_RELAY_LIST: u32 = 10002;
+/// NIP-51: Mute list. Public entries are plain tags on the event itself
+/// (["p", pubkey], ["t", hashtag], ["word", word], ["e", event_id]);
+/// private entries are the same tag shapes, but as a JSON array inside the
+/// event's (self-)encrypted `content` instead -- see [`MuteList`].
+pub const KIND_MUTE_LIST: u32 = 10000;
 
 // A filter for requesting events from relays
 #[derive(Clone, Default)]
@@ -882,6 +888,18 @@ pub fn filter_profile_by_author(author_pubkey: &str) -> Filter {
     }
 }
 
+/// A relay's current latest event for (author, kind) -- the confirm/adopt
+/// read every replaceable-event save (kind 0 profile, kind 10002 relay
+/// list, kind 10050 DM relay list) re-queries with after publishing.
+pub fn filter_latest_by_author_kind(author_pubkey: &str, kind: u32) -> Filter {
+    Filter {
+        authors: Some(vec![author_pubkey.to_string()]),
+        kinds: Some(vec![kind]),
+        limit: Some(1),
+        ..Default::default()
+    }
+}
+
 /// Create a filter for multiple profiles at once.
 #[allow(dead_code)]
 pub fn filter_profiles_by_authors(author_pubkeys: Vec<String>) -> Filter {
@@ -1099,6 +1117,203 @@ pub fn get_following_pubkeys(contact_list: &ContactList) -> Vec<String> {
     contact_list.contacts.iter().map(|c| c.pubkey.clone()).collect()
 }
 
+// ============================================================
+// NIP-51 Mute List (kind 10000)
+// ============================================================
+
+/// A parsed mute list, keeping public and private entries separate rather
+/// than flattening them on read -- publishing a change later needs to
+/// preserve whichever side each existing entry was already on (see
+/// [`MuteList::reconcile_pubkeys`]/`reconcile_words`/`reconcile_hashtags`),
+/// since re-publishing everything as private (or vice versa) would
+/// silently change a choice the user (or another client) already made.
+/// `private_tags` is only ever populated by a caller that could decrypt
+/// the event's `content` (needs the owner's private key); a read-only
+/// fetch gets public entries only, same as any other client without the
+/// key would see.
+pub struct MuteList {
+    pub public_tags: Vec<Vec<String>>,
+    pub private_tags: Vec<Vec<String>>,
+    pub created_at: u64,
+}
+
+impl MuteList {
+    pub fn new(created_at: u64) -> MuteList {
+        MuteList { public_tags: Vec::new(), private_tags: Vec::new(), created_at }
+    }
+
+    fn all_values(&self, tag_name: &str) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for tags in [&self.public_tags, &self.private_tags] {
+            for tag in tags {
+                if tag.len() >= 2 && tag[0] == tag_name && !tag[1].is_empty() && !out.contains(&tag[1]) {
+                    out.push(tag[1].clone());
+                }
+            }
+        }
+        out
+    }
+
+    pub fn pubkeys(&self) -> Vec<String> {
+        self.all_values("p")
+    }
+    pub fn words(&self) -> Vec<String> {
+        self.all_values("word")
+    }
+    pub fn hashtags(&self) -> Vec<String> {
+        self.all_values("t")
+    }
+
+    /// Makes `pubkeys()` (after this call) equal `desired`: drops any "p"
+    /// tag -- public or private, wherever it already was -- that isn't in
+    /// `desired`, and adds anything in `desired` that wasn't already
+    /// present on either side as a new *private* tag (the safer default
+    /// for something the user didn't already choose to make public).
+    pub fn reconcile_pubkeys(&mut self, desired: &[String]) {
+        reconcile_tag(&mut self.public_tags, &mut self.private_tags, "p", desired);
+    }
+    pub fn reconcile_words(&mut self, desired: &[String]) {
+        reconcile_tag(&mut self.public_tags, &mut self.private_tags, "word", desired);
+    }
+    pub fn reconcile_hashtags(&mut self, desired: &[String]) {
+        reconcile_tag(&mut self.public_tags, &mut self.private_tags, "t", desired);
+    }
+}
+
+fn reconcile_tag(public_tags: &mut Vec<Vec<String>>, private_tags: &mut Vec<Vec<String>>, tag_name: &str, desired: &[String]) {
+    let keep = |tags: &mut Vec<Vec<String>>| {
+        tags.retain(|t| t.len() < 2 || t[0] != tag_name || desired.contains(&t[1]));
+    };
+    keep(public_tags);
+    keep(private_tags);
+    let to_add: Vec<String> = desired
+        .iter()
+        .filter(|value| {
+            !public_tags.iter().chain(private_tags.iter()).any(|t| t.len() >= 2 && t[0] == tag_name && &t[1] == *value)
+        })
+        .cloned()
+        .collect();
+    for value in to_add {
+        private_tags.push(vec![tag_name.to_string(), value]);
+    }
+}
+
+/// Public entries: the mute-list event's own tags, same shape NIP-51
+/// private content uses -- see [`parse_mute_list_tags_json`] for that side.
+pub fn parse_mute_list_public_tags(event: &Event) -> Result<MuteList, String> {
+    if event.kind != KIND_MUTE_LIST {
+        return Err(format!("Expected kind 10000 event, got kind {}", event.kind));
+    }
+    Ok(MuteList {
+        public_tags: event.tags.clone(),
+        private_tags: Vec::new(),
+        created_at: event.created_at,
+    })
+}
+
+/// Parses a NIP-51 private-content JSON array (`[["p","<hex>"],["word","foo"],...]`)
+/// -- the plaintext a mute list's `content` decrypts to.
+pub fn parse_mute_list_tags_json(json_str: &str) -> Result<Vec<Vec<String>>, String> {
+    if json_str.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut handler = TagArrayHandler::new();
+    parse_json_str(json_str, &mut handler)?;
+    Ok(handler.tags)
+}
+
+/// Serializes a tag list back to the same JSON array-of-arrays shape, for
+/// encrypting into a mute list's `content`.
+pub fn tags_to_json(tags: &[Vec<String>]) -> String {
+    let mut json = String::from("[");
+    for (i, tag) in tags.iter().enumerate() {
+        if i > 0 {
+            json.push(',');
+        }
+        json.push('[');
+        for (j, value) in tag.iter().enumerate() {
+            if j > 0 {
+                json.push(',');
+            }
+            json.push('"');
+            json.push_str(&escape_json_string(value));
+            json.push('"');
+        }
+        json.push(']');
+    }
+    json.push(']');
+    json
+}
+
+fn string_array_json(values: &[String]) -> String {
+    let mut json = String::from("[");
+    for (i, v) in values.iter().enumerate() {
+        if i > 0 {
+            json.push(',');
+        }
+        json.push('"');
+        json.push_str(&escape_json_string(v));
+        json.push('"');
+    }
+    json.push(']');
+    json
+}
+
+/// Flat `{"pubkeys":[...],"words":[...],"hashtags":[...],"created_at":N}`,
+/// merging public and private entries -- the shape the frontend actually
+/// needs (it doesn't distinguish the two for filtering/display purposes;
+/// only [`MuteList::reconcile_pubkeys`] and friends need the raw split).
+pub fn mute_list_to_json(list: &MuteList) -> String {
+    format!(
+        "{{\"pubkeys\":{},\"words\":{},\"hashtags\":{},\"created_at\":{}}}",
+        string_array_json(&list.pubkeys()),
+        string_array_json(&list.words()),
+        string_array_json(&list.hashtags()),
+        list.created_at,
+    )
+}
+
+/// Push handler for a bare JSON array of string arrays -- the shape of a
+/// NIP-51 mute list's decrypted private content, with no outer object to
+/// anchor on, hence its own small handler rather than reusing [`EventHandler`].
+struct TagArrayHandler {
+    depth: u32,
+    tags: Vec<Vec<String>>,
+    current: Vec<String>,
+}
+
+impl TagArrayHandler {
+    fn new() -> TagArrayHandler {
+        TagArrayHandler { depth: 0, tags: Vec::new(), current: Vec::new() }
+    }
+}
+
+impl JsonContentHandler for TagArrayHandler {
+    fn start_object(&mut self) {}
+    fn end_object(&mut self) {}
+    fn start_array(&mut self) {
+        self.depth += 1;
+        if self.depth == 2 {
+            self.current = Vec::new();
+        }
+    }
+    fn end_array(&mut self) {
+        if self.depth == 2 {
+            self.tags.push(std::mem::take(&mut self.current));
+        }
+        self.depth -= 1;
+    }
+    fn number_value(&mut self, _value: JsonNumber) {}
+    fn string_value(&mut self, value: &str) {
+        if self.depth == 2 {
+            self.current.push(value.to_string());
+        }
+    }
+    fn boolean_value(&mut self, _value: bool) {}
+    fn null_value(&mut self) {}
+    fn key(&mut self, _key: &str) {}
+}
+
 pub fn filter_contact_list_by_author(author_pubkey: &str) -> Filter {
     Filter {
         authors: Some(vec![author_pubkey.to_string()]),
@@ -1290,4 +1505,76 @@ pub fn followers_to_json(followers: &Vec<FollowerInfo>) -> String {
     }
     json.push_str("]}");
     return json;
+}
+
+#[cfg(test)]
+mod mute_list_tests {
+    use super::*;
+
+    #[test]
+    fn reconcile_keeps_an_existing_entry_on_whichever_side_it_was_already_on() {
+        let mut list = MuteList::new(100);
+        list.public_tags.push(vec!["p".to_string(), "alice".to_string()]);
+        list.private_tags.push(vec!["p".to_string(), "bob".to_string()]);
+
+        // Same set as before, just re-saved -- neither should move sides.
+        list.reconcile_pubkeys(&["alice".to_string(), "bob".to_string()]);
+
+        assert_eq!(list.public_tags, vec![vec!["p".to_string(), "alice".to_string()]]);
+        assert_eq!(list.private_tags, vec![vec!["p".to_string(), "bob".to_string()]]);
+    }
+
+    #[test]
+    fn reconcile_adds_a_genuinely_new_entry_as_private_by_default() {
+        let mut list = MuteList::new(100);
+        list.public_tags.push(vec!["p".to_string(), "alice".to_string()]);
+
+        list.reconcile_pubkeys(&["alice".to_string(), "carol".to_string()]);
+
+        assert_eq!(list.public_tags, vec![vec!["p".to_string(), "alice".to_string()]]);
+        assert_eq!(list.private_tags, vec![vec!["p".to_string(), "carol".to_string()]]);
+        assert_eq!(list.pubkeys(), vec!["alice".to_string(), "carol".to_string()]);
+    }
+
+    #[test]
+    fn reconcile_removes_an_entry_from_whichever_side_it_was_on() {
+        let mut list = MuteList::new(100);
+        list.public_tags.push(vec!["p".to_string(), "alice".to_string()]);
+        list.private_tags.push(vec!["p".to_string(), "bob".to_string()]);
+
+        // "bob" dropped from the desired set -- unmuted.
+        list.reconcile_pubkeys(&["alice".to_string()]);
+
+        assert_eq!(list.pubkeys(), vec!["alice".to_string()]);
+        assert!(list.private_tags.is_empty());
+    }
+
+    #[test]
+    fn reconcile_leaves_other_tag_kinds_on_the_same_side_untouched() {
+        let mut list = MuteList::new(100);
+        list.public_tags.push(vec!["p".to_string(), "alice".to_string()]);
+        list.public_tags.push(vec!["t".to_string(), "spam".to_string()]);
+
+        list.reconcile_pubkeys(&["alice".to_string(), "dave".to_string()]);
+
+        // The hashtag entry is untouched; only "p" tags were reconciled.
+        assert!(list.public_tags.contains(&vec!["t".to_string(), "spam".to_string()]));
+        assert_eq!(list.hashtags(), vec!["spam".to_string()]);
+    }
+
+    #[test]
+    fn tags_json_round_trips() {
+        let tags = vec![
+            vec!["p".to_string(), "deadbeef".to_string()],
+            vec!["word".to_string(), "quoted \"word\"".to_string()],
+        ];
+        let json = tags_to_json(&tags);
+        let parsed = parse_mute_list_tags_json(&json).unwrap();
+        assert_eq!(parsed, tags);
+    }
+
+    #[test]
+    fn empty_private_content_parses_as_no_tags() {
+        assert_eq!(parse_mute_list_tags_json("").unwrap(), Vec::<Vec<String>>::new());
+    }
 }

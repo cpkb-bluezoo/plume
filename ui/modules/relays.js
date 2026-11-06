@@ -21,7 +21,8 @@
 import { state } from './state.js';
 import { invoke } from './tauri.js';
 import { escapeHtml } from './utils.js';
-import { saveConfig, setSavingState } from './config.js';
+import { saveConfig } from './config.js';
+import { publishWithProgress } from './publish.js';
 
 // Update the relay list in the UI (with delete button per relay)
 export function updateRelayList() {
@@ -107,7 +108,22 @@ export function bindRelayPanelHandlers() {
     }
     if (saveBtn) {
         saveBtn.onclick = function() {
-            saveConfig().catch(function(err) { console.error('Failed to save relays:', err); });
+            var relaysToPublish = (state.config.relays || []).slice();
+            publishWithProgress('relays', saveBtn, function() {
+                return invoke('start_save_relay_list', { relays: relaysToPublish });
+            }).then(function(result) {
+                // Only adopt (and persist) what the network actually
+                // confirmed, same rule as everywhere else -- if nothing
+                // confirmed, the edited list stays on screen, unsaved,
+                // rather than being silently discarded or trusted anyway.
+                if (result.anyConfirmed && Array.isArray(result.adopted)) {
+                    state.config.relays = result.adopted;
+                    updateRelayList();
+                    bindRelayPanelHandlers();
+                    runRelayTests();
+                    return saveConfig();
+                }
+            }).catch(function(err) { console.error('Failed to save relays:', err); });
         };
     }
 }
@@ -127,19 +143,52 @@ export function handleRelayListClick(e) {
     }
 }
 
-// Test all relays asynchronously when the relay list panel is visible; update status dots (grey=unknown, green=ok, red=failed).
-// Relays currently in the connection backoff list are immediately shown as red without a connection test.
-export function runRelayTests() {
+// Tests connectivity for `relayUrls`, updating the status dot at
+// `#{idPrefix}{index}` for each one (grey=unknown, green=connected,
+// red=failed). Relays currently in the connection backoff list are shown
+// red immediately, with retry time, rather than waiting on a doomed
+// connection attempt. Shared by both Settings relay panels and the
+// read-only Relays tab on the profile page, so "connected" means the same
+// thing and looks the same everywhere it's shown.
+export function testRelayConnections(relayUrls, idPrefix) {
     var t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
     var connectedTitle = t('relays.statusConnected');
     var failedTitle = t('relays.statusFailed');
-    if (!state.config || !Array.isArray(state.config.relays)) {
+    if (!relayUrls || !relayUrls.length) {
         return;
     }
-    var relays = state.config.relays.slice();
+
+    function runTest(relayUrl, index) {
+        var el = document.getElementById(idPrefix + index);
+        if (!el) {
+            return;
+        }
+        el.classList.remove('connected', 'failed');
+        el.title = t('relays.statusUnknown');
+        el.setAttribute('aria-label', t('relays.statusUnknown'));
+        invoke('test_relay_connection', { relayUrl: relayUrl })
+            .then(function() {
+                if (!el.parentNode) {
+                    return;
+                }
+                el.classList.remove('failed');
+                el.classList.add('connected');
+                el.title = connectedTitle;
+                el.setAttribute('aria-label', connectedTitle);
+            })
+            .catch(function() {
+                if (!el.parentNode) {
+                    return;
+                }
+                el.classList.remove('connected');
+                el.classList.add('failed');
+                el.title = failedTitle;
+                el.setAttribute('aria-label', failedTitle);
+            });
+    }
 
     // First, check which relays are in the backoff list and mark them red immediately
-    invoke('get_relay_backoff_status', { relay_urls: relays })
+    invoke('get_relay_backoff_status', { relay_urls: relayUrls })
         .then(function(json) {
             var backoff = {};
             try {
@@ -147,8 +196,8 @@ export function runRelayTests() {
             }
             catch (e) {}
 
-            relays.forEach(function(relayUrl, index) {
-                var el = document.getElementById('relay-status-' + index);
+            relayUrls.forEach(function(relayUrl, index) {
+                var el = document.getElementById(idPrefix + index);
                 if (!el) {
                     return;
                 }
@@ -162,67 +211,26 @@ export function runRelayTests() {
                     el.setAttribute('aria-label', backoffTitle);
                 }
                 else {
-                    // Not in backoff — run actual connection test
-                    el.classList.remove('connected', 'failed');
-                    el.title = t('relays.statusUnknown');
-                    el.setAttribute('aria-label', t('relays.statusUnknown'));
-                    invoke('test_relay_connection', { relayUrl: relayUrl })
-                        .then(function() {
-                            if (!el.parentNode) {
-                                return;
-                            }
-                            el.classList.remove('failed');
-                            el.classList.add('connected');
-                            el.title = connectedTitle;
-                            el.setAttribute('aria-label', connectedTitle);
-                        })
-                        .catch(function() {
-                            if (!el.parentNode) {
-                                return;
-                            }
-                            el.classList.remove('connected');
-                            el.classList.add('failed');
-                            el.title = failedTitle;
-                            el.setAttribute('aria-label', failedTitle);
-                        });
+                    runTest(relayUrl, index);
                 }
             });
         })
         .catch(function() {
             // If backoff check fails, fall back to testing all relays
-            relays.forEach(function(relayUrl, index) {
-                var el = document.getElementById('relay-status-' + index);
-                if (!el) {
-                    return;
-                }
-                el.classList.remove('connected', 'failed');
-                el.title = t('relays.statusUnknown');
-                el.setAttribute('aria-label', t('relays.statusUnknown'));
-                invoke('test_relay_connection', { relayUrl: relayUrl })
-                    .then(function() {
-                        if (!el.parentNode) {
-                            return;
-                        }
-                        el.classList.remove('failed');
-                        el.classList.add('connected');
-                        el.title = connectedTitle;
-                        el.setAttribute('aria-label', connectedTitle);
-                    })
-                    .catch(function() {
-                        if (!el.parentNode) {
-                            return;
-                        }
-                        el.classList.remove('connected');
-                        el.classList.add('failed');
-                        el.title = failedTitle;
-                        el.setAttribute('aria-label', failedTitle);
-                    });
-            });
+            relayUrls.forEach(runTest);
         });
 }
 
+// Test all of state.config.relays when the Settings relay panel is visible.
+export function runRelayTests() {
+    if (!state.config || !Array.isArray(state.config.relays)) {
+        return;
+    }
+    testRelayConnections(state.config.relays.slice(), 'relay-status-');
+}
+
 // ============================================================
-// DM Relay List (Message Relays tab)
+// DM Relay List (NIP-17 trusted message relays tab)
 // ============================================================
 
 export function updateDMRelayList() {
@@ -286,13 +294,18 @@ export function bindDMRelayPanelHandlers() {
     }
     if (saveBtn) {
         saveBtn.onclick = function() {
-            var restoreBtn = setSavingState(saveBtn);
-            invoke('save_dm_relays', { dm_relays: state.config.dm_relays || [] })
-                .then(function() {
-                    saveConfig().catch(function(err) { console.error('Failed to save DM relays config:', err); });
-                })
-                .catch(function(err) { console.error('Failed to publish DM relay list:', err); })
-                .finally(restoreBtn);
+            var dmRelaysToPublish = (state.config.dm_relays || []).slice();
+            publishWithProgress('dm_relays', saveBtn, function() {
+                return invoke('start_save_dm_relay_list', { dm_relays: dmRelaysToPublish });
+            }).then(function(result) {
+                if (result.anyConfirmed && Array.isArray(result.adopted)) {
+                    state.config.dm_relays = result.adopted;
+                    updateDMRelayList();
+                    bindDMRelayPanelHandlers();
+                    runDMRelayTests();
+                    return saveConfig();
+                }
+            }).catch(function(err) { console.error('Failed to save DM relays:', err); });
         };
     }
 }
@@ -310,33 +323,10 @@ function handleDMRelayListClick(e) {
 }
 
 export function runDMRelayTests() {
-    var t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
-    var connectedTitle = t('relays.statusConnected');
-    var failedTitle = t('relays.statusFailed');
-    if (!state.config || !Array.isArray(state.config.dm_relays)) return;
-
-    state.config.dm_relays.forEach(function(relayUrl, index) {
-        var el = document.getElementById('dm-relay-status-' + index);
-        if (!el) return;
-        el.classList.remove('connected', 'failed');
-        el.title = t('relays.statusUnknown');
-        el.setAttribute('aria-label', t('relays.statusUnknown'));
-        invoke('test_relay_connection', { relayUrl: relayUrl })
-            .then(function() {
-                if (!el.parentNode) return;
-                el.classList.remove('failed');
-                el.classList.add('connected');
-                el.title = connectedTitle;
-                el.setAttribute('aria-label', connectedTitle);
-            })
-            .catch(function() {
-                if (!el.parentNode) return;
-                el.classList.remove('connected');
-                el.classList.add('failed');
-                el.title = failedTitle;
-                el.setAttribute('aria-label', failedTitle);
-            });
-    });
+    if (!state.config || !Array.isArray(state.config.dm_relays)) {
+        return;
+    }
+    testRelayConnections(state.config.dm_relays.slice(), 'dm-relay-status-');
 }
 
 // Tab switching for relay settings

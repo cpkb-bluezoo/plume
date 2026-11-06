@@ -21,10 +21,13 @@
 import { state, getEffectiveRelays, FEED_LIMIT } from './state.js';
 import { invoke } from './tauri.js';
 import { escapeHtml, debugLog, formatTimestamp, torImgUrl } from './utils.js';
-import { saveConfig, setSavingState } from './config.js';
+import { saveConfig, applyProfileFieldsToConfig, updateFeedInitialState } from './config.js';
+import { publishWithProgress } from './publish.js';
 import { isNoteMuted, isUserMuted } from './muting.js';
 import { createNoteCard, createRepostCard, createArticleCard, verifyNote, verifyRepostOriginal, ensureProfilesForNotes, setCardAvatar, getReplyToPubkey, resolveNostrEmbeds, fetchAndDisplayZapTotals } from './notes.js';
 import { fetchFollowingAndFollowers, fetchFollowingAndFollowersForUser, fetchFollowing, updateFollowButtonState } from './follows.js';
+import { updateRelayList, testRelayConnections } from './relays.js';
+import { startInitialFeedFetch } from './feed.js';
 
 // Lazy import to avoid circular dependency with views.js
 let _switchView = null;
@@ -96,30 +99,62 @@ export async function fetchProfile() {
     state.profileLoading = true;
     try {
         if (viewingOwn) {
-            const profileJson = await invoke('fetch_own_profile');
-            if (profileJson && profileJson !== '{}') {
-                state.profile = JSON.parse(profileJson);
-                state.viewedProfile = state.profile;
-                // Sync fetched profile fields into config so sidebar avatar and
-                // other UI elements stay current without a page reload.
-                if (state.config && state.profile) {
-                    var changed = false;
-                    ['name', 'about', 'picture', 'nip05', 'banner', 'website', 'lud16'].forEach(function(f) {
-                        if (state.profile[f] && state.profile[f] !== state.config[f]) {
-                            state.config[f] = state.profile[f];
-                            changed = true;
+            // Event-driven: each relay reports in on its own schedule, and
+            // the backend emits own-profile-update every time one arrives
+            // with a newer profile than anything seen so far, rather than
+            // making us wait for the slowest relay before showing anything.
+            await new Promise(function(resolve) {
+                var unlistenUpdate = function() {};
+                var unlistenDone = function() {};
+
+                function applyUpdate(profileJson) {
+                    state.profile = JSON.parse(profileJson);
+                    state.viewedProfile = state.profile;
+                    updateProfileDisplay();
+                    // Sync fetched profile fields into config so sidebar avatar and
+                    // other UI elements stay current without a page reload.
+                    if (state.config && state.profile) {
+                        var changed = ['name', 'about', 'picture', 'nip05', 'banner', 'website', 'lud16']
+                            .some(function(f) { return state.profile[f] && state.profile[f] !== state.config[f]; });
+                        applyProfileFieldsToConfig(state.profile);
+                        if (changed) {
+                            updateSidebarAvatar();
+                            // Persist the updated config in the background
+                            saveConfig();
                         }
-                    });
-                    if (changed) {
-                        updateSidebarAvatar();
-                        // Persist the updated config in the background
-                        saveConfig();
                     }
                 }
-            } else {
-                state.profile = null;
-                state.viewedProfile = null;
-            }
+
+                function finish() {
+                    unlistenUpdate();
+                    unlistenDone();
+                    // Deliberately does NOT null out state.profile/viewedProfile
+                    // when this particular call found nothing (!gotAny) -- this
+                    // fetch can run more than once in a session (login, relay
+                    // adoption, every profile-page visit), and a later attempt
+                    // that happens to come back empty (e.g. queried a relay set
+                    // that doesn't have the kind:0 event this time) must not
+                    // erase data an earlier successful attempt already found.
+                    // Leaving them untouched keeps whatever was last known good.
+                    resolve();
+                }
+
+                if (window.__TAURI__ && window.__TAURI__.event && typeof window.__TAURI__.event.listen === 'function') {
+                    Promise.all([
+                        window.__TAURI__.event.listen('own-profile-update', function(ev) { applyUpdate(ev.payload); }),
+                        window.__TAURI__.event.listen('own-profile-done', function() { finish(); })
+                    ]).then(function(unlisteners) {
+                        unlistenUpdate = unlisteners[0];
+                        unlistenDone = unlisteners[1];
+                        invoke('start_own_profile_fetch').catch(function(err) {
+                            console.error('Failed to start own profile fetch:', err);
+                            finish();
+                        });
+                    });
+                } else {
+                    finish();
+                }
+            });
         } else {
             const profileJson = await invoke('fetch_profile', {
                 pubkey: state.viewedProfilePubkey,
@@ -164,6 +199,72 @@ export async function fetchProfile() {
         updateProfileDisplay();
     } finally {
         state.profileLoading = false;
+    }
+}
+
+// The locally configured relay list is only ever a bootstrap: a hardcoded
+// default for a brand new profile, or whatever was last known. The user's
+// own NIP-65 relay list (kind 10002), published to the network, is the real
+// preference -- once we can reach it (over the bootstrap list), it should
+// take over rather than sitting unused until the next manual edit in
+// Settings. Safe to call on every login/startup: a no-op once the local
+// list already matches, and harmless if nothing has been published yet
+// (the bootstrap list it was called with just keeps being used).
+export async function adoptOwnRelayListFromNetwork() {
+    if (!state.config || !state.config.public_key) {
+        return;
+    }
+    var bootstrapRelays = getEffectiveRelays();
+    if (!bootstrapRelays.length) {
+        return;
+    }
+    try {
+        var json = await invoke('fetch_relay_list', { pubkey: state.config.public_key, relayUrls: bootstrapRelays });
+        var urls = json ? JSON.parse(json) : [];
+        if (!Array.isArray(urls) || urls.length === 0) {
+            return;
+        }
+        var current = Array.isArray(state.config.relays) ? state.config.relays : [];
+        var changed = urls.length !== current.length || urls.some(function(u) { return current.indexOf(u) === -1; });
+        if (!changed) {
+            return;
+        }
+        state.config.relays = urls;
+        await saveConfig();
+        updateRelayList();
+
+        // fetchProfile's own-profile path takes no relay list of its own --
+        // it reads whatever is already saved to disk -- so the very first
+        // fetch (fired before this one resolves) ran against the bootstrap
+        // list and likely came back empty or partial if the profile's kind
+        // 0 event isn't on any of those relays. Re-fetch now that the real
+        // list is persisted, so metadata/avatar/notes actually fill in
+        // instead of staying blank for the rest of the session.
+        //
+        // fetchProfile silently no-ops while a call is already in flight,
+        // and that earlier call (fired at the same time as this one, against
+        // the bootstrap list) may still be running -- wait for it to settle
+        // first so this retry isn't the one that gets dropped.
+        for (var waited = 0; state.profileLoading && waited < 30000; waited += 200) {
+            await new Promise(function(resolve) { setTimeout(resolve, 200); });
+        }
+        fetchProfile();
+
+        // The feed may already be loading, or have already loaded, against
+        // the bootstrap relays -- restart it against the real list now that
+        // we know it, the same way a manual relay-settings change does.
+        state.initialFeedLoadDone = false;
+        state.notes = [];
+        if (state.feedPollIntervalId) {
+            clearInterval(state.feedPollIntervalId);
+            state.feedPollIntervalId = null;
+        }
+        if (state.currentView === 'feed') {
+            updateFeedInitialState();
+            startInitialFeedFetch();
+        }
+    } catch (e) {
+        console.warn('[Plume] Failed to fetch own relay list:', e);
     }
 }
 
@@ -286,10 +387,9 @@ export function handleEditProfileSubmit(e) {
         e.preventDefault();
     }
     debugLog('Edit profile submit/OK clicked');
+    var t = window.PlumeI18n && window.PlumeI18n.t ? window.PlumeI18n.t.bind(window.PlumeI18n) : function(k) { return k; };
 
-    // Show saving state on the button
     var saveBtn = document.querySelector('#edit-profile-form button[type="submit"]');
-    var restoreBtn = setSavingState(saveBtn);
 
     var nameEl = document.getElementById('edit-profile-name');
     var nip05El = document.getElementById('edit-profile-nip05');
@@ -335,69 +435,52 @@ export function handleEditProfileSubmit(e) {
         profile.banner = banner;
     }
     var profileJson = JSON.stringify(profile);
-    invoke('set_profile_metadata', { profileJson: profileJson })
-        .then(function() {
-            if (state.config) {
-                if (name) {
-                    state.config.name = name;
-                }
-                if (about) {
-                    state.config.about = about;
-                }
-                if (picture) {
-                    state.config.picture = picture;
-                }
-                if (nip05) {
-                    state.config.nip05 = nip05;
-                }
-                if (banner) {
-                    state.config.banner = banner;
-                }
-                if (website) {
-                    state.config.website = website;
-                }
-                if (lud16) {
-                    state.config.lud16 = lud16;
-                }
-            }
-            return fetchProfile();
-        })
-        .then(function() {
-            if (state.profile && state.config) {
-                state.config.name = state.profile.name || state.config.name;
-                state.config.about = state.profile.about || state.config.about;
-                state.config.picture = state.profile.picture || state.config.picture;
-                state.config.nip05 = state.profile.nip05 || state.config.nip05;
-                state.config.banner = state.profile.banner || state.config.banner;
-                state.config.website = state.profile.website || state.config.website;
-                state.config.lud16 = state.profile.lud16 || state.config.lud16;
-            }
-            updateProfileDisplay();
-            updateSidebarAvatar();
-            // Navigate back to where the user was before editing profile
-            var prevView = state.editProfilePreviousView;
-            state.editProfilePreviousView = null;
-            if (prevView && prevView !== 'settings' && _switchView) {
-                _switchView(prevView);
-            }
-        })
-        .catch(function(err) {
-            console.error('Failed to save profile:', err);
-            alert(typeof err === 'string' ? err : (err?.message || 'Failed to save profile'));
-        })
-        .finally(restoreBtn);
+    publishWithProgress('profile', saveBtn, function() {
+        return invoke('start_save_profile', { profile_json: profileJson });
+    }).then(function(result) {
+        // Only adopt (and navigate away on) what the network actually
+        // confirmed -- same rule as the relay-list saves. If nothing
+        // confirmed, the form stays open with its entered values so the
+        // user can see the failure and retry, rather than being bounced
+        // back as if it had worked.
+        if (!result.anyConfirmed || !result.adopted) {
+            alert(t('profile.publishFailed') || 'Could not confirm the profile update on any relay. Please try again.');
+            return;
+        }
+        state.profile = result.adopted;
+        state.viewedProfile = state.profile;
+        applyProfileFieldsToConfig(state.profile);
+        updateProfileDisplay();
+        updateSidebarAvatar();
+        // Navigate back to where the user was before editing profile
+        var prevView = state.editProfilePreviousView;
+        state.editProfilePreviousView = null;
+        if (prevView && prevView !== 'settings' && _switchView) {
+            _switchView(prevView);
+        }
+        return saveConfig();
+    }).catch(function(err) {
+        console.error('Failed to save profile:', err);
+        alert(typeof err === 'string' ? err : (err?.message || 'Failed to save profile'));
+    });
 }
 
 // Whether the note should be shown on the current profile tab (notes / replies / zaps).
+function isReplyNote(note) {
+    return note.kind === 1 && note.tags && note.tags.some(function(tag) { return Array.isArray(tag) && tag[0] === 'e'; });
+}
+
 export function profileNoteMatchesTab(note, tab) {
     if (tab === 'zaps') {
         return false;
     }
     if (tab === 'notes') {
-        return note.kind === 1 || note.kind === 6 || note.kind === 30023;
+        // Originally-authored notes only -- a kind 1 reply belongs on the
+        // Replies tab, not duplicated here too.
+        return (note.kind === 1 && !isReplyNote(note)) || note.kind === 6 || note.kind === 30023;
     }
     if (tab === 'replies') {
-        return note.kind === 1 && note.tags && note.tags.some(function(tag) { return Array.isArray(tag) && tag[0] === 'e'; });
+        return isReplyNote(note);
     }
     return true;
 }
@@ -647,6 +730,10 @@ export function loadProfileRelays() {
         });
 }
 
+// Same markup, styling, and connection indicator as the Settings relay
+// list (.relay-item / .relay-url / .relay-status), just without the add
+// input, Enter-to-add, or delete button -- this is a read-only view of
+// someone's relay list, not an editor.
 function displayProfileRelays(relays) {
     var container = document.getElementById('profile-feed');
     if (!container) {
@@ -657,16 +744,20 @@ function displayProfileRelays(relays) {
         container.innerHTML = '<div class="placeholder-message"><p>' + escapeHtml(t('feed.noRelays')) + '</p></div>';
         return;
     }
+    var unknownTitle = t('relays.statusUnknown');
     container.innerHTML = '';
     var ul = document.createElement('ul');
-    ul.className = 'profile-relay-list';
-    relays.forEach(function(url) {
+    ul.className = 'relay-list';
+    relays.forEach(function(url, index) {
         var li = document.createElement('li');
-        li.className = 'profile-relay-item';
-        li.textContent = url;
+        li.className = 'relay-item';
+        li.innerHTML =
+            '<span class="relay-url">' + escapeHtml(url) + '</span>' +
+            '<div class="relay-status" id="profile-relay-status-' + index + '" title="' + escapeHtml(unknownTitle) + '" aria-label="' + escapeHtml(unknownTitle) + '"></div>';
         ul.appendChild(li);
     });
     container.appendChild(ul);
+    testRelayConnections(relays, 'profile-relay-status-');
 }
 
 // Load zap receipts for the profile Zaps tab.

@@ -21,16 +21,21 @@
     "existingIdentity": "Sie haben bereits eine Nostr-Identität?",
     "knownProfiles": "Ihre Profile",
     "enterKeys": "Geben Sie Ihre Schlüssel ein, um sich anzumelden:",
-    "publicKeyLabel": "Öffentlicher Schlüssel",
+    "publicKeyLabel": "Öffentlicher Schlüssel (optional bei Eingabe eines privaten Schlüssels)",
     "publicKeyPlaceholder": "npub1... oder 64-Zeichen-Hex",
     "privateKeyLabel": "Privater Schlüssel (optional)",
     "privateKeyPlaceholder": "nsec1... oder Hex",
-    "privateKeyHint": "Ein öffentlicher Schlüssel ermöglicht es Ihnen, andere zu durchsuchen und zu folgen. Ein privater Schlüssel ist erforderlich, um Notizen zu veröffentlichen, zu reagieren oder Direktnachrichten zu senden.",
+    "privateKeyHint": "Ein öffentlicher Schlüssel allein ermöglicht es Ihnen, andere zu durchsuchen und zu folgen. Geben Sie einen privaten Schlüssel ein, um außerdem Notizen zu veröffentlichen, zu reagieren oder Direktnachrichten zu senden - der zugehörige öffentliche Schlüssel wird automatisch abgeleitet, wenn Sie dieses Feld leer lassen.",
+    "keyRequired": "Geben Sie einen öffentlichen oder einen privaten Schlüssel ein",
     "logIn": "Anmelden",
     "or": "oder",
     "newIdentity": "Neu bei Nostr?",
     "newIdentityDesc": "Erstellen Sie eine neue Identität, um im dezentralen sozialen Netzwerk zu posten und sich mit anderen zu verbinden.",
-    "createNewIdentity": "Neue Identität erstellen"
+    "createNewIdentity": "Neue Identität erstellen",
+    "keyringPromptTitle": "Privaten Schlüssel im System-Schlüsselbund speichern?",
+    "keyringPromptBody": "Dieses Gerät verfügt über einen System-Schlüsselbund (Schlüsselbund, Credential Manager oder Secret Service). Plume kann Ihren privaten Schlüssel dort speichern, statt in der unverschlüsselten Konfigurationsdatei. Sie können ihn jederzeit in Einstellungen → Schlüssel wieder zurückverschieben.",
+    "keyringPromptNo": "In Konfigurationsdatei behalten",
+    "keyringPromptYes": "Im Schlüsselbund speichern"
   },
   "feed": {
     "title": "Start",
@@ -41,6 +46,7 @@
     "noTextNotes": "Keine Textnotizen gefunden",
     "tryRelays": "Versuchen Sie, andere Relays zu verbinden",
     "noRelays": "Keine Relays konfiguriert. Fügen Sie Relays in den Einstellungen hinzu.",
+    "noFollowsYet": "Sie folgen noch niemandem, oder Ihre Kontaktliste wurde auf Ihren Relays nicht gefunden.",
     "feedFailed": "Feed konnte nicht geladen werden. Bitte Relays prüfen und erneut versuchen.",
     "mutedContent": "Diese Notiz stammt von einem stummgeschalteten Konto oder enthält stummgeschaltete Inhalte."
   },
@@ -70,6 +76,15 @@
     "account": "Konto",
     "profile": "Profil",
     "keys": "Schlüssel",
+    "keyStorageLabel": "Speicherort des privaten Schlüssels",
+    "keyStorageKeyring": "Gespeichert in: System-Schlüsselbund",
+    "keyStoragePlaintext": "Gespeichert in: unverschlüsselte Konfigurationsdatei",
+    "keyStorageMoveToKeyring": "In System-Schlüsselbund verschieben",
+    "keyStorageMoveToPlaintext": "In Konfigurationsdatei verschieben",
+    "keyStorageConfirmToKeyring": "Privaten Schlüssel in den System-Schlüsselbund verschieben? Er wird dann nicht mehr in der Konfigurationsdatei gespeichert.",
+    "keyStorageConfirmToPlaintext": "Privaten Schlüssel zurück in die unverschlüsselte Konfigurationsdatei verschieben?",
+    "keyStorageMoveFailed": "Verschieben des privaten Schlüssels fehlgeschlagen",
+    "keyringUnavailableHint": "Auf diesem Gerät ist kein System-Schlüsselbund verfügbar; es wird die unverschlüsselte Konfigurationsdatei verwendet.",
     "homeFeed": "Start-Feed",
     "homeFeedModalTitle": "Start-Feed",
     "homeFeedModalHint": "Wählen Sie, was auf Ihrer Startseite angezeigt wird.",
@@ -109,7 +124,7 @@
     "relayAddPlaceholder": "wss://relay.beispiel.com",
     "relayDelete": "Entfernen",
     "relayTabMain": "Haupt-Relays",
-    "relayTabDM": "Nachrichten-Relays",
+    "relayTabDM": "NIP-17 vertrauenswürdige Nachrichten-Relays",
     "relayMainHint": "Relays für Ihren Feed, Ihr Profil und öffentliche Notizen. Verbinden Sie sich mit mehreren für beste Verfügbarkeit.",
     "relayDMHint": "Relays zum Empfangen privater Nachrichten. Halten Sie die Liste klein (1\u20133 Relays). Andere Benutzer finden diese Relays, um Ihnen verschlüsselte Nachrichten zu senden.",
     "zaps": "Zaps",
@@ -123,6 +138,7 @@
     "message": "Nachricht",
     "mute": "Stummschalten",
     "unmute": "Stummschaltung aufheben",
+    "muteFailed": "Die Aktualisierung der Stummschaltliste konnte auf keinem Relay bestätigt werden. Bitte versuchen Sie es erneut.",
     "following": "Folgt",
     "followers": "Follower",
     "lastModified": "Profil aktualisiert am",
@@ -140,6 +156,7 @@
     "anonymous": "Anonym",
     "generating": "Wird erstellt…",
     "newIdentityCreated": "Neue Identität erstellt!",
+    "publishFailed": "Die Profilaktualisierung konnte auf keinem Relay bestätigt werden. Bitte versuchen Sie es erneut.",
     "saveNsecWarning": "WICHTIG: Bewahren Sie Ihren nsec an einem sicheren Ort auf. Sie benötigen ihn zur Wiederherstellung Ihrer Identität!",
     "publicKeyQR": "Öffentlicher Schlüssel",
     "publicKeySelectToCopy": "Öffentlicher Schlüssel (zum Kopieren markieren)"
@@ -231,7 +248,14 @@
   "relays": {
     "statusUnknown": "Noch nicht getestet",
     "statusConnected": "Verbunden",
-    "statusFailed": "Verbindung fehlgeschlagen"
+    "statusFailed": "Verbindung fehlgeschlagen",
+    "publishing": "Wird veröffentlicht…",
+    "confirmed": "Bestätigt",
+    "acceptedUnconfirmed": "Angenommen (unbestätigt)",
+    "publishFailed": "Fehlgeschlagen",
+    "publishSummaryOk": "Bestätigt auf {confirmed} von {total} Relays",
+    "publishSummaryFailed": "Konnte auf keinem Relay bestätigt werden.",
+    "publishStartFailed": "Start fehlgeschlagen: "
   },
   "content": {
     "image": "Bild"
@@ -270,7 +294,8 @@
     "initError": "Initialisierungsfehler",
     "loadFailed": "Lesezeichen konnten nicht geladen werden",
     "failedToPublish": "Veröffentlichung fehlgeschlagen",
-    "allRelaysUnreachable": "Keine Relais erreichbar. Überprüfen Sie Ihre Verbindung und Relay-Einstellungen."
+    "allRelaysUnreachable": "Keine Relais erreichbar. Überprüfen Sie Ihre Verbindung und Relay-Einstellungen.",
+    "loginFailed": "Anmeldung fehlgeschlagen"
   },
   "alpha": {
     "preLink": "Dies ist Alpha-Software. Bitte melden Sie Fehler",

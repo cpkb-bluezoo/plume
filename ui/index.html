@@ -220,7 +220,7 @@
                                         <input type="url" id="edit-profile-banner" data-i18n-placeholder="editProfileModal.bannerPlaceholder">
                                     </div>
                                     <div class="form-actions form-actions-end">
-                                        <button type="submit" class="btn btn-primary" data-i18n="accountModal.save">Save</button>
+                                        <button type="submit" id="edit-profile-save-btn" class="btn btn-primary" data-i18n="accountModal.save">Save</button>
                                     </div>
                                 </form>
                             </div>
@@ -244,6 +244,13 @@
                                         <button type="submit" class="btn btn-primary" data-i18n="accountModal.save">Save</button>
                                     </div>
                                 </form>
+                                <div id="settings-keys-storage-row" class="form-group" style="display: none;">
+                                    <label data-i18n="settings.keyStorageLabel">Private key storage</label>
+                                    <div class="form-actions" style="justify-content: space-between; align-items: center;">
+                                        <span id="settings-keys-storage-status" class="form-hint"></span>
+                                        <button type="button" id="settings-keys-storage-move" class="btn btn-ghost"></button>
+                                    </div>
+                                </div>
                             </div>
                             <div id="settings-panel-home-feed" class="settings-panel" style="display: none;">
                                 <h3 class="settings-panel-title" data-i18n="settings.homeFeed"></h3>
@@ -335,7 +342,7 @@
                                 <h3 class="settings-panel-title" data-i18n="settings.relays"></h3>
                                 <div class="relay-tabs">
                                     <button type="button" class="relay-tab active" data-relay-tab="main" data-i18n="settings.relayTabMain">Main Relays</button>
-                                    <button type="button" class="relay-tab" data-relay-tab="dm" data-i18n="settings.relayTabDM">Message Relays</button>
+                                    <button type="button" class="relay-tab" data-relay-tab="dm" data-i18n="settings.relayTabDM">NIP-17 trusted message relays</button>
                                 </div>
                                 <div id="relay-tab-main" class="relay-tab-panel">
                                     <p class="form-hint" data-i18n="settings.relayMainHint">Relays used for your feed, profile, and public notes. Connect to several for best availability.</p>
@@ -397,13 +404,13 @@
                             <div class="welcome-login-form">
                                 <p class="welcome-login-prompt" data-i18n="welcome.enterKeys">Enter your keys to log in:</p>
                                 <div class="form-group">
-                                    <label for="welcome-npub" data-i18n="welcome.publicKeyLabel">Public Key</label>
+                                    <label for="welcome-npub" data-i18n="welcome.publicKeyLabel">Public Key (optional if entering a private key)</label>
                                     <input type="text" id="welcome-npub" placeholder="npub1... or 64-char hex" data-i18n-placeholder="welcome.publicKeyPlaceholder">
                                 </div>
                                 <div class="form-group">
                                     <label for="welcome-nsec" data-i18n="welcome.privateKeyLabel">Private Key (optional)</label>
                                     <input type="password" id="welcome-nsec" placeholder="nsec1... or hex" data-i18n-placeholder="welcome.privateKeyPlaceholder">
-                                    <small class="form-hint" data-i18n="welcome.privateKeyHint">A public key lets you browse and follow others. A private key is required to publish notes, react, or send direct messages.</small>
+                                    <small class="form-hint" data-i18n="welcome.privateKeyHint">A public key alone lets you browse and follow others. Enter a private key to also publish notes, react, or send direct messages - its public key is derived automatically if you leave that field blank.</small>
                                 </div>
                                 <span id="welcome-login-error" class="validation-error"></span>
                                 <button type="button" id="welcome-login-btn" class="btn btn-primary" data-i18n="welcome.logIn">Log In</button>
@@ -596,6 +603,22 @@
                 <div class="form-actions form-actions-end">
                     <button type="button" id="confirm-dialog-cancel" class="btn btn-ghost">Cancel</button>
                     <button type="button" id="confirm-dialog-ok" class="btn btn-primary">OK</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="keyring-prompt-modal" class="modal" aria-hidden="true">
+            <div class="modal-content modal-confirm">
+                <div class="modal-header">
+                    <h2 data-i18n="welcome.keyringPromptTitle">Store your private key in the system keyring?</h2>
+                    <button type="button" id="close-keyring-prompt" class="close-btn" data-i18n-aria-label="app.close">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <p data-i18n="welcome.keyringPromptBody">This device has a system keyring (Keychain, Credential Manager, or Secret Service). Plume can store your private key there instead of in its plaintext config file. You can move it back at any time from Settings &rarr; Keys.</p>
+                </div>
+                <div class="form-actions form-actions-end">
+                    <button type="button" id="keyring-prompt-no" class="btn btn-ghost" data-i18n="welcome.keyringPromptNo">Keep in config file</button>
+                    <button type="button" id="keyring-prompt-yes" class="btn btn-primary" data-i18n="welcome.keyringPromptYes">Store in keyring</button>
                 </div>
             </div>
         </div>

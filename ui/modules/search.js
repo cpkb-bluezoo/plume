@@ -22,6 +22,7 @@ import { state, getEffectiveRelays, FEED_LIMIT } from './state.js';
 import { invoke } from './tauri.js';
 import { escapeHtml, formatTimestamp } from './utils.js';
 import { createNoteCard, createArticleCard, verifyNote, ensureProfilesForNotes, resolveNostrEmbeds, fetchAndDisplayZapTotals, getReplyToPubkey } from './notes.js';
+import { isNoteMuted, isContentUnreadable } from './muting.js';
 
 var searchBound = false;
 
@@ -307,6 +308,20 @@ function displaySearchResults(notes, label) {
     var labelEl = document.getElementById('search-results-label');
     if (!container) return;
     container.innerHTML = '';
+
+    // Same filtering the home feed applies -- a search result is still a
+    // note, and muted/junk content shouldn't bypass settings just because
+    // it arrived via search instead of the feed.
+    var hideEncrypted = !state.config || state.config.hide_encrypted_notes !== false;
+    notes = (notes || []).filter(function(n) {
+        if (isNoteMuted(n)) {
+            return false;
+        }
+        if (hideEncrypted && n.kind === 1 && isContentUnreadable(n.content)) {
+            return false;
+        }
+        return true;
+    });
 
     if (labelEl) {
         labelEl.textContent = label + ' (' + notes.length + ')';

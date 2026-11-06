@@ -28,12 +28,61 @@ use bytes::BytesMut;
 use crate::json::{JsonContentHandler, JsonNumber, JsonParser};
 use crate::nostr;
 
+/// Relays to use when a profile has none configured yet (a brand new
+/// identity, or one whose relay list hasn't loaded/been fetched). Never
+/// written into a saved [`Config`] -- see [`Config::new`]'s comment --
+/// callers needing a relay list fall back to this themselves when
+/// `cfg.relays` is empty, same as the frontend's `getEffectiveRelays`.
+///
+/// Onion addresses: a Tor-routed client reaches these through Tor's own
+/// hidden-service rendezvous, never a public exit node, so they're
+/// unaffected by relays that block or rate-limit Tor exit traffic
+/// (confirmed live: nos.lol and relay.nostr.band, this list's previous
+/// contents, both refuse connections from Tor exits while answering
+/// clearnet clients instantly). Each lives on different operator
+/// infrastructure so one operator's downtime doesn't take out the whole
+/// bootstrap list.
+pub const BOOTSTRAP_RELAYS: [&str; 3] = [
+    "ws://oxtrdevav64z64yb7x6rjg4ntzqjhedm5b5zjqulugknhzr46ny2qbad.onion", // nostr.oxtr.dev
+    "ws://gnostr2jnapk72mnagq3cuykfon73temzp77hcbncn4silgt77boruid.onion", // nostr.girino.org
+    "ws://35vr3xigzjv2xyzfyif6o2gksmkioppy4rmwag7d4bqmwuccs2u4jaid.onion", // Noderunners relay
+];
+
+/// Where `Config::private_key` lives at rest. `Plaintext` (the default,
+/// and the only option when no OS keyring is available) keeps it inline
+/// in this profile's `config.json`, exactly as before this existed.
+/// `Keyring` means the secret lives in the OS-native secret store instead
+/// (see `keyring_store.rs`) and is never written to `config.json` -- only
+/// opted into explicitly, never migrated to automatically.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum KeyStorage {
+    Plaintext,
+    Keyring,
+}
+
+impl KeyStorage {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            KeyStorage::Plaintext => "plaintext",
+            KeyStorage::Keyring => "keyring",
+        }
+    }
+
+    pub fn from_str(value: &str) -> KeyStorage {
+        match value {
+            "keyring" => KeyStorage::Keyring,
+            _ => KeyStorage::Plaintext,
+        }
+    }
+}
+
 // The main configuration structure.
 // Profile fields (name, about, picture, nip05, banner, website, lud16) are stored
 // directly rather than embedded as a JSON string, matching the Nostr kind 0 field names.
 pub struct Config {
     pub public_key: String,
     pub private_key: Option<String>,
+    pub key_storage: KeyStorage,
     pub relays: Vec<String>,
     // Profile fields (Nostr kind 0)
     pub name: String,
@@ -68,11 +117,16 @@ impl Config {
         Config {
             public_key: String::new(),
             private_key: None,
-            relays: vec![
-                String::from("wss://relay.damus.io"),
-                String::from("wss://nos.lol"),
-                String::from("wss://relay.nostr.band"),
-            ],
+            key_storage: KeyStorage::Plaintext,
+            // Deliberately empty, not BOOTSTRAP_RELAYS -- a brand new profile
+            // has no opinion of its own about relays yet, so there's nothing
+            // to save here. Callers that need a relay list and find this
+            // empty fall back to BOOTSTRAP_RELAYS themselves (see its
+            // comment) without writing it back into the config: once the
+            // profile is fetched from the network, or the user adds/changes
+            // relays in Settings, that real list is what gets saved, never
+            // a bootstrap default that happened to be in effect at the time.
+            relays: Vec::new(),
             name: String::from("Anonymous"),
             about: None,
             picture: None,
@@ -120,6 +174,7 @@ struct ConfigHandler {
     // Scalar fields
     public_key: String,
     private_key: Option<String>,
+    key_storage: KeyStorage,
     name: String,
     about: Option<String>,
     picture: Option<String>,
@@ -153,6 +208,7 @@ impl ConfigHandler {
             array_field: ConfigArrayField::None,
             public_key: String::new(),
             private_key: None,
+            key_storage: KeyStorage::Plaintext,
             name: String::from("Anonymous"),
             about: None,
             picture: None,
@@ -178,12 +234,9 @@ impl ConfigHandler {
     }
 
     fn take_config(mut self) -> Config {
-        let mut relays = self.relays;
-        if relays.is_empty() {
-            relays.push(String::from("wss://relay.damus.io"));
-            relays.push(String::from("wss://nos.lol"));
-            relays.push(String::from("wss://relay.nostr.band"));
-        }
+        // Deliberately left as whatever was in the file -- see Config::new()'s
+        // comment on why an empty relay list is never auto-filled in here.
+        let relays = self.relays;
         let home_feed_mode = if self.home_feed_mode == "follows" {
             String::from("follows")
         } else {
@@ -223,6 +276,7 @@ impl ConfigHandler {
         Config {
             public_key: self.public_key,
             private_key: self.private_key,
+            key_storage: self.key_storage,
             relays,
             name: self.name,
             about: self.about,
@@ -304,6 +358,7 @@ impl JsonContentHandler for ConfigHandler {
                 match f.as_str() {
                     "public_key" => self.public_key = value.to_string(),
                     "private_key" => self.private_key = Some(value.to_string()),
+                    "key_storage" => self.key_storage = KeyStorage::from_str(value),
                     // New field names (Nostr kind 0)
                     "name" => self.name = value.to_string(),
                     "about" => self.about = Some(value.to_string()),
@@ -377,16 +432,24 @@ pub fn config_to_json(config: &Config) -> String {
     json.push_str("\",\n");
     
     json.push_str("  \"private_key\": ");
-    match &config.private_key {
-        Some(key) => {
+    // Never write the secret to disk (or hand it back over IPC) when it
+    // lives in the OS keyring instead -- regardless of whether it's
+    // currently resolved in memory. This is the one line that guarantees
+    // the "shouldn't be present in the config file" requirement.
+    match (&config.private_key, config.key_storage) {
+        (Some(key), KeyStorage::Plaintext) => {
             json.push_str("\"");
             json.push_str(&escape_json_string(key));
             json.push_str("\"");
         }
-        None => json.push_str("null"),
+        _ => json.push_str("null"),
     }
     json.push_str(",\n");
-    
+
+    json.push_str("  \"key_storage\": \"");
+    json.push_str(config.key_storage.as_str());
+    json.push_str("\",\n");
+
     json.push_str("  \"relays\": [\n");
     for (index, relay) in config.relays.iter().enumerate() {
         json.push_str("    \"");
@@ -547,6 +610,20 @@ fn get_config_file_path(config_dir: &str) -> String {
     Path::new(config_dir).join("config.json").to_string_lossy().to_string()
 }
 
+/// `cfg.relays` if it has any, else [`BOOTSTRAP_RELAYS`] -- the Rust-side
+/// equivalent of the frontend's `getEffectiveRelays`. Every caller that
+/// fetches or publishes using a profile's relays should go through this
+/// rather than reading `cfg.relays` directly, so a brand new profile (or
+/// one whose relay list hasn't been learned yet) still has somewhere to
+/// talk to instead of failing outright.
+pub fn effective_relays(cfg: &Config) -> Vec<String> {
+    if cfg.relays.is_empty() {
+        BOOTSTRAP_RELAYS.iter().map(|s| s.to_string()).collect()
+    } else {
+        cfg.relays.clone()
+    }
+}
+
 pub fn load_config(config_dir: &str) -> Result<Config, String> {
     let config_file = get_config_file_path(config_dir);
     let path = Path::new(&config_file);
@@ -558,10 +635,23 @@ pub fn load_config(config_dir: &str) -> Result<Config, String> {
         Ok(c) => c,
         Err(e) => return Err(format!("Could not read config file: {}", e)),
     };
-    return json_to_config(&contents);
+    let mut config = json_to_config(&contents)?;
+    if config.key_storage == KeyStorage::Keyring {
+        // Swallow lookup errors into `None` rather than failing the whole
+        // load: every caller of `private_key` already treats `None` as
+        // "no private key configured" with its own clear error message,
+        // so there's no new error path to thread through every call site.
+        config.private_key = crate::keyring_store::load(&config.public_key).unwrap_or(None);
+    }
+    Ok(config)
 }
 
 pub fn save_config(config_dir: &str, config: &Config) -> Result<(), String> {
+    if config.key_storage == KeyStorage::Keyring {
+        if let Some(ref key) = config.private_key {
+            crate::keyring_store::store(&config.public_key, key)?;
+        }
+    }
     let config_file = get_config_file_path(config_dir);
     let json = config_to_json(config);
     match fs::write(&config_file, json) {
@@ -732,4 +822,98 @@ pub fn save_app_config(base_dir: &str, config: &AppConfig) -> Result<(), String>
     fs::write(&config_file, json).map_err(|e| format!("Could not write plume.json: {}", e))?;
     debug_log!("Saved app config to: {}", config_file.display());
     Ok(())
+}
+
+#[cfg(test)]
+mod key_storage_tests {
+    use super::*;
+
+    #[test]
+    fn key_storage_defaults_to_plaintext_when_absent_from_an_old_config_file() {
+        let json = "{\"public_key\": \"abc\", \"private_key\": \"def\"}";
+        let cfg = json_to_config(json).expect("should parse");
+        assert_eq!(cfg.key_storage, KeyStorage::Plaintext);
+        assert_eq!(cfg.private_key, Some(String::from("def")));
+    }
+
+    #[test]
+    fn plaintext_private_key_round_trips_through_json() {
+        let mut cfg = Config::new();
+        cfg.public_key = String::from("abc");
+        cfg.private_key = Some(String::from("secret-hex"));
+        cfg.key_storage = KeyStorage::Plaintext;
+
+        let json = config_to_json(&cfg);
+        assert!(json.contains("\"private_key\": \"secret-hex\""));
+        assert!(json.contains("\"key_storage\": \"plaintext\""));
+
+        let round_tripped = json_to_config(&json).expect("should parse");
+        assert_eq!(round_tripped.private_key, Some(String::from("secret-hex")));
+        assert_eq!(round_tripped.key_storage, KeyStorage::Plaintext);
+    }
+
+    #[test]
+    fn keyring_mode_never_writes_the_secret_to_json_even_if_resolved_in_memory() {
+        let mut cfg = Config::new();
+        cfg.public_key = String::from("abc");
+        // Simulates a Config whose private_key was just resolved from the
+        // keyring for in-memory use (e.g. by a signing command) -- it must
+        // never be serialized back out, on disk or over IPC.
+        cfg.private_key = Some(String::from("super-secret-hex"));
+        cfg.key_storage = KeyStorage::Keyring;
+
+        let json = config_to_json(&cfg);
+        assert!(json.contains("\"private_key\": null"));
+        assert!(json.contains("\"key_storage\": \"keyring\""));
+        assert!(!json.contains("super-secret-hex"));
+    }
+
+    #[test]
+    fn keyring_mode_flag_round_trips_but_private_key_comes_back_none() {
+        let mut cfg = Config::new();
+        cfg.public_key = String::from("abc");
+        cfg.private_key = Some(String::from("super-secret-hex"));
+        cfg.key_storage = KeyStorage::Keyring;
+        let json = config_to_json(&cfg);
+
+        // json_to_config alone (no keyring lookup -- that's load_config's
+        // job) should come back with key_storage preserved and no secret.
+        let round_tripped = json_to_config(&json).expect("should parse");
+        assert_eq!(round_tripped.key_storage, KeyStorage::Keyring);
+        assert_eq!(round_tripped.private_key, None);
+    }
+
+    #[test]
+    fn load_config_resolves_a_keyring_stored_key_and_save_config_never_writes_it_to_disk() {
+        if !crate::keyring_store::is_available() {
+            eprintln!("skipping: no usable OS keyring backend on this machine");
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!(
+            "plume_config_keyring_test_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).expect("should create temp dir");
+        let dir_str = dir.to_string_lossy().to_string();
+
+        let mut cfg = Config::new();
+        cfg.public_key = String::from("plume_test_config_keyring_integration_pubkey");
+        cfg.private_key = Some(String::from("integration-test-secret-hex"));
+        cfg.key_storage = KeyStorage::Keyring;
+        save_config(&dir_str, &cfg).expect("save_config should succeed");
+
+        let on_disk = fs::read_to_string(dir.join("config.json")).expect("config.json should exist");
+        assert!(on_disk.contains("\"private_key\": null"));
+        assert!(!on_disk.contains("integration-test-secret-hex"));
+
+        let loaded = load_config(&dir_str).expect("load_config should succeed");
+        assert_eq!(loaded.private_key, Some(String::from("integration-test-secret-hex")));
+        assert_eq!(loaded.key_storage, KeyStorage::Keyring);
+
+        let _ = crate::keyring_store::delete(&cfg.public_key);
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

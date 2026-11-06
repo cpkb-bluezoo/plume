@@ -30,7 +30,7 @@ import { debugLog, escapeHtml, showConfirm } from './modules/utils.js';
 import { initTorStatusGate } from './modules/tor-status.js';
 import { validatePublicKey } from './modules/keys.js';
 import { loadConfig, saveConfig, updateUIFromConfig, setSavingState, updateFeedInitialState } from './modules/config.js';
-import { isNoteMuted, isContentUnreadable, ensureMutedConfig, handleMuteClick, loadMutedPanel, renderMutedPanels, saveMutedFromPanel } from './modules/muting.js';
+import { isNoteMuted, isContentUnreadable, ensureMutedConfig, handleMuteClick, loadMutedPanel, renderMutedPanels, saveMutedFromPanel, fetchAndMergeOwnMuteList } from './modules/muting.js';
 import {
     getAuthorDisplay, ensureProfilesForNotes, getParentEventId, getReplyToPubkey,
     setCardAvatar, isNoteLiked, performZap, performLike,
@@ -46,11 +46,13 @@ import {
     updateSidebarAvatar, fetchProfile, openProfileForUser,
     openProfileQRModal, closeProfileQRModal, openEditProfileInSettings,
     handleEditProfileSubmit, loadProfileFeed, generateNewKeyPair, updateProfileDisplay,
-    setSwitchView as profileSetSwitchView, setUpdateUIFromConfig as profileSetUpdateUIFromConfig
+    setSwitchView as profileSetSwitchView, setUpdateUIFromConfig as profileSetUpdateUIFromConfig,
+    adoptOwnRelayListFromNetwork
 } from './modules/profile.js';
 import {
     fetchFollowingAndFollowers, handleFollowClick, switchFollowTab,
-    loadFollowsPanel, renderFollowsPanel, saveFollowsPanel, handleContactListSyncFailed
+    loadFollowsPanel, renderFollowsPanel, saveFollowsPanel, handleContactListSyncFailed,
+    adoptOwnFollowingFromNetwork
 } from './modules/follows.js';
 import {
     loadMessagesView, selectConversation, loadConversationMessages,
@@ -63,7 +65,7 @@ import {
 } from './modules/compose.js';
 import {
     openSettings, closeSettings, showSettingsPanel,
-    populateKeysPanel, copyNsecToClipboard, saveKeysPanel,
+    populateKeysPanel, copyNsecToClipboard, saveKeysPanel, moveKeyStorageFromPanel,
     saveHomeFeedModeFromPanel, saveZapsFromPanel, saveMediaServerFromPanel,
     handleSettingsSubmit, setUpdateUIFromConfig as settingsSetUpdateUIFromConfig
 } from './modules/settings.js';
@@ -106,6 +108,16 @@ window.onunhandledrejection = function(event) {
 async function init() {
     try {
         console.log('[Plume] init() entered');
+
+        // One-time probe for a usable OS keyring backend. Not awaited --
+        // it's only needed later (the first-login prompt, or the Keys
+        // settings panel), so it resolves in the background rather than
+        // delaying anything here. See maybeOfferKeyringStorage() in auth.js.
+        invoke('is_keyring_available').then(function(available) {
+            state.keyringAvailable = !!available;
+        }).catch(function() {
+            state.keyringAvailable = false;
+        });
 
         // Tor status gate: show immediately, update as the backend reports
         // progress. Does not block the rest of init() -- buttons wire up
@@ -208,6 +220,7 @@ async function init() {
             });
         }
         document.getElementById('settings-keys-copy-nsec')?.addEventListener('click', copyNsecToClipboard);
+        document.getElementById('settings-keys-storage-move')?.addEventListener('click', moveKeyStorageFromPanel);
 
         // Messages view: conversation list, send button, Message from profile
         var messagesListEl = document.querySelector('.messages-list');
@@ -307,10 +320,6 @@ async function init() {
             }
             var raw = (input.value || '').trim();
             if (!raw) {
-                return;
-            }
-            if (state.followsPanelLoading) {
-                alert(t('settings.followsStillLoading') || 'Follow list is still loading, please wait.');
                 return;
             }
             validatePublicKey(raw).then(function(r) {
@@ -785,6 +794,17 @@ async function init() {
             startDmStream();
             // Fetch profile from relays in background to update sidebar avatar and local config
             fetchProfile();
+            // The locally saved relay list may still just be the bootstrap
+            // default (or stale); adopt the user's own published NIP-65 list
+            // once it's known, restarting the feed against it if needed.
+            adoptOwnRelayListFromNetwork();
+            // Same reasoning for the follows list: needed in memory at
+            // startup for follows-mode feed filtering and the Settings ->
+            // Follows panel, not fetched fresh only when that panel opens.
+            adoptOwnFollowingFromNetwork();
+            // Mutes were local-only until now -- merge in whatever another
+            // client has already published.
+            fetchAndMergeOwnMuteList();
         } else {
             // Not logged in – show welcome screen
             updateSidebarAuthState();

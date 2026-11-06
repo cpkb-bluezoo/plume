@@ -28,6 +28,7 @@
 use bytes::BytesMut;
 
 use crate::async_bridge::{self, mpsc};
+use crate::crypto;
 use crate::debug_log;
 use crate::json::{JsonContentHandler, JsonNumber, JsonParser};
 use crate::nostr;
@@ -287,6 +288,10 @@ pub async fn fetch_notes_from_relay(
 ) -> Result<Vec<nostr::Event>, String> {
     let (tx, mut rx) = mpsc::unbounded_channel();
 
+    // Kept for the completion log below -- with many concurrent queries
+    // sharing one relay connection, "Fetched N events from relay X" alone
+    // doesn't say which request N belongs to.
+    let filter_json = nostr::filter_to_json(filter);
     let url = relay_url.to_string();
     let filter = filter.clone();
     let timeout = timeout_seconds;
@@ -310,7 +315,7 @@ pub async fn fetch_notes_from_relay(
         }
     }
 
-    debug_log!("Fetched {} events from {}", events.len(), relay_url);
+    debug_log!("Fetched {} events from {} for {}", events.len(), relay_url, filter_json);
     Ok(events)
 }
 
@@ -393,7 +398,10 @@ pub async fn fetch_profile_from_relay(
 /// Fetch profile from multiple relays, trying all of them at once (each
 /// relay's connection is independent of the others, so trying them one at
 /// a time would stack every relay's response timeout on top of the last).
-/// Takes the first successful result.
+/// Waits for every relay to answer (or fail/time out) and returns whichever
+/// result has the newest `created_at` -- the first relay to respond isn't
+/// necessarily the one holding the user's latest profile edit; a stale copy
+/// on a fast relay must not win over a current one on a slower relay.
 pub async fn fetch_profile_from_relays(
     relay_urls: &Vec<String>,
     pubkey: &str,
@@ -410,9 +418,19 @@ pub async fn fetch_profile_from_relays(
         });
     }
     drop(tx);
+
+    let mut best: Option<nostr::ProfileMetadata> = None;
     while let Some((relay_url, result)) = rx.recv().await {
         match result {
-            Ok(Some(profile)) => return Ok(Some(profile)),
+            Ok(Some(profile)) => {
+                let is_newer = match &best {
+                    Some(current) => profile.created_at > current.created_at,
+                    None => true,
+                };
+                if is_newer {
+                    best = Some(profile);
+                }
+            }
             Ok(None) => continue,
             Err(e) => {
                 debug_log!("Error fetching profile from {}: {}", relay_url, e);
@@ -420,7 +438,7 @@ pub async fn fetch_profile_from_relays(
             }
         }
     }
-    Ok(None)
+    Ok(best)
 }
 
 /// Fetch a user's contact list (who they follow) from a relay.
@@ -607,6 +625,92 @@ pub async fn fetch_relay_list_from_relays(
 }
 
 // ============================================================
+// Mute List (kind 10000, NIP-51) fetching
+// ============================================================
+
+/// Fetches the latest kind 10000 event from one relay and parses it into a
+/// [`nostr::MuteList`]. `secret_key_hex` is only needed to decrypt the
+/// private portion (`content`) -- without it (a read-only npub login),
+/// this still returns the public tags, same as any client without the key
+/// would see; a missing/invalid key is never treated as a fetch failure.
+pub async fn fetch_mute_list_from_relay(
+    relay_url: &str,
+    pubkey: &str,
+    secret_key_hex: Option<&str>,
+    timeout_seconds: u32,
+) -> Result<Option<nostr::MuteList>, String> {
+    let filter = nostr::filter_latest_by_author_kind(pubkey, nostr::KIND_MUTE_LIST);
+    let events = fetch_notes_from_relay(relay_url, &filter, timeout_seconds).await?;
+    let best_event = events.into_iter().filter(|e| e.kind == nostr::KIND_MUTE_LIST).max_by_key(|e| e.created_at);
+    let event = match best_event {
+        Some(e) => e,
+        None => return Ok(None),
+    };
+    let mut list = match nostr::parse_mute_list_public_tags(&event) {
+        Ok(l) => l,
+        Err(e) => {
+            debug_log!("Failed to parse mute list public tags: {}", e);
+            return Ok(None);
+        }
+    };
+    if let Some(secret_hex) = secret_key_hex {
+        if !event.content.trim().is_empty() {
+            match crypto::decrypt_mute_list_content(&event.content, secret_hex) {
+                Ok(plaintext) => match nostr::parse_mute_list_tags_json(&plaintext) {
+                    Ok(private_tags) => list.private_tags = private_tags,
+                    Err(e) => debug_log!("Failed to parse decrypted mute list content: {}", e),
+                },
+                Err(e) => debug_log!("Failed to decrypt mute list content from {}: {}", relay_url, e),
+            }
+        }
+    }
+    Ok(Some(list))
+}
+
+/// Fetches from every relay at once (same reasoning as every other
+/// `fetch_*_from_relays`) and keeps whichever single relay's event is
+/// newest -- the public and private halves of a mute list only make sense
+/// read together from the same event, never mixed across relays that
+/// might be holding different points in time.
+pub async fn fetch_mute_list_from_relays(
+    relay_urls: &Vec<String>,
+    pubkey: &str,
+    secret_key_hex: Option<String>,
+    timeout_seconds: u32,
+) -> Option<nostr::MuteList> {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    for relay_url in relay_urls {
+        let relay_url = relay_url.clone();
+        let pubkey = pubkey.to_string();
+        let secret_key_hex = secret_key_hex.clone();
+        let tx = tx.clone();
+        async_bridge::spawn(async move {
+            let result = fetch_mute_list_from_relay(&relay_url, &pubkey, secret_key_hex.as_deref(), timeout_seconds).await;
+            let _ = tx.send((relay_url, result));
+        });
+    }
+    drop(tx);
+
+    let mut best: Option<nostr::MuteList> = None;
+    while let Some((relay_url, result)) = rx.recv().await {
+        match result {
+            Ok(Some(list)) => {
+                let is_newer = best.as_ref().map(|b| list.created_at > b.created_at).unwrap_or(true);
+                if is_newer {
+                    best = Some(list);
+                }
+            }
+            Ok(None) => continue,
+            Err(e) => {
+                debug_log!("Error fetching mute list from {}: {}", relay_url, e);
+                continue;
+            }
+        }
+    }
+    best
+}
+
+// ============================================================
 // DM Relay List (kind 10050) fetching
 // ============================================================
 
@@ -692,33 +796,106 @@ pub async fn publish_event_to_relay(
     relay_pool::publish(relay_url, event, timeout_seconds).await
 }
 
-/// Publish an event to multiple relays.
+/// Publish an event to multiple relays at once (each relay's connection is
+/// independent, so publishing one at a time would stack every relay's own
+/// response timeout on top of the last -- the same reasoning as
+/// fetch_notes_from_relays).
 pub async fn publish_event_to_relays(
     relay_urls: &Vec<String>,
     event: &nostr::Event,
     timeout_seconds: u32,
 ) -> Vec<PublishResult> {
-    let mut results: Vec<PublishResult> = Vec::new();
-    
+    let (tx, mut rx) = mpsc::unbounded_channel();
     for relay_url in relay_urls {
-        match publish_event_to_relay(relay_url, event, timeout_seconds).await {
-            Ok(result) => {
-                debug_log!("Publish to {}: success={}, message={}", 
-                         result.relay_url, result.success, result.message);
-                results.push(result);
-            }
-            Err(e) => {
-                debug_log!("Error publishing to {}: {}", relay_url, e);
-                results.push(PublishResult {
-                    relay_url: relay_url.to_string(),
-                    success: false,
-                    message: e,
-                });
-            }
-        }
+        let relay_url = relay_url.clone();
+        let event = event.clone();
+        let tx = tx.clone();
+        async_bridge::spawn(async move {
+            let result = match publish_event_to_relay(&relay_url, &event, timeout_seconds).await {
+                Ok(result) => {
+                    debug_log!("Publish to {}: success={}, message={}",
+                             result.relay_url, result.success, result.message);
+                    result
+                }
+                Err(e) => {
+                    debug_log!("Error publishing to {}: {}", relay_url, e);
+                    PublishResult { relay_url: relay_url.clone(), success: false, message: e }
+                }
+            };
+            let _ = tx.send(result);
+        });
     }
-    
-    return results;
+    drop(tx);
+
+    let mut results: Vec<PublishResult> = Vec::new();
+    while let Some(result) = rx.recv().await {
+        results.push(result);
+    }
+    results
+}
+
+/// Outcome of publishing a replaceable event (kind 0 profile, kind 10002
+/// relay list, kind 10050 DM relay list) to one relay and immediately
+/// re-querying it for its own current latest (pubkey, kind) event --
+/// the shared publish-then-confirm-and-adopt step every save of one of
+/// these goes through, rather than trusting a bare `OK` (which only means
+/// "accepted," never "durably stored and retrievable") or writing the
+/// locally-intended value as if the network had agreed to it.
+pub struct PublishConfirmOutcome {
+    pub relay_url: String,
+    /// The relay sent a successful OK for our publish.
+    pub accepted: bool,
+    /// The immediate read-back found an event at least as new as ours --
+    /// could be our own event, or (another client having raced us) a
+    /// legitimately newer one, which is adopted exactly the same way.
+    pub confirmed: bool,
+    /// Whatever the read-back actually found, win or lose -- the thing to
+    /// adopt into the local cache, never what we merely intended to publish.
+    pub latest_event: Option<nostr::Event>,
+}
+
+pub async fn publish_and_confirm_one(
+    relay_url: &str,
+    event: &nostr::Event,
+    timeout_seconds: u32,
+) -> PublishConfirmOutcome {
+    let accepted = matches!(
+        publish_event_to_relay(relay_url, event, timeout_seconds).await,
+        Ok(result) if result.success
+    );
+    let filter = nostr::filter_latest_by_author_kind(&event.pubkey, event.kind);
+    let latest_event = fetch_notes_from_relay(relay_url, &filter, timeout_seconds)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .max_by_key(|e| e.created_at);
+    let confirmed = latest_event.as_ref().map(|e| e.created_at >= event.created_at).unwrap_or(false);
+    PublishConfirmOutcome { relay_url: relay_url.to_string(), accepted, confirmed, latest_event }
+}
+
+/// Runs [`publish_and_confirm_one`] against every relay in `relay_urls` at
+/// once, sending each outcome to `tx` as it completes rather than waiting
+/// for the slowest relay before any of them are visible.
+pub async fn publish_and_confirm(
+    relay_urls: &[String],
+    event: &nostr::Event,
+    timeout_seconds: u32,
+    tx: mpsc::UnboundedSender<PublishConfirmOutcome>,
+) {
+    let (inner_tx, mut inner_rx) = mpsc::unbounded_channel();
+    for relay_url in relay_urls {
+        let relay_url = relay_url.clone();
+        let event = event.clone();
+        let inner_tx = inner_tx.clone();
+        async_bridge::spawn(async move {
+            let outcome = publish_and_confirm_one(&relay_url, &event, timeout_seconds).await;
+            let _ = inner_tx.send(outcome);
+        });
+    }
+    drop(inner_tx);
+    while let Some(outcome) = inner_rx.recv().await {
+        let _ = tx.send(outcome);
+    }
 }
 
 // ============================================================
@@ -910,6 +1087,54 @@ mod diag_tests {
         );
     }
 
+    /// A user in "follows" home-feed mode reported seeing notes from
+    /// authors they don't follow. The frontend trusts each relay to honour
+    /// the `authors` field of the REQ filter it's sent -- there's no
+    /// client-side re-check -- so a relay that ignores or only partially
+    /// honours `authors` would leak exactly this. Checks that live by
+    /// querying with a filter naming only a nonexistent pubkey and
+    /// confirming zero events come back.
+    #[test]
+    fn relay_honours_the_authors_filter() {
+        let addr_str = match std::env::var("PLUME_TEST_SOCKS_ADDR") {
+            Ok(v) => v,
+            Err(_) => {
+                eprintln!("skipping: set PLUME_TEST_SOCKS_ADDR=[::1]:PORT to run this");
+                return;
+            }
+        };
+        let relays_str = std::env::var("PLUME_TEST_RELAYS")
+            .unwrap_or_else(|_| "wss://relay.damus.io".to_string());
+        let addr: std::net::SocketAddr = addr_str.parse().expect("bad PLUME_TEST_SOCKS_ADDR");
+        crate::tor::force_ready_for_test(addr);
+
+        let relay_urls: Vec<String> = relays_str.split(',').map(|s| s.to_string()).collect();
+        // All-zeros is not a valid secp256k1 x-only pubkey, so no real event
+        // can ever be signed by it -- any event returned proves the relay
+        // ignored `authors` rather than just that this specific nobody
+        // happened to never post.
+        let nonexistent_author = "0".repeat(64);
+        let filter = nostr::filter_notes_by_authors_since(vec![nonexistent_author], 20, None);
+
+        for relay_url in &relay_urls {
+            let (events, fail_count) = async_bridge::block_on(fetch_notes_from_relays(
+                &vec![relay_url.clone()],
+                &filter,
+                RESPONSE_TIMEOUT_SECS,
+            ));
+            eprintln!(
+                "[diag] {relay_url} authors-filter check: {} events, {} failures",
+                events.len(),
+                fail_count,
+            );
+            assert_eq!(
+                events.len(), 0,
+                "{relay_url} returned {} event(s) for a filter naming only a nonexistent author -- it is not honouring `authors`",
+                events.len(),
+            );
+        }
+    }
+
     /// `search_notes`/`search_hashtag` used to query every relay in a plain
     /// sequential loop, so an N-relay search was bounded by N times a
     /// single relay's response timeout (plus another N times over again
@@ -993,6 +1218,51 @@ mod diag_tests {
             relay_urls.len(),
             start.elapsed(),
         );
+    }
+
+    /// Probes whether a relay actually honours NIP-50 `search` or just
+    /// ignores it and returns generic recent notes regardless -- a search
+    /// for a deliberately bizarre, specific term should come back either
+    /// empty or containing that term; anything else that comes back proves
+    /// the relay isn't applying the filter at all.
+    #[test]
+    fn relay_honours_nip50_search() {
+        let addr_str = match std::env::var("PLUME_TEST_SOCKS_ADDR") {
+            Ok(v) => v,
+            Err(_) => {
+                eprintln!("skipping: set PLUME_TEST_SOCKS_ADDR=[::1]:PORT to run this");
+                return;
+            }
+        };
+        let relays_str = std::env::var("PLUME_TEST_RELAYS")
+            .unwrap_or_else(|_| "wss://relay.damus.io".to_string());
+        let addr: std::net::SocketAddr = addr_str.parse().expect("bad PLUME_TEST_SOCKS_ADDR");
+        crate::tor::force_ready_for_test(addr);
+
+        let relay_urls: Vec<String> = relays_str.split(',').map(|s| s.to_string()).collect();
+        let query = "zzyzxqpv_plume_search_probe";
+        let filter = nostr::filter_notes_by_search(query, 20, None, None, None);
+
+        for relay_url in &relay_urls {
+            let (events, _) = async_bridge::block_on(fetch_notes_from_relays(
+                &vec![relay_url.clone()],
+                &filter,
+                RESPONSE_TIMEOUT_SECS,
+            ));
+            let irrelevant: Vec<&str> = events
+                .iter()
+                .filter(|e| !e.content.to_lowercase().contains(query))
+                .map(|e| e.content.as_str())
+                .collect();
+            eprintln!(
+                "[diag] {relay_url} search probe: {} events back, {} not containing the search term",
+                events.len(),
+                irrelevant.len(),
+            );
+            for (i, c) in irrelevant.iter().take(3).enumerate() {
+                eprintln!("[diag]   irrelevant[{i}]: {}", &c[..c.len().min(120)]);
+            }
+        }
     }
 
     /// Same, but under the kind of concurrent load the real app generates at
